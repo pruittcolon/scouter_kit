@@ -26,6 +26,33 @@ class Settings(context: Context) {
     var ignoreWorn: Boolean
         get() = prefs.getBoolean("ignore_worn", false)
         set(v) = prefs.edit().putBoolean("ignore_worn", v).apply()
+    // What the glasses show: TERMINAL (the mosh session) or SCREEN (this phone's screen).
+    var show: String by Text("show", TERMINAL)
+    // A session started from the phone (no keyer needed): it runs until Stop, also with the app in the back.
+    var phone: Boolean
+        get() = prefs.getBoolean("phone", false)
+        set(v) = prefs.edit().putBoolean("phone", v).apply()
+    // Started from the phone, the terminal shows whatever the head's angle (not only when looking up).
+    var phoneForce: Boolean
+        get() = prefs.getBoolean("phone_force", true)
+        set(v) = prefs.edit().putBoolean("phone_force", v).apply()
+    // The phone's screen: a full-width band (else the whole screen, its shape kept), the band's place (0 top ..
+    // 100 bottom), light backgrounds dark (black is see-through), 16 or 2 levels, frames a second at most.
+    var screenBand: Boolean
+        get() = prefs.getBoolean("screen_band", false)
+        set(v) = prefs.edit().putBoolean("screen_band", v).apply()
+    var screenBandPos: Int by Number("screen_band_pos", 0)
+    var screenInvert: Boolean
+        get() = prefs.getBoolean("screen_invert", true)
+        set(v) = prefs.edit().putBoolean("screen_invert", v).apply()
+    var screenLevels: Int by Number("screen_levels", 16)
+    var screenFps: Int by Number("screen_fps", 5)
+    // Termux's sshd host keys (SHA256:... fingerprints, space separated), as Termux itself reported them: trusted
+    // without asking.
+    var termuxKeys: String by Text("termux_keys", "")
+    // The server is Termux on this phone: its sshd is started before each session.
+    val termux get() = (host == Termux.HOST || host == "localhost") && port == Termux.PORT
+
     // The app connects to G1 arms only when this is on and both addresses are set (off by default).
     var glassesAllowed: Boolean
         get() = prefs.getBoolean("glasses_allowed", false)
@@ -43,6 +70,9 @@ class Settings(context: Context) {
     val rows get() = grid(dx, dy).second
 
     companion object {
+        const val TERMINAL = "terminal"
+        const val SCREEN = "screen"
+
         // The terminal's size for dx and dy: the binocular area in 7 x 14 cells (R19).
         fun grid(dx: Int, dy: Int) = (640 - dx) / 7 to (480 - dy) / 14
     }

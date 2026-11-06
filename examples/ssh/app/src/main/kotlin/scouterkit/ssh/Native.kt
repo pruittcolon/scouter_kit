@@ -43,11 +43,26 @@ object Native {
     @JvmStatic external fun keyEvent(kind: Int, mods: Int, value: Int)
     // keyer held: the terminal shows on the glasses whatever the head's angle (R25).
     @JvmStatic external fun force(on: Boolean)
-    // heard, ended, silent ms, left up, right up, terminal shown on an eye.
+    // heard, ended, silent ms, left up, right up, terminal shown on an eye, phone's screen mirrored (1),
+    // its frames shown.
     @JvmStatic external fun status(): IntArray
     // The mosh session's last error and the terminal's title.
     @JvmStatic external fun texts(): Array<String>
     @JvmStatic external fun snapshot(): ByteArray?
+
+    // The phone's screen instead of the terminal: now, or as soon as the glasses are started. An error or null
+    // (the terminal stays then).
+    @JvmStatic external fun screenStart(): String?
+    // Back to the terminal.
+    @JvmStatic external fun screenStop()
+    // One captured frame: a direct buffer of RGBA_8888 rows `stride` bytes apart. Blocks while the previous
+    // frame is not on the display yet. One of SCREEN_*.
+    @JvmStatic external fun screenFrame(buffer: java.nio.ByteBuffer, width: Int, height: Int, stride: Int, band: Boolean,
+                                        bandPos: Int, invert: Boolean, levels: Int): Int
+    const val SCREEN_SHOWN = 0
+    const val SCREEN_SAME = 1
+    const val SCREEN_HIDDEN = 2 // in the case or folded: the panels are off
+    const val SCREEN_STOPPED = 3
 
     // From the native threads: a new screen or status.
     @JvmStatic fun changed() {

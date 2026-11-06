@@ -37,7 +37,7 @@ find_package(Threads REQUIRED)
 target_link_libraries(scouter_kit PUBLIC Threads::Threads)
 
 # Object libraries link whole, so mosh's static registrations stay.
-add_library(ssh_core OBJECT mosh_client.cpp glasses.cpp keys.cpp terminal.cpp)
+add_library(ssh_core OBJECT mosh_client.cpp glasses.cpp keys.cpp terminal.cpp screen.cpp)
 target_link_libraries(ssh_core PUBLIC mosh scouter_kit)
 
 if(ANDROID)

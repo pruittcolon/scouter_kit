@@ -61,3 +61,26 @@ Energy on for other apps) ends the session, and the app then does nothing: Andro
 it until Bluetooth is on again. The mosh session
 continues at the next keyer on while Android keeps the app's process; after that a new one starts (and ends
 the old one), so run tmux on the server (command `tmux new -A -s main`) to keep your work.
+
+## From the phone alone (Termux, the phone's screen)
+
+No keyer needed: the main screen's buttons start a session that runs until Stop (also in the notification),
+with the app in the back.
+
+- **Termux on this phone as the server.** Settings, "Termux on this phone": allow "Run commands in Termux"
+  (Termux needs `allow-external-apps = true` in `~/.termux/termux.properties`), then "Set up". It installs
+  `openssh` and `mosh` in Termux if missing, adds this phone's public key to Termux's `authorized_keys`, starts
+  `sshd` on 127.0.0.1:8022 only and fills in the server (127.0.0.1, 8022). Termux's host key fingerprints come
+  from Termux itself, so the first session trusts them without asking. Before each session the app starts
+  `sshd` again if it is not running. Command presets: a plain Termux shell, or Claude Code's tmux session in a
+  proot-distro Ubuntu (`proot-distro login ubuntu -- bash -ic claude`). Type in Termux itself: it is the same
+  tmux session.
+- **"Terminal on glasses"**: the mosh session on the glasses; by default it shows whatever the head's angle
+  ("Started from the phone" in Settings switches back to the looking-up rule), and the phone stays awake while
+  it is live.
+- **"Phone screen on glasses"**: Android's screen sharing (it asks every time); the screen goes on both eyes in
+  the columns both eyes see, as 16 greys (or black and white), inverted by default since black is see-through.
+  The whole screen with its shape kept, or a full-width band (Settings, "Phone screen on the glasses"). Turning
+  the phone resizes the capture. Unchanged frames are not sent, and the rate drops by itself while the link is
+  busy. In the case or folded the panels go off. Ending the screen sharing (Android's status bar, Stop, or
+  "Terminal on glasses") brings the terminal back; the mosh session waits paused meanwhile.

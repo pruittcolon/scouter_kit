@@ -14,6 +14,7 @@
 #include "glasses.hpp"
 #include "keys.hpp"
 #include "mosh_client.hpp"
+#include "screen.hpp"
 #include "terminal.hpp"
 
 namespace {
@@ -21,7 +22,7 @@ namespace {
 JavaVM *g_vm = nullptr;
 jclass g_native = nullptr; // scouterkit.ssh.Native
 jmethodID g_changed = nullptr;
-// Lock order: g_glasses_mutex, g_mutex, g_term_mutex.
+// Lock order: g_glasses_mutex, g_mutex, g_term_mutex, g_screen_mutex.
 std::mutex g_glasses_mutex; // guards the glasses' objects (Init holds it up to 30 s)
 std::mutex g_link_mutex; // guards g_transport for the link callbacks
 std::shared_ptr<ssh::AndroidTransport> g_transport;
@@ -36,6 +37,10 @@ std::atomic<ssh::MoshClient *> g_mosh_live{nullptr}; // between Start and Stop, 
 std::mutex g_term_mutex;                          // guards g_term and g_force
 std::shared_ptr<ssh::GlassesTerminal> g_term;
 bool g_force = false;
+// The phone's screen on the glasses instead of the terminal (screenStart), while wanted.
+std::mutex g_screen_mutex; // guards g_screen and g_screen_wanted
+std::shared_ptr<ssh::ScreenMirror> g_screen;
+bool g_screen_wanted = false;
 
 // The JNIEnv of a native thread, attached on first use and detached when the
 // thread ends.
@@ -101,6 +106,41 @@ void StopTerminal(bool keep = false) {
   if (term) term->Stop(keep);
 }
 
+bool ScreenWanted() {
+  std::lock_guard<std::mutex> lock(g_screen_mutex);
+  return g_screen_wanted;
+}
+
+// The phone's screen instead of the terminal (g_glasses_mutex held, the glasses started). On an error the
+// terminal comes back.
+std::string StartScreen() {
+  {
+    std::lock_guard<std::mutex> lock(g_screen_mutex);
+    if (g_screen) return {};
+  }
+  StopTerminal(false);
+  auto screen = std::make_shared<ssh::ScreenMirror>();
+  std::string error;
+  if (!screen->Start(g_config.dx, &error)) {
+    StartTerminal();
+    return error;
+  }
+  std::lock_guard<std::mutex> lock(g_screen_mutex);
+  g_screen = screen;
+  return {};
+}
+
+// Returns whether a mirror ran; waits for a frame in progress.
+bool StopScreen() {
+  std::shared_ptr<ssh::ScreenMirror> screen;
+  {
+    std::lock_guard<std::mutex> lock(g_screen_mutex);
+    screen.swap(g_screen);
+  }
+  if (screen) screen->Stop();
+  return screen != nullptr;
+}
+
 } // namespace
 
 extern "C" {
@@ -117,7 +157,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *) {
 }
 
 JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_version(JNIEnv *env, jclass) {
-  return env->NewStringUTF("scouter_ssh 0.1, mosh 1.4.0");
+  return env->NewStringUTF("scouter_ssh 0.2, mosh 1.4.0");
 }
 
 // ------------------------------------------------ glasses
@@ -140,11 +180,12 @@ JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_glassesStart(JNIEnv *env, j
     return env->NewStringUTF(error.c_str());
   }
   g_glasses = true;
-  error = StartTerminal();
+  error = ScreenWanted() ? StartScreen() : StartTerminal();
   return error.empty() ? nullptr : env->NewStringUTF(error.c_str());
 }
 
 JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_glassesStop(JNIEnv *, jclass, jboolean keep) {
+  StopScreen();
   StopTerminal(keep);
   std::lock_guard<std::mutex> lock(g_glasses_mutex);
   if (g_glasses) ssh::GlassesStop();
@@ -271,9 +312,63 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_keyEvent(JNIEnv *, jclass, jin
   if (!bytes.empty()) g_mosh->Keys(bytes);
 }
 
-// heard, ended, silent ms, then the arms: connected left, right, and the terminal shown on an eye.
+// ------------------------------------------------ the phone's screen
+
+// The glasses show the phone's screen (screenFrame) instead of the terminal, now or as soon as they are
+// started. An error or null; on an error the terminal stays.
+JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_screenStart(JNIEnv *env, jclass) {
+  std::lock_guard<std::mutex> lock(g_glasses_mutex);
+  {
+    std::lock_guard<std::mutex> l(g_screen_mutex);
+    g_screen_wanted = true;
+  }
+  if (!g_glasses) return nullptr;
+  std::string error = StartScreen();
+  if (!error.empty()) {
+    std::lock_guard<std::mutex> l(g_screen_mutex);
+    g_screen_wanted = false;
+  }
+  return error.empty() ? nullptr : env->NewStringUTF(error.c_str());
+}
+
+// Back to the terminal (with the latest screen of the mosh session).
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_screenStop(JNIEnv *, jclass) {
+  std::lock_guard<std::mutex> lock(g_glasses_mutex);
+  {
+    std::lock_guard<std::mutex> l(g_screen_mutex);
+    g_screen_wanted = false;
+  }
+  if (StopScreen() && g_glasses) StartTerminal();
+}
+
+// One captured frame: a direct buffer of RGBA_8888 rows `stride` bytes apart (an ImageReader plane). Blocks
+// while the previous frame is not on the display yet. ScreenMirror's kShown, kSame, kHidden or kStopped.
+JNIEXPORT jint JNICALL Java_scouterkit_ssh_Native_screenFrame(JNIEnv *env, jclass, jobject buffer, jint w, jint h,
+                                                               jint stride, jboolean band, jint band_pos,
+                                                               jboolean invert, jint levels) {
+  std::shared_ptr<ssh::ScreenMirror> screen;
+  {
+    std::lock_guard<std::mutex> lock(g_screen_mutex);
+    screen = g_screen;
+  }
+  if (!screen) return ssh::ScreenMirror::kStopped;
+  auto *p = static_cast<const uint8_t *>(env->GetDirectBufferAddress(buffer));
+  jlong capacity = env->GetDirectBufferCapacity(buffer);
+  // The last row may lack its padding.
+  if (!p || w <= 0 || h <= 0 || capacity < jlong(stride) * (h - 1) + jlong(w) * 4) return ssh::ScreenMirror::kSame;
+  ssh::ScreenOptions o;
+  o.band = band;
+  o.band_pos = band_pos;
+  o.invert = invert;
+  o.levels = levels == 2 ? 2 : 16;
+  o.ignore_worn = g_ignore_worn;
+  return screen->Frame(p, w, h, stride, o);
+}
+
+// heard, ended, silent ms, then the arms: connected left, right, the terminal shown on an eye, and the phone's
+// screen: mirrored (1), frames shown.
 JNIEXPORT jintArray JNICALL Java_scouterkit_ssh_Native_status(JNIEnv *env, jclass) {
-  jint v[6] = {0, 0, 0, 0, 0, 0};
+  jint v[8] = {0, 0, 0, 0, 0, 0, 0, 0};
   {
     std::unique_lock<std::mutex> glasses(g_glasses_mutex, std::try_to_lock); // not while Init runs
     if (glasses.owns_lock() && g_glasses) {
@@ -294,8 +389,17 @@ JNIEXPORT jintArray JNICALL Java_scouterkit_ssh_Native_status(JNIEnv *env, jclas
     std::lock_guard<std::mutex> lock(g_term_mutex);
     if (g_term) v[5] = g_term->Shown();
   }
-  jintArray out = env->NewIntArray(6);
-  env->SetIntArrayRegion(out, 0, 6, v);
+  std::shared_ptr<ssh::ScreenMirror> screen;
+  {
+    std::lock_guard<std::mutex> lock(g_screen_mutex);
+    screen = g_screen;
+  }
+  if (screen) {
+    v[6] = 1;
+    v[7] = screen->frames();
+  }
+  jintArray out = env->NewIntArray(8);
+  env->SetIntArrayRegion(out, 0, 8, v);
   return out;
 }
 

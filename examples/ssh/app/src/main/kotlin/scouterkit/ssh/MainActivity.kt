@@ -11,8 +11,11 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import java.io.File
 
+private const val SCREEN_REQUEST = 7 // the screen-sharing consent
+
 // The mirror while the app is in the foreground (no keys from the phone: they come from keyer), the session's
-// state, and Settings, the only controls (the user's choice): the session follows keyer by itself.
+// state, Settings, and the phone's own controls: the terminal (Termux on this phone, or any server) or this
+// phone's screen on the glasses until Stop, with no keyer needed.
 class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var terminal: TerminalView
@@ -29,6 +32,16 @@ class MainActivity : Activity() {
         list.addView(status)
         list.addView(terminal, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         if (BuildConfig.FLAVOR == "emulated") list.addView(PanelView(this))
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun control(label: String, action: () -> Unit) = row.addView(Button(this).apply {
+            text = label
+            isAllCaps = false
+            setOnClickListener { action() }
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        control("Terminal on glasses") { startTerminal() }
+        control("Phone screen on glasses") { shareScreen() }
+        control("Stop") { ScouterService.send(this, ScouterService.ACTION_STOP) }
+        list.addView(row)
         list.addView(Button(this).apply {
             text = "Settings"
             isAllCaps = false
@@ -148,7 +161,46 @@ class MainActivity : Activity() {
     override fun onActivityResult(request: Int, result: Int, data: Intent?) {
         super.onActivityResult(request, result, data)
         if (request == CompanionApp.REQUEST) companion = CompanionApp.result(this, if (result == RESULT_OK) data else null)
+        if (request == SCREEN_REQUEST) {
+            if (result == RESULT_OK && data != null) ScouterService.sendScreen(this, result, data)
+            else note = "screen sharing not allowed"
+            show()
+        }
     }
+
+    // What the phone's controls need first, or null.
+    private fun ready(): String? {
+        val settings = Settings(this)
+        return when {
+            ScouterService.missing(this).isNotEmpty() -> "allow Bluetooth and notifications in Settings first"
+            !ScouterService.bluetoothOn(this) -> "switch Bluetooth on first"
+            BuildConfig.FLAVOR != "emulated" && (settings.left.isEmpty() || settings.right.isEmpty()) ->
+                "pair the glasses first: Settings, Glasses"
+            else -> null
+        }
+    }
+
+    // The terminal on the glasses, started from the phone: it runs until Stop.
+    private fun startTerminal() {
+        ready()?.let { note = it; return show() }
+        val settings = Settings(this)
+        note = if (settings.host.isEmpty()) "no server yet: Settings, Termux on this phone, Set up" else null
+        settings.glassesAllowed = true
+        ScouterService.send(this, ScouterService.ACTION_TERMINAL)
+        show()
+    }
+
+    // Android asks which screen to share; the service gets the answer.
+    @Suppress("DEPRECATION")
+    private fun shareScreen() {
+        ready()?.let { note = it; return show() }
+        Settings(this).glassesAllowed = true
+        note = null
+        startActivityForResult(getSystemService(android.media.projection.MediaProjectionManager::class.java)
+            .createScreenCaptureIntent(), SCREEN_REQUEST)
+    }
+
+    private var note: String? = null // the last control's problem
 
     // R3: in Doze the network waits for maintenance windows unless the app is exempt (keyer's association
     // exempts it).
@@ -160,7 +212,11 @@ class MainActivity : Activity() {
             (if (!permitted || ScouterService.bluetoothOn(this)) "" else "Bluetooth is off: the app waits for it · ") +
             (if (exempt()) "" else "battery optimised: in Doze, keys wait for its windows · ") +
             "glasses ${Session.glasses} (L ${Session.left} R ${Session.right}" + (if (Session.shown) ", shown" else "") +
-            ") · mosh ${Session.mosh} · keyer ${Session.keyer}" + (companion?.let { " · companion: $it" } ?: "")
+            ") · " + (if (Session.screen != "off") "screen ${Session.screen} (${Session.screenFrames} frames) · " else "") +
+            "mosh ${Session.mosh} · keyer ${Session.keyer}" + (companion?.let { " · companion: $it" } ?: "") +
+            (if (Session.termux.isNotEmpty()) " · Termux ${Session.termux}" else "") +
+            (if (Settings(this).phone) " · started from the phone (Stop ends it)" else "") +
+            (note?.let { "\n$it" } ?: "")
         Native.snapshot()?.let { terminal.screen = TerminalView.parse(it) }
         title = terminal.screen?.title?.ifEmpty { null } ?: getString(R.string.app_name)
         val fingerprint = Session.unknownHost

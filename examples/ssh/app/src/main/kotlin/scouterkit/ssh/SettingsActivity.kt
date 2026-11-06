@@ -12,9 +12,10 @@ import android.widget.TextView
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.KeyPair
 
-// The app's only controls (the user's choice): the server and its key, mosh's ports, the glasses (pairing, the
-// alignment that sets the eyes' overlap and the terminal's size, the looking-up angle) and keyer. The fields
-// apply when the screen is left; the session follows by itself.
+// The app's settings: Termux on this phone as the server (one button), the server and its key, mosh's ports,
+// the glasses (pairing, the alignment that sets the eyes' overlap and the terminal's size, the looking-up
+// angle), the phone's screen on the glasses, and keyer. The fields apply when the screen is left; the session
+// follows by itself.
 class SettingsActivity : Activity() {
     private lateinit var settings: Settings
     private val fields = mutableListOf<Pair<EditText, (String) -> Unit>>()
@@ -35,14 +36,36 @@ class SettingsActivity : Activity() {
             setOnClickListener { action() }
         })
 
+        fun check(label: String, value: Boolean, set: (Boolean) -> Unit) = list.addView(android.widget.CheckBox(this).apply {
+            text = label
+            isChecked = value
+            setOnCheckedChangeListener { _, on -> set(on) }
+        })
+
         permissions = TextView(this)
         list.addView(permissions)
         button("Allow Bluetooth and notifications") { requestPermissions(ScouterService.PERMISSIONS.toTypedArray(), ASK) }
+
+        heading("Termux on this phone")
+        list.addView(TextView(this).apply {
+            text = "The server can be Termux on this phone: its sshd listens on 127.0.0.1:8022 only, and the app starts " +
+                "it before each session. Set up installs openssh and mosh in Termux (the first time, about a minute), " +
+                "lets this phone's key in and fills in the server below."
+        })
+        termuxState = TextView(this).apply { setPadding(0, 8, 0, 8) }
+        list.addView(termuxState)
+        button("Allow running commands in Termux") { requestPermissions(arrayOf(Termux.PERMISSION), ASK) }
+        button("Set up Termux for the glasses") { setUpTermux() }
+        button("Command: Claude (your tmux session \"claude\" in Ubuntu)") { commandField.setText(Termux.CLAUDE) }
+        button("Command: a plain Termux shell") { commandField.setText("") }
 
         heading("Server")
         val host = text("Host (an address, or the server's Tailscale IP)", settings.host) { settings.host = it.trim() }
         val port = number("Port", settings.port, 1..65535) { settings.port = it }
         val user = text("User", settings.user) { settings.user = it.trim() }
+        hostField = host
+        portField = port
+        userField = user
         keyState = TextView(this)
         list.addView(keyState)
         button("1. Create a key on this phone") {
@@ -82,7 +105,7 @@ class SettingsActivity : Activity() {
         list.addView(passphrase)
         button("Save pasted key") { save(pasted.text.toString().toByteArray()) }
         button("Forget the server's host key") { Vault(this).delete(Vault.HOST_KEY); showKey() }
-        text("Command (empty: login shell; tmux new -A -s main keeps the work across sessions)", settings.command) {
+        commandField = text("Command (empty: login shell; tmux new -A -s main keeps the work across sessions)", settings.command) {
             settings.command = it
         }
         text("mosh UDP ports, e.g. 60000:60009 (empty: mosh-server's default)", settings.moshPorts) {
@@ -93,7 +116,8 @@ class SettingsActivity : Activity() {
         glassesState = TextView(this)
         list.addView(glassesState)
         connect = android.widget.CheckBox(this).apply {
-            text = "Connect to the glasses while keyer is on (or, in keyboard mode, while the app is open)"
+            text = "Connect to the glasses while keyer is on, in keyboard mode while the app is open, or after " +
+                "\"Terminal on glasses\" / \"Phone screen on glasses\" until Stop"
             setOnCheckedChangeListener { _, on -> settings.glassesAllowed = on }
         }
         list.addView(connect)
@@ -131,6 +155,28 @@ class SettingsActivity : Activity() {
             setOnCheckedChangeListener { _, on -> settings.ignoreWorn = on }
         })
 
+        heading("Phone screen on the glasses")
+        check("A full-width band of the screen (bigger text) instead of the whole screen", settings.screenBand) { settings.screenBand = it }
+        number("The band's place: 0 top … 100 bottom", settings.screenBandPos, 0..100) { settings.screenBandPos = it }
+        check("Light backgrounds dark (black is see-through on the glasses)", settings.screenInvert) { settings.screenInvert = it }
+        check("Black and white (sharper, lighter on the link) instead of 16 greys", settings.screenLevels == 2) {
+            settings.screenLevels = if (it) 2 else 16
+        }
+        number("Frames a second at most", settings.screenFps, 1..15) { settings.screenFps = it }
+
+        heading("Started from the phone")
+        check("Show the terminal whatever the head's angle (else only when looking up)", settings.phoneForce) {
+            settings.phoneForce = it
+        }
+        button("Let it run in the background (battery: unrestricted)") {
+            @android.annotation.SuppressLint("BatteryLife")
+            val ask = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                android.net.Uri.parse("package:$packageName"))
+            runCatching { startActivity(ask) }.onFailure {
+                startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            }
+        }
+
         heading("Keyboard")
         list.addView(android.widget.CheckBox(this).apply {
             text = "Use a keyboard paired with this phone instead of keyer: the terminal runs while this app is " +
@@ -150,6 +196,8 @@ class SettingsActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        Session.listeners += termuxListener
+        showTermux()
         showPermissions()
         if (!asked && ScouterService.missing(this).isNotEmpty()) {
             asked = true
@@ -161,8 +209,53 @@ class SettingsActivity : Activity() {
     }
 
     override fun onPause() {
+        Session.listeners -= termuxListener
         for ((edit, set) in fields) set(edit.text.toString())
         super.onPause()
+    }
+
+    private val termuxListener: () -> Unit = { showTermux() }
+
+    private fun showTermux() {
+        termuxState.text = when {
+            !Termux.installed(this) -> "Termux is not installed"
+            !Termux.permitted(this) -> "Needed: \"Run commands in Termux\" (the button below). If Android no longer asks: " +
+                "Android's Settings, Apps, SSH Scouter, Permissions, Additional permissions."
+            Session.termux.isNotEmpty() -> "Termux: ${Session.termux}"
+            settings.termux -> "Termux: set up (the server below is 127.0.0.1:8022)"
+            else -> "Termux: not set up yet"
+        }
+    }
+
+    // Termux as the server: this phone's key (made now if there is none; an imported key is used as it is),
+    // the server's fields, then Termux's setup (TermuxResult reports).
+    private fun setUpTermux() {
+        Termux.problem(this)?.let {
+            termuxState.text = it
+            if (Termux.installed(this) && !Termux.permitted(this)) requestPermissions(arrayOf(Termux.PERMISSION), ASK)
+            return
+        }
+        termuxState.text = "setting up Termux…"
+        Thread {
+            val vault = Vault(this)
+            val line = runCatching { vault.text(Vault.SSH_PUBLIC) ?: Bootstrap.publicKey(vault) ?: Bootstrap.newKey(vault) }
+            runOnUiThread {
+                val key = line.getOrElse {
+                    termuxState.text = "no key: ${it.message}"
+                    return@runOnUiThread
+                }
+                hostField.setText(Termux.HOST)
+                portField.setText(Termux.PORT.toString())
+                userField.setText(Termux.USER)
+                if (commandField.text.isBlank()) commandField.setText(Termux.CLAUDE)
+                settings.host = Termux.HOST
+                settings.port = Termux.PORT
+                settings.user = Termux.USER
+                settings.command = commandField.text.toString()
+                showKey()
+                runCatching { Termux.setUp(this, key) }.getOrElse { it.message }?.let { termuxState.text = "not set up: $it" }
+            }
+        }.start()
     }
 
     // Without Bluetooth the app neither links nor runs its service (Android 14+ requires it for a connectedDevice
@@ -176,10 +269,18 @@ class SettingsActivity : Activity() {
 
     override fun onRequestPermissionsResult(request: Int, permissions: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(request, permissions, results)
-        if (request == ASK) showPermissions()
+        if (request == ASK) {
+            showPermissions()
+            showTermux()
+        }
     }
 
     private var asked = false
+    private lateinit var termuxState: TextView
+    private lateinit var hostField: EditText
+    private lateinit var portField: EditText
+    private lateinit var userField: EditText
+    private lateinit var commandField: EditText
     private lateinit var permissions: TextView
     private lateinit var glassesState: TextView
     private lateinit var connect: android.widget.CheckBox

@@ -162,6 +162,21 @@ class Bootstrap(private val vault: Vault) {
             return line
         }
 
+        // The public key line of the key in the vault (an imported one too), or null without a key.
+        fun publicKey(vault: Vault): String? {
+            val private = vault.get(Vault.SSH_KEY) ?: return null
+            val pair = com.jcraft.jsch.KeyPair.load(JSch(), private, null)
+            try {
+                if (pair.isEncrypted && !pair.decrypt(vault.get(Vault.SSH_PASSPHRASE)))
+                    throw IllegalStateException("the key's passphrase does not open it")
+                val out = java.io.ByteArrayOutputStream()
+                pair.writePublicKey(out, "scouter-ssh")
+                return out.toString(Charsets.UTF_8.name()).trim()
+            } finally {
+                pair.dispose()
+            }
+        }
+
         // SHA256:... of a public key line, as ssh-keygen -l shows it.
         fun keyFingerprint(line: String): String? = line.split(" ").getOrNull(1)
             ?.let { runCatching { fingerprint(Base64.getDecoder().decode(it)) }.getOrNull() }

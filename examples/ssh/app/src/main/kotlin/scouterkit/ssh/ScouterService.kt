@@ -15,6 +15,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -35,6 +36,9 @@ object Session {
     @Volatile var foreground = false // MainActivity is in front: it gets a paired keyboard's keys (Keyboard)
     @Volatile var title = ""
     @Volatile var unknownHost: String? = null // a fingerprint waiting for the user's confirmation
+    @Volatile var termux = "" // Termux's setup, as its last run reported it
+    @Volatile var screen = "off" // the phone's screen on the glasses: off, starting, on, hidden, or why it stopped
+    @Volatile var screenFrames = 0
     // The devices Android reports near (ScouterCompanionService: keyer); null: unknown (none reported since the
     // process started, Bluetooth was off since, or keyer's link did not come after the last report).
     @Volatile var near: Set<String>? = null
@@ -66,6 +70,19 @@ class ScouterService : Service() {
     // keyer's link is tried until then: after Android reported keyer near, or the app opened before any report.
     private var probeUntil = 0L
     @Volatile private var ended = false
+    // The phone's screen on the glasses (Settings.show SCREEN), while Android's screen sharing runs.
+    @Volatile private var screen: PhoneScreen? = null
+    private var forced = false // the terminal forced on for a session started from the phone (phoneForce)
+    private val main = Handler(Looper.getMainLooper())
+    private val screenTicker = object : Runnable {
+        override fun run() {
+            val s = screen ?: return
+            val state = if (s.state == Native.SCREEN_HIDDEN) "hidden (in the case or folded)" else "on"
+            Session.screenFrames = Native.status().getOrElse(7) { 0 }
+            if (state != Session.screen) update(screen = state) else Session.changed()
+            work.postDelayed(this, 2000)
+        }
+    }
     private val retryGlasses = Runnable { refresh() }
     private val letGo = Runnable {
         if (active() || SystemClock.elapsedRealtime() < probeUntil) return@Runnable refresh()
@@ -131,7 +148,7 @@ class ScouterService : Service() {
         // Android 14+ refuses a connectedDevice service without its runtime prerequisite (Bluetooth), and 12+ one
         // started from the background without an exemption (keyer's association): then no service.
         try {
-            startForeground(NOTIFICATION, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            startForeground(NOTIFICATION, notification(), types()) // keeps mediaProjection while the screen is shared
         } catch (e: SecurityException) {
             return refused(e)
         } catch (e: IllegalStateException) {
@@ -142,7 +159,20 @@ class ScouterService : Service() {
             return START_NOT_STICKY
         }
         when (intent?.action) {
-            ACTION_STOP -> work.post { end() }
+            ACTION_STOP -> work.post {
+                settings.phone = false
+                end()
+            }
+            // From the phone: the glasses show this phone's screen (Android's consent in the intent)...
+            ACTION_SCREEN -> startScreen(intent)
+            // ... or the terminal.
+            ACTION_TERMINAL -> work.post {
+                settings.phone = true
+                if (screen != null) screenEnded("off") else {
+                    settings.show = Settings.TERMINAL
+                    refresh()
+                }
+            }
             ACTION_TRUST -> work.post { trust(intent.getStringExtra("fingerprint")) }
             // Android reported keyer near (or gone): a report of near gets keyer's link 30 s to come.
             ACTION_NEAR -> work.post {
@@ -173,6 +203,8 @@ class ScouterService : Service() {
     override fun onDestroy() {
         running = false
         ended = true
+        screen?.release()
+        screen = null
         runCatching { unregisterReceiver(bonds) }
         runCatching { unregisterReceiver(adapterState) }
         work.removeCallbacks(watchdog)
@@ -196,6 +228,7 @@ class ScouterService : Service() {
     // The emulated flavour has no keyer.
     private fun active(): Boolean {
         if (BuildConfig.FLAVOR == "emulated") return true
+        if (settings.phone) return true // started from the phone: until Stop
         if (settings.keyboard) return Session.foreground
         if (settings.keyer.isEmpty()) return false
         return keyer?.up == true
@@ -223,15 +256,28 @@ class ScouterService : Service() {
             return
         }
         work.removeCallbacks(letGo)
+        // The screen needs Android's screen sharing, which ends with the process: then the terminal.
+        if (settings.show == Settings.SCREEN && screen == null) settings.show = Settings.TERMINAL
         // Keyboard mode: the terminal shows on the glasses whatever the head's angle, as while keyer's keys come.
         if (settings.keyboard && Session.keyer != KEYBOARD) {
             Native.force(true)
             update(keyer = KEYBOARD)
         }
+        // Started from the phone: the same, unless the user wants the looking-up rule.
+        val force = settings.phone && settings.phoneForce
+        if (force != forced) {
+            forced = force
+            Native.force(force || Session.keyer == "keys" || Session.keyer == KEYBOARD)
+        }
         if (glassesWith != null && glassesWith != glassesSettings()) stopGlasses(false)
         if (stopped != null && stoppedWith != glassesSettings()) stopped = null
         if (!work.hasCallbacks(retryGlasses)) startGlasses()
         if (moshWith != null && moshWith != moshSettings()) stopMosh()
+        // The phone's screen on the glasses: mosh waits (paused, the session kept) until the terminal is back.
+        if (settings.show == Settings.SCREEN) {
+            if (moshWith != null && Session.mosh != "paused") pauseMosh()
+            return
+        }
         startMosh()
         if (moshWith != null && moshSize != (settings.cols to settings.rows)) {
             moshSize = settings.cols to settings.rows
@@ -251,6 +297,15 @@ class ScouterService : Service() {
         if (Session.keyer == KEYBOARD) {
             Native.force(false)
             update(keyer = "off")
+        }
+        if (forced) Native.force(false)
+        forced = false
+        work.removeCallbacks(screenTicker)
+        screen?.let {
+            screen = null
+            it.release()
+            Native.screenStop()
+            Session.screen = "off"
         }
         pauseMosh()
         stopGlasses(true, stopped?.let { "stopped: $it (pair again in the case)" } ?: "off")
@@ -337,6 +392,8 @@ class ScouterService : Service() {
         }
         if (Session.mosh != "off" && !Session.mosh.startsWith("error")) return
         if (settings.host.isEmpty() || settings.user.isEmpty()) return update(mosh = "error: no server in Settings")
+        // Termux on this phone: its sshd started first (it does not run by itself).
+        if (settings.termux) Termux.ensureSshd(this)?.let { return update(mosh = "error: $it") }
         update(mosh = "starting")
         val previous = vault.text(Vault.MOSH)?.split(" ")?.getOrNull(3)?.toIntOrNull() ?: 0
         try {
@@ -349,6 +406,12 @@ class ScouterService : Service() {
             }
             update(mosh = if (error == null) "connecting" else "error: $error")
         } catch (e: Bootstrap.UnknownHost) {
+            // Termux's own host key, as Termux reported it at setup: trusted without asking.
+            if (settings.termux && e.fingerprint in settings.termuxKeys.split(" ")) {
+                vault.putText(Vault.HOST_KEY, "${settings.host}:${settings.port} ${e.fingerprint}")
+                update(mosh = "off")
+                return startMosh()
+            }
             Session.unknownHost = e.fingerprint
             update(mosh = "error: confirm the host key")
         } catch (e: Exception) {
@@ -394,14 +457,14 @@ class ScouterService : Service() {
         val k = keyer ?: return
         k.quit()
         keyer = null
-        Native.force(false)
+        Native.force(forced)
         update(keyer = "off")
     }
 
     // While the app holds keyer's keys the glasses show the terminal whatever the head's angle (R25, the
     // user's rule); otherwise the arms' looking-up rule decides. keyer coming or going decides what runs.
     private fun keyerState(state: String) {
-        Native.force(state == "keys")
+        Native.force(state == "keys" || forced)
         update(keyer = state)
         refresh()
     }
@@ -437,13 +500,16 @@ class ScouterService : Service() {
         return caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }
 
-    private fun update(glasses: String? = null, mosh: String? = null, keyer: String? = null) {
+    private fun update(glasses: String? = null, mosh: String? = null, keyer: String? = null, screen: String? = null) {
         glasses?.let { Session.glasses = it }
         mosh?.let { Session.mosh = it }
         keyer?.let { Session.keyer = it }
-        // R4: awake only while the terminal is live, shown on an eye or typed into with keyer.
+        screen?.let { Session.screen = it }
+        // R4: awake only while the terminal is live, shown on an eye or typed into with keyer, or started from
+        // the phone (Claude's output reaches the glasses with the phone's screen off).
         val live = Session.mosh == "connected" && Session.glasses == "ready" &&
-            (Session.shown || Session.keyer == "keys" || Session.keyer == KEYBOARD)
+            (Session.shown || Session.keyer == "keys" || Session.keyer == KEYBOARD ||
+                (settings.phone && settings.show == Settings.TERMINAL))
         if (live && wake == null) wake = getSystemService(PowerManager::class.java)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "scouter:terminal").apply { acquire() }
         if (!live) wake?.release().also { wake = null }
@@ -454,7 +520,75 @@ class ScouterService : Service() {
     private fun stateLine(): String {
         fun arm(up: Boolean) = if (up) "up" else "down"
         val glasses = if (Session.glasses == "ready") "L ${arm(Session.left)} R ${arm(Session.right)}" else "glasses ${Session.glasses}"
-        return "$glasses · mosh ${Session.mosh} · keyer ${Session.keyer}"
+        val what = if (screen != null) "phone screen ${Session.screen}" else "mosh ${Session.mosh}"
+        return "$glasses · $what · keyer ${Session.keyer}"
+    }
+
+    // The foreground service's types: the glasses link, and screen sharing while it runs (Android 14+ checks).
+    private fun types() = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+        (if (screen != null) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION else 0)
+
+    private fun foreground() = main.post {
+        if (!ended) runCatching { startForeground(NOTIFICATION, notification(), types()) }
+            .onFailure { Log.w(TAG, "foreground: ${it.message}") }
+    }
+
+    // Android's consent came (MainActivity): in the foreground as mediaProjection first (Android 14+ requires it
+    // before the projection), then the capture, then the glasses switch from the terminal to it. Main thread.
+    private fun startScreen(intent: Intent) {
+        @Suppress("DEPRECATION")
+        val data = intent.getParcelableExtra<Intent>(EXTRA_DATA) ?: return
+        val code = intent.getIntExtra(EXTRA_CODE, 0)
+        try {
+            startForeground(NOTIFICATION, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        } catch (e: Exception) {
+            work.post { update(screen = "Android refused screen sharing: ${e.message}") }
+            return
+        }
+        val projection = runCatching { getSystemService(MediaProjectionManager::class.java).getMediaProjection(code, data) }
+            .getOrNull()
+        if (projection == null) {
+            foreground()
+            work.post { update(screen = "screen sharing was not allowed") }
+            return
+        }
+        screen?.release()
+        val capture = PhoneScreen(this, projection) { work.post { screenEnded("stopped (screen sharing ended)") } }
+        try {
+            capture.start()
+        } catch (e: Exception) {
+            capture.release()
+            screen = null
+            foreground()
+            work.post { update(screen = "error: ${e.message}") }
+            return
+        }
+        screen = capture
+        work.post {
+            if (screen !== capture) return@post
+            settings.phone = true
+            settings.show = Settings.SCREEN
+            val error = Native.screenStart()
+            if (error != null) return@post screenEnded("error: $error")
+            update(screen = "starting")
+            work.removeCallbacks(screenTicker)
+            work.postDelayed(screenTicker, 2000)
+            refresh()
+        }
+    }
+
+    // Screen sharing over (Stop, the user in Android's status bar, or an error): back to the terminal.
+    private fun screenEnded(why: String) {
+        val capture = screen ?: return
+        screen = null
+        capture.release()
+        work.removeCallbacks(screenTicker)
+        Native.screenStop()
+        settings.show = Settings.TERMINAL
+        foreground()
+        update(screen = why)
+        refresh()
     }
 
     // GlassesLink: an arm's link went up or down.
@@ -473,6 +607,10 @@ class ScouterService : Service() {
             .setStyle(Notification.BigTextStyle().bigText(line))
             .setContentIntent(open)
             .setOngoing(ongoing)
+            .apply {
+                if (ongoing) addAction(Notification.Action.Builder(null, "Stop", PendingIntent.getForegroundService(this@ScouterService,
+                    1, Intent(this@ScouterService, ScouterService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE)).build())
+            }
             .build()
     }
 
@@ -483,6 +621,10 @@ class ScouterService : Service() {
         const val ACTION_STOP = "scouterkit.ssh.STOP"
         const val ACTION_TRUST = "scouterkit.ssh.TRUST"
         const val ACTION_NEAR = "scouterkit.ssh.NEAR" // keyer came or went (Session.near)
+        const val ACTION_SCREEN = "scouterkit.ssh.SCREEN" // the phone's screen on the glasses (EXTRA_CODE, EXTRA_DATA)
+        const val ACTION_TERMINAL = "scouterkit.ssh.TERMINAL" // the terminal on the glasses, started from the phone
+        const val EXTRA_CODE = "code"
+        const val EXTRA_DATA = "data"
         const val PROBE_MS = 30000L // how long keyer's link is tried without it coming up
         const val KEYBOARD = "phone keyboard" // Session.keyer in keyboard mode, while the app is in front
         const val KEYBOARD_GRACE_MS = 60000L // keyboard mode: the session lets go this long after the app left the front
@@ -520,6 +662,13 @@ class ScouterService : Service() {
             val intent = Intent(context, ScouterService::class.java).setAction(action)
             extra?.let { intent.putExtra(it.first, it.second) }
             context.startForegroundService(intent)
+        }
+
+        // Android's screen-sharing consent (MainActivity) to the service.
+        fun sendScreen(context: Context, code: Int, data: Intent) {
+            if (!bluetoothOn(context)) return
+            context.startForegroundService(Intent(context, ScouterService::class.java).setAction(ACTION_SCREEN)
+                .putExtra(EXTRA_CODE, code).putExtra(EXTRA_DATA, data))
         }
     }
 }
