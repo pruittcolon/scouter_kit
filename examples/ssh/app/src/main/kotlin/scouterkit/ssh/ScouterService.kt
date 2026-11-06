@@ -844,7 +844,8 @@ class ScouterService : Service() {
         val session = Tabs.session(s)
         if (session == null) {
             Session.tabs = "tabs need tmux on ${s.name}: its command like tmux new -A -s main"
-            return Session.changed()
+            Session.changed()
+            return
         }
         val cmd = Tabs.command(action, session) ?: return
         Thread {
