@@ -107,7 +107,11 @@ int main() {
   CHECK(tw == 2 && th == 3 && turned == std::vector<uint8_t>({3, 6, 2, 5, 1, 4}));
 
   // Zoom: the middle half; Stretch: a dull 100 ... 199 ramp spans nearly all levels; Sharpen: an edge grows.
-  r = ssh::Zoom({0, 0, 100, 50}, 200);
+  ssh::ScreenOptions zoomed;
+  zoomed.zoom = 200;
+  zoomed.pan_x = 50;
+  zoomed.pan_y = 50;
+  r = ssh::Source(100, 50, 100, 50, zoomed);
   CHECK(r.x == 25 && r.y == 12 && r.w == 50 && r.h == 25);
   std::vector<uint8_t> ramp(100);
   for (int i = 0; i < 100; i++) ramp[i] = uint8_t(100 + i);
