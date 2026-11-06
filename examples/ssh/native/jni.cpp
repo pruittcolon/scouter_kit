@@ -371,7 +371,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *) {
 }
 
 JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_version(JNIEnv *env, jclass) {
-  return env->NewStringUTF("scouter_ssh 0.12, mosh 1.4.0");
+  return env->NewStringUTF("scouter_ssh 0.13, mosh 1.4.0");
 }
 
 // ------------------------------------------------ glasses

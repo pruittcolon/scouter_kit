@@ -779,7 +779,9 @@ class MainActivity : Activity() {
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // Settings may have changed; and while Android has not said whether keyer is near (the app new or
         // restarted), the service tries keyer's link. In keyboard mode this screen in front starts the session.
-        if (keyboard || ScouterService.running || Session.near == null || BuildConfig.FLAVOR == "emulated") ScouterService.send(this)
+        // Start by itself: the app open is enough.
+        val auto = Settings(this).startsByItself()
+        if (auto || keyboard || ScouterService.running || Session.near == null || BuildConfig.FLAVOR == "emulated") ScouterService.send(this)
         associate()
         show()
     }

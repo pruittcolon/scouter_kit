@@ -33,7 +33,7 @@ enum {
 constexpr int kRecordBytes = 512; // u8 runs; each u8 x, u8 cells, u8 bg<<4|fg, u8 1: underline, u8 n, n varint bytes
 constexpr int kMaxRuns = 32;
 constexpr int kRowsPerTask = 6; // rows rendered per activation, within the jump budget
-constexpr int kCodeBytes = 2048;
+constexpr int kCodeBytes = 4096; // the program, with the fade and the dashboard
 constexpr int kPoolWords = 96;
 constexpr uint32_t kNoCursor = 0xFFFFFFFF;
 constexpr int kHysteresis = 5;      // degrees below the angle at which the terminal hides again
@@ -793,7 +793,7 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
                                 std::clamp(config.fade_ms, 0, 1000) * 1000, dash_h_);
     if (!p.Valid(error)) return false;
     if (p.Here() > l_.state) {
-      *error = "the terminal program overlaps its state";
+      *error = "the terminal program overlaps its state (" + std::to_string(p.Here() - l_.base) + " bytes)";
       return false;
     }
     arms_[i]->WriteArena(l_.state, std::vector<uint8_t>(4 * kStateWords + geo_.rows, 0));

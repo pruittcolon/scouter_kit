@@ -309,6 +309,21 @@ class Settings(context: Context) {
     // The laptop's (or another server's) screen: its width asked for, in pixels (the height follows its shape).
     var remoteWidth: Int by Number("remote_width", 960)
 
+    // Start by itself: with the glasses paired, the session starts when the app opens, after the phone starts,
+    // after an update and when Bluetooth comes on, and runs until Stop (the glasses connect again by themselves
+    // as they come out of the case).
+    var autoStart: Boolean
+        get() = prefs.getBoolean("auto_start", true)
+        set(v) = prefs.edit().putBoolean("auto_start", v).apply()
+
+    // The session starts by itself now (autoStart, the glasses paired): it is marked as started from the phone.
+    fun startsByItself(): Boolean {
+        if (!autoStart || left.isEmpty() || right.isEmpty()) return false
+        glassesAllowed = true
+        phone = true
+        return true
+    }
+
     // The app connects to G1 arms only when this is on and both addresses are set (off by default).
     var glassesAllowed: Boolean
         get() = prefs.getBoolean("glasses_allowed", false)

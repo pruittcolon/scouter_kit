@@ -37,6 +37,12 @@ class SettingsActivity : Activity() {
         glasses.addView(button("Use the glasses Android already paired") { useBonded() })
         connect = toggle("Connect to the glasses", "Off: the app leaves the arms alone", settings.glassesAllowed) { settings.glassesAllowed = it }
         glasses.addToggle(connect)
+        glasses.addToggle(toggle("Start by itself", "No tap needed: the glasses connect and show the terminal when the app " +
+            "opens, after the phone starts, after updates and when Bluetooth comes on; in and out of the case they " +
+            "connect again by themselves. Stop everything ends it until the next start.", settings.autoStart) {
+            settings.autoStart = it
+            if (it && settings.startsByItself()) ScouterService.send(this)
+        })
         glasses.rule()
         glasses.addView(slider("Brightness", 0, 42, settings.brightness, { "${it * 100 / 42}%" }) { v ->
             settings.brightness = v

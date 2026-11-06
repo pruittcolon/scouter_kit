@@ -265,8 +265,7 @@ int main(int argc, char **argv) {
   // The dashboard: 80 px above the terminal (fewer rows), its picture drawn there on both eyes when the
   // terminal shows, and again when it changes.
   ssh::GlassesTerminal::Config dc{100, 9, 20, true};
-  dc.dash_h = 80;
-  dc.fade_ms = 0;
+  dc.dash_h = 80; // with the fade (400 ms by default): the program as the app runs it
   ssh::GlassesTerminal dashed;
   CHECK(dashed.Start(dc, font, [] {}, &error));
   int drows = (471 - 80) / 14;
