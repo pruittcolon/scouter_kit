@@ -82,12 +82,15 @@ class ScouterService : Service() {
     private val screenTicker = object : Runnable {
         override fun run() {
             val s = screen ?: return
+            val status = Native.status()
             val state = when {
                 settings.show != Settings.SCREEN -> "shared (the glasses show the terminal)"
+                Session.blank -> "shared (display off)"
+                status.getOrElse(6) { 0 } != 1 -> if (Session.glasses == "ready") "not on the glasses yet" else "waiting for the glasses"
                 s.state == Native.SCREEN_HIDDEN -> "off: ${Native.screenWhy().ifEmpty { "hidden" }}"
                 else -> "on"
             }
-            Session.screenFrames = Native.status().getOrElse(7) { 0 }
+            Session.screenFrames = status.getOrElse(7) { 0 }
             if (state != Session.screen) update(screen = state) else Session.changed()
             work.postDelayed(this, 2000)
         }
@@ -634,7 +637,10 @@ class ScouterService : Service() {
             settings.phone = true
             settings.show = Settings.SCREEN
             val error = Native.screenStart()
-            if (error != null) return@post screenEnded("error: $error")
+            if (error != null) {
+                Log.w(TAG, "phone screen: $error")
+                return@post screenEnded("error: $error")
+            }
             update(screen = "starting")
             work.removeCallbacks(screenTicker)
             work.postDelayed(screenTicker, 2000)
@@ -646,7 +652,16 @@ class ScouterService : Service() {
     private fun view(show: String) {
         if (show == Settings.SCREEN && screen == null) return update(screen = "not shared: tap Phone screen in the app")
         settings.show = show
-        if (show == Settings.SCREEN) Native.screenStart()?.let { update(screen = "error: $it") } else Native.screenStop()
+        if (show == Settings.SCREEN) {
+            val error = Native.screenStart()
+            if (error != null) {
+                // The glasses keep the terminal: say so, and keep the sharing for another try.
+                Log.w(TAG, "phone screen: $error")
+                settings.show = Settings.TERMINAL
+                update(screen = "error: $error")
+                return refresh()
+            }
+        } else Native.screenStop()
         if (blankByLock) blankByLock = false
         update()
         refresh()

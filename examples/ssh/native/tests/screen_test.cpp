@@ -61,11 +61,11 @@ int main() {
   ssh::ScreenOptions o;
   ssh::Rect r = ssh::Source(1080, 2340, 540, 471, o);
   CHECK(r.x == 0 && r.y == 0 && r.w == 1080 && r.h == 2340);
-  o.band = true;
-  o.band_pos = 0;
+  o.fit = ssh::ScreenOptions::kFill;
+  o.pan_y = 0;
   r = ssh::Source(1080, 2340, 540, 471, o);
   CHECK(r.x == 0 && r.y == 0 && r.w == 1080 && r.h == 942);
-  o.band_pos = 100;
+  o.pan_y = 100;
   r = ssh::Source(1080, 2340, 540, 471, o);
   CHECK(r.y == 2340 - 942 && r.y + r.h == 2340);
   r = ssh::Source(2340, 1080, 540, 471, o); // landscape: all rows, the middle columns
@@ -74,10 +74,41 @@ int main() {
   // Fit: averages, keeps the shape centred with the background around it.
   std::vector<uint8_t> src = {0, 255, 0, 255, 0, 255, 0, 255};
   std::vector<uint8_t> dst;
-  ssh::Fit(&dst, 2, 1, src, 4, {0, 0, 4, 2}, false, 0);
+  ssh::Fit(&dst, 2, 1, src, 4, {0, 0, 4, 2}, {0, 0, 2, 1}, false, 0);
   CHECK(dst.size() == 2 && dst[0] == 127 && dst[1] == 127);
-  ssh::Fit(&dst, 4, 1, src, 4, {0, 0, 4, 2}, true, 9); // 2:1 into 4:1: 2 x 1 in the middle
+  ssh::Fit(&dst, 4, 1, src, 4, {0, 0, 4, 2}, {0, 0, 4, 1}, true, 9); // 2:1 into 4:1: 2 x 1 in the middle
   CHECK(dst[0] == 9 && dst[3] == 9 && dst[1] == 127);
+  // Place: the picture's place in percent of the area; Stretch mode fills it (distorted).
+  ssh::ScreenOptions placed;
+  placed.out_x = 50;
+  placed.out_y = 0;
+  placed.out_w = 50;
+  placed.out_h = 100;
+  ssh::Rect pl = ssh::Place(540, 471, placed);
+  CHECK(pl.x == 270 && pl.y == 0 && pl.w == 270 && pl.h == 471);
+  ssh::Fit(&dst, 4, 1, src, 4, {0, 0, 4, 2}, {2, 0, 2, 1}, false, 9);
+  CHECK(dst[0] == 9 && dst[1] == 9 && dst[2] == 127 && dst[3] == 127);
+
+  // Rotate: a 3 x 2 image turned clockwise, upside down and counter-clockwise.
+  std::vector<uint8_t> six = {1, 2, 3, 4, 5, 6}, turned;
+  int tw = 0, th = 0;
+  ssh::Rotate(six, 3, 2, 90, &turned, &tw, &th);
+  CHECK(tw == 2 && th == 3 && turned == std::vector<uint8_t>({4, 1, 5, 2, 6, 3}));
+  ssh::Rotate(six, 3, 2, 180, &turned, &tw, &th);
+  CHECK(tw == 3 && th == 2 && turned == std::vector<uint8_t>({6, 5, 4, 3, 2, 1}));
+  ssh::Rotate(six, 3, 2, 270, &turned, &tw, &th);
+  CHECK(tw == 2 && th == 3 && turned == std::vector<uint8_t>({3, 6, 2, 5, 1, 4}));
+
+  // Zoom: the middle half; Stretch: a dull 100 ... 199 ramp spans nearly all levels; Sharpen: an edge grows.
+  r = ssh::Zoom({0, 0, 100, 50}, 200);
+  CHECK(r.x == 25 && r.y == 12 && r.w == 50 && r.h == 25);
+  std::vector<uint8_t> ramp(100);
+  for (int i = 0; i < 100; i++) ramp[i] = uint8_t(100 + i);
+  ssh::Stretch(&ramp, 100);
+  CHECK(ramp[0] < 10 && ramp[99] > 245);
+  std::vector<uint8_t> edge = {100, 100, 200, 200, 100, 100, 200, 200, 100, 100, 200, 200};
+  ssh::Sharpen(&edge, 4, 3);
+  CHECK(edge[5] < 100 && edge[6] > 200);
 
   // The emulated arms, worn, head level.
   g1::GrayConfig gray{100, 9};
@@ -88,7 +119,7 @@ int main() {
     g1::emulator::SetProperty(arm, g1::PROP_IN_CASE, 0);
   }
   ssh::ScreenMirror m;
-  CHECK(m.Start(100, &error));
+  CHECK(m.Start(100, 9, &error));
   if (!error.empty()) std::printf("start: %s\n", error.c_str());
   CHECK(WaitFor([] { return Lit(0) == 0 && Lit(1) == 0; }));
 
@@ -97,7 +128,7 @@ int main() {
   // left and 9 lower.
   int stride = 540 * 4 + 64;
   ssh::ScreenOptions opt;
-  opt.band = true;
+  opt.fit = ssh::ScreenOptions::kFill;
   auto phone = Phone(540, 471, 200, 100, 80, 80, stride);
   CHECK(m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown);
   CHECK(WaitFor([] { return Lit(0) > 5000 && Lit(1) > 5000; }));
@@ -112,6 +143,16 @@ int main() {
   CHECK(m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown);
   CHECK(WaitFor([] { return Lit(1, 200, 109, 280, 189) == 0 && Lit(1, 0, 9, 80, 89) > 5500; }));
 
+  // Black and white: the VIDEO path (records into each arm's 1-bpp bitmap) draws the square on both eyes.
+  opt.levels = 2;
+  phone = Phone(540, 471, 300, 200, 80, 80, stride);
+  CHECK(WaitFor([&] { return m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown; }, 10000));
+  CHECK(WaitFor([] { return Lit(0, 400, 200, 480, 280) > 5500 && Lit(1, 300, 209, 380, 289) > 5500; }));
+  CHECK(Lit(1, 0, 9, 80, 89) == 0); // the gray picture is gone
+  phone = Phone(540, 471, 0, 0, 80, 80, stride);
+  CHECK(WaitFor([&] { return m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown; }, 10000));
+  CHECK(WaitFor([] { return Lit(1, 300, 209, 380, 289) == 0 && Lit(1, 0, 9, 80, 89) > 5500; }));
+
   // In the case: hidden, the panels off; out again: shown.
   g1::emulator::SetProperty(0, g1::PROP_IN_CASE, 1);
   std::this_thread::sleep_for(std::chrono::milliseconds(1100));
@@ -120,7 +161,7 @@ int main() {
   CHECK(WaitFor([&] { return g1::left.Prop(g1::PROP_PANEL, &panel) && panel == 0; }));
   g1::emulator::SetProperty(0, g1::PROP_IN_CASE, 0);
   std::this_thread::sleep_for(std::chrono::milliseconds(1100));
-  CHECK(m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown);
+  CHECK(WaitFor([&] { return m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown; }, 10000));
   CHECK(WaitFor([] { return Lit(1, 0, 9, 80, 89) > 5500; }));
 
   m.Stop();

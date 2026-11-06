@@ -86,6 +86,12 @@ with the app in the back.
 - **"Terminal on glasses"**: the mosh session on the glasses; by default it shows whatever the head's angle
   ("Started from the phone" in Settings switches back to the looking-up rule), and the phone stays awake while
   it is live.
+- **The phone's screen, the look and the place** (home screen, "Phone screen"): *Fast · black & white* sends each
+  frame as a VIDEO record (VM.md §3.7: only the changed rows, decoded on the arms, both eyes at one due time; frames
+  wait while the link is busy) and is much smoother than *Detailed · 16 greys* (the gray display's uploads). *Fit*
+  keeps the shape, *Fill* crops to fill, *Stretch* distorts to fill; the layout editor places the picture anywhere
+  on the glasses (drag, corner to resize, double-tap to fill); zoom, pan, rotation (90° steps), contrast boost,
+  sharpen and invert apply at once. *Depth* (the eyes' offset, dx) moves the picture nearer or farther.
 - **"Phone screen on glasses"**: Android's screen sharing (it asks every time); the screen goes on both eyes in
   the columns both eyes see, as 16 greys (or black and white), inverted by default since black is see-through.
   The whole screen with its shape kept, or a full-width band (Settings, "Phone screen on the glasses"). Turning

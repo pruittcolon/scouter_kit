@@ -12,12 +12,16 @@
 #include <mutex>
 #include <string>
 
+#include <android/log.h>
+
 #include "android_transport.hpp"
 #include "glasses.hpp"
 #include "keys.hpp"
 #include "mosh_client.hpp"
 #include "screen.hpp"
 #include "terminal.hpp"
+
+#define LOG(...) __android_log_print(ANDROID_LOG_INFO, "scouter", __VA_ARGS__)
 
 namespace {
 
@@ -173,7 +177,11 @@ void Panels(bool on) {
 std::string StartScreen() {
   auto screen = std::make_shared<ssh::ScreenMirror>();
   std::string error;
-  if (!screen->Start(g_config.dx, &error)) return error;
+  if (!screen->Start(g_config.dx, g_config.dy, &error)) {
+    LOG("screen: %s", error.c_str());
+    return error;
+  }
+  LOG("screen: on the glasses");
   std::lock_guard<std::mutex> lock(g_screen_mutex);
   g_screen = screen;
   return {};
@@ -260,7 +268,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *) {
 }
 
 JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_version(JNIEnv *env, jclass) {
-  return env->NewStringUTF("scouter_ssh 0.3, mosh 1.4.0");
+  return env->NewStringUTF("scouter_ssh 0.4, mosh 1.4.0");
 }
 
 // ------------------------------------------------ glasses
@@ -507,9 +515,7 @@ JNIEXPORT jintArray JNICALL Java_scouterkit_ssh_Native_battery(JNIEnv *env, jcla
 // One captured frame: a direct buffer of RGBA_8888 rows `stride` bytes apart (an ImageReader plane). Blocks
 // while the previous frame is not on the display yet. ScreenMirror's kShown, kSame, kHidden or kStopped.
 JNIEXPORT jint JNICALL Java_scouterkit_ssh_Native_screenFrame(JNIEnv *env, jclass, jobject buffer, jint w, jint h,
-                                                               jint stride, jboolean band, jint band_pos,
-                                                               jboolean invert, jint levels, jboolean hide_case,
-                                                               jboolean hide_folded) {
+                                                               jint stride, jintArray options) {
   std::shared_ptr<ssh::ScreenMirror> screen;
   {
     std::lock_guard<std::mutex> lock(g_screen_mutex);
@@ -520,13 +526,27 @@ JNIEXPORT jint JNICALL Java_scouterkit_ssh_Native_screenFrame(JNIEnv *env, jclas
   jlong capacity = env->GetDirectBufferCapacity(buffer);
   // The last row may lack its padding.
   if (!p || w <= 0 || h <= 0 || capacity < jlong(stride) * (h - 1) + jlong(w) * 4) return ssh::ScreenMirror::kSame;
+  // Native.SCREEN_* option indices: fit, pan x, pan y, zoom, rotate, place x, y, w, h, invert, levels,
+  // contrast, sharpen, hide in the case, hide folded.
+  jint v[15] = {0, 50, 0, 100, 0, 0, 0, 100, 100, 1, 16, 0, 0, 1, 0};
+  jsize n = std::min<jsize>(env->GetArrayLength(options), 15);
+  env->GetIntArrayRegion(options, 0, n, v);
   ssh::ScreenOptions o;
-  o.band = band;
-  o.band_pos = band_pos;
-  o.invert = invert;
-  o.levels = levels == 2 ? 2 : 16;
-  o.hide_case = hide_case;
-  o.hide_folded = hide_folded && !g_ignore_worn;
+  o.fit = std::clamp(int(v[0]), 0, 2);
+  o.pan_x = v[1];
+  o.pan_y = v[2];
+  o.zoom = std::clamp(int(v[3]), 100, 400);
+  o.rotate = v[4];
+  o.out_x = v[5];
+  o.out_y = v[6];
+  o.out_w = v[7];
+  o.out_h = v[8];
+  o.invert = v[9] != 0;
+  o.levels = v[10] == 2 ? 2 : 16;
+  o.contrast = std::clamp(int(v[11]), 0, 100);
+  o.sharpen = v[12] != 0;
+  o.hide_case = v[13] != 0;
+  o.hide_folded = v[14] != 0 && !g_ignore_worn;
   return screen->Frame(p, w, h, stride, o);
 }
 

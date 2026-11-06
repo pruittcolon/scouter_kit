@@ -22,6 +22,8 @@ class MainActivity : Activity() {
     private lateinit var headline: TextView
     private lateinit var detail: TextView
     private lateinit var pills: LinearLayout
+    private lateinit var leftGauge: BatteryGauge
+    private lateinit var rightGauge: BatteryGauge
     private lateinit var termTile: Tile
     private lateinit var screenTile: Tile
     private lateinit var offTile: Tile
@@ -47,6 +49,12 @@ class MainActivity : Activity() {
         pills = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         hero.addView(headline)
         hero.addView(detail)
+        val gauges = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        leftGauge = BatteryGauge(this, "Left arm")
+        rightGauge = BatteryGauge(this, "Right arm")
+        gauges.addView(leftGauge, lp(0, weight = 1f).apply { rightMargin = dp(10) })
+        gauges.addView(rightGauge, lp(0, weight = 1f).apply { leftMargin = dp(10) })
+        hero.addView(gauges, lp().apply { bottomMargin = dp(10) })
         hero.addView(android.widget.HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             addView(pills)
@@ -79,6 +87,13 @@ class MainActivity : Activity() {
         quick.addToggle(toggle("Dark while the phone is locked", "With the phone's screen on the glasses", settings.offWhenLocked) {
             settings.offWhenLocked = it
         })
+        quick.addView(slider("Depth", 0, 320, settings.dx, { "$it" }) { v ->
+            // The eyes' horizontal offset: the picture seems nearer or farther. The glasses reconnect to apply it.
+            settings.dx = v
+            if (ScouterService.running) ScouterService.send(this)
+        })
+        quick.addView(text("Depth moves the picture nearer or farther (the eyes' offset); the glasses reconnect " +
+            "for a moment when you let go.", 12f, Ui.FAINT))
         stopSharing = button("Stop sharing the phone's screen") { ScouterService.send(this, ScouterService.ACTION_STOP_SHARING) }
         quick.addView(stopSharing)
         quick.addView(button("Stop everything", DANGER) {
@@ -86,6 +101,42 @@ class MainActivity : Activity() {
             ScouterService.send(this, ScouterService.ACTION_STOP)
         })
         page.addView(quick)
+
+        val phone = card("Phone screen", "Changes show on the glasses at once while your screen is shared.")
+        phone.addView(segmented(listOf("2" to "Fast · black & white", "16" to "Detailed · 16 greys"), settings.screenLevels.toString()) {
+            settings.screenLevels = it.toInt()
+        })
+        phone.addView(segmented(listOf(Settings.FIT to "Fit", Settings.FILL to "Fill", Settings.STRETCH to "Stretch"), settings.screenFit) {
+            settings.screenFit = it
+        })
+        phone.addView(text("Where it shows: drag to move, drag the corner to resize, double-tap to fill.", 12.5f, Ui.FAINT)
+            .apply { setPadding(0, dp(8), 0, dp(6)) })
+        val (cols, rows) = 640 - kotlin.math.abs(settings.dx) to 480 - kotlin.math.abs(settings.dy)
+        val editor = LayoutEditor(this, cols.toFloat() / rows, settings.screenOutX, settings.screenOutY, settings.screenOutW,
+            settings.screenOutH, { x, y, w, h -> place(x, y, w, h) }) { x, y, w, h -> place(x, y, w, h) }
+        phone.addView(editor, lp())
+        phone.addView(chipRow(
+            chip("Full", false) { editor.set(0, 0, 100, 100) },
+            chip("Left half", false) { editor.set(0, 0, 50, 100) },
+            chip("Right half", false) { editor.set(50, 0, 50, 100) },
+            chip("Top half", false) { editor.set(0, 0, 100, 50) },
+            chip("Bottom half", false) { editor.set(0, 50, 100, 50) },
+            chip("Small, centred", false) { editor.set(25, 25, 50, 50) },
+        ))
+        phone.addView(slider("Zoom", 100, 400, settings.screenZoom, { String.format(java.util.Locale.US, "%.1f×", it / 100f) },
+            { settings.screenZoom = it }) { settings.screenZoom = it })
+        phone.addView(slider("Pan across", 0, 100, settings.screenPanX, { "$it%" }, { settings.screenPanX = it }) { settings.screenPanX = it })
+        phone.addView(slider("Pan down", 0, 100, settings.screenPanY, { "$it%" }, { settings.screenPanY = it }) { settings.screenPanY = it })
+        phone.addView(segmented(listOf("0" to "Upright", "90" to "↻ 90°", "180" to "180°", "270" to "↺ 90°"),
+            settings.screenRotate.toString()) { settings.screenRotate = it.toInt() })
+        phone.addView(slider("Contrast boost", 0, 100, settings.screenContrast, { "$it%" }, { settings.screenContrast = it }) {
+            settings.screenContrast = it
+        })
+        phone.addToggle(toggle("Sharpen", "Crisper text", settings.screenSharpen) { settings.screenSharpen = it })
+        phone.addToggle(toggle("Invert colours", "Light backgrounds go dark: black is see-through", settings.screenInvert) {
+            settings.screenInvert = it
+        })
+        page.addView(phone)
 
         val preview = card("Terminal", "What the glasses get in terminal view")
         terminal = TerminalView(this)
@@ -270,6 +321,15 @@ class MainActivity : Activity() {
         ScouterService.send(this, ScouterService.ACTION_DISPLAY)
     }
 
+    // The picture's place on the glasses (the layout editor, its presets).
+    private fun place(x: Int, y: Int, w: Int, h: Int) {
+        val settings = Settings(this)
+        settings.screenOutX = x
+        settings.screenOutY = y
+        settings.screenOutW = w
+        settings.screenOutH = h
+    }
+
     private var note: String? = null // the last control's problem
     private var startingAt = 0L // a mode was tapped: "Starting…" until the session shows (or 45 s)
 
@@ -312,18 +372,14 @@ class MainActivity : Activity() {
         fun pill(label: String, dot: Int) = pills.addView(statusPill(label, dot), lp(android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
             .apply { rightMargin = dp(8) })
         val b = Session.battery
-        for (arm in 0..1) {
-            val name = if (arm == 0) "Left" else "Right"
-            val up = if (arm == 0) Session.left else Session.right
-            val pct = b.getOrElse(arm) { -1 }
-            val label = if (pct >= 0) "$name $pct%" + (if (b.getOrElse(arm + 2) { 0 } == 1) " ⚡" else "") else name
-            pill(label, when {
-                !running || !up -> Ui.FAINT
-                pct in 0..15 -> Ui.BAD
-                pct in 16..35 -> Ui.WARN
-                else -> Ui.GOOD
-            })
-        }
+        leftGauge.set(b.getOrElse(0) { -1 }, b.getOrElse(2) { 0 } == 1, running && Session.left)
+        rightGauge.set(b.getOrElse(1) { -1 }, b.getOrElse(3) { 0 } == 1, running && Session.right)
+        pill("Glasses", when {
+            running && Session.left && Session.right -> Ui.GOOD
+            running && Session.glasses == "connecting" -> Ui.WARN
+            running -> Ui.BAD
+            else -> Ui.FAINT
+        })
         pill("SSH", when {
             Session.mosh == "connected" -> Ui.GOOD
             Session.mosh.startsWith("error") || Session.mosh.startsWith("no contact") -> Ui.BAD

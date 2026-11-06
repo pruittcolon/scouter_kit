@@ -38,15 +38,23 @@ class PhoneScreen(
         }
     }
 
+    // The newest image not on the glasses yet: kept while the link is busy, so the last change of a burst still
+    // goes when the screen stops changing.
+    private var pending: android.media.Image? = null
+
     private val tick = object : Runnable {
         override fun run() {
             if (released) return
+            val period = 1000L / settings.screenFps.coerceIn(1, 30)
+            val t0 = android.os.SystemClock.uptimeMillis()
             try {
                 grab()
             } catch (e: Exception) {
                 Log.w(ScouterService.TAG, "screen: ${e.message}")
             }
-            handler.postDelayed(this, 1000L / settings.screenFps.coerceIn(1, 30))
+            // Busy: try again soon (the link frees up between frames); otherwise the next frame's turn.
+            val spent = android.os.SystemClock.uptimeMillis() - t0
+            handler.postDelayed(this, if (state == Native.SCREEN_BUSY) 12L else (period - spent).coerceAtLeast(1L))
         }
     }
 
@@ -61,7 +69,7 @@ class PhoneScreen(
             }
         }, handler)
         size = captureSize()
-        val r = ImageReader.newInstance(size.first, size.second, PixelFormat.RGBA_8888, 2)
+        val r = ImageReader.newInstance(size.first, size.second, PixelFormat.RGBA_8888, 3)
         reader = r
         display = projection.createVirtualDisplay("scouter-glasses", size.first, size.second,
             context.resources.displayMetrics.densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, r.surface,
@@ -70,11 +78,11 @@ class PhoneScreen(
         handler.postDelayed(tick, 300)
     }
 
-    // The screen's shape at most 1600 px on its long side: enough for 540 x 471 on the glasses (the native side
-    // averages the pixels), and light to convert.
+    // The screen at its own resolution (up to 2400 px on the long side): zoom and the band then have every
+    // pixel to work with; the native side averages them down.
     private fun captureSize(): Pair<Int, Int> {
         val b = context.getSystemService(WindowManager::class.java).maximumWindowMetrics.bounds
-        val scale = minOf(1f, 1600f / maxOf(b.width(), b.height()))
+        val scale = minOf(1f, 2400f / maxOf(b.width(), b.height()))
         return ((b.width() * scale).toInt() / 2 * 2).coerceAtLeast(2) to ((b.height() * scale).toInt() / 2 * 2).coerceAtLeast(2)
     }
 
@@ -85,7 +93,9 @@ class PhoneScreen(
         if (next == size) return
         size = next
         val old = reader
-        val r = ImageReader.newInstance(size.first, size.second, PixelFormat.RGBA_8888, 2)
+        pending?.close()
+        pending = null
+        val r = ImageReader.newInstance(size.first, size.second, PixelFormat.RGBA_8888, 3)
         reader = r
         display?.resize(size.first, size.second, context.resources.displayMetrics.densityDpi)
         display?.surface = r.surface
@@ -93,14 +103,17 @@ class PhoneScreen(
     }
 
     private fun grab() {
-        val image = runCatching { reader?.acquireLatestImage() }.getOrNull() ?: return
-        try {
-            val plane = image.planes[0]
-            state = Native.screenFrame(plane.buffer, image.width, image.height, plane.rowStride, settings.screenBand,
-                settings.screenBandPos, settings.screenInvert, settings.screenLevels, settings.screenHideCase,
-                settings.screenHideFolded)
-        } finally {
+        val fresh = runCatching { reader?.acquireLatestImage() }.getOrNull()
+        if (fresh != null) {
+            pending?.close()
+            pending = fresh
+        }
+        val image = pending ?: return
+        val plane = image.planes[0]
+        state = Native.screenFrame(plane.buffer, image.width, image.height, plane.rowStride, settings.screenOptions())
+        if (state != Native.SCREEN_BUSY) {
             image.close()
+            pending = null
         }
     }
 
@@ -113,6 +126,8 @@ class PhoneScreen(
 
     private fun close() {
         handler.removeCallbacks(tick)
+        runCatching { pending?.close() }
+        pending = null
         runCatching { context.getSystemService(DisplayManager::class.java).unregisterDisplayListener(turns) }
         runCatching { display?.release() }
         runCatching { reader?.close() }

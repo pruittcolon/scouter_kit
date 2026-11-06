@@ -3,11 +3,34 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
+
+#ifdef __ANDROID__
+#include <android/log.h>
+#define LOG(...) __android_log_print(ANDROID_LOG_INFO, "scouter", __VA_ARGS__)
+#else
+#include <cstdio>
+#define LOG(...) (std::fprintf(stderr, __VA_ARGS__), std::fputc('\n', stderr))
+#endif
 
 namespace g1 = scouter_kit::g1;
 namespace sk = scouter_kit;
 
 namespace ssh {
+
+namespace {
+constexpr uint32_t kCode = 512;        // the VIDEO path's stored code (table, pool, a few instructions)
+constexpr uint32_t kRecordMax = 65536; // the largest record sent; a larger change waits for a smaller one
+constexpr uint32_t kHeader = 12;       // due time, frame number, record size
+constexpr int kQueued = 2;             // commands not yet sent on an arm's link: more, and a frame is skipped
+
+void Put32(std::vector<uint8_t> &v, size_t at, uint32_t x) {
+  v[at] = uint8_t(x);
+  v[at + 1] = uint8_t(x >> 8);
+  v[at + 2] = uint8_t(x >> 16);
+  v[at + 3] = uint8_t(x >> 24);
+}
+} // namespace
 
 void Luma(const uint8_t *rgba, int w, int h, int stride, std::vector<uint8_t> *out) {
   out->resize(size_t(w) * h);
@@ -18,45 +41,127 @@ void Luma(const uint8_t *rgba, int w, int h, int stride, std::vector<uint8_t> *o
   }
 }
 
-Rect Source(int sw, int sh, int pw, int ph, const ScreenOptions &o) {
-  if (!o.band || pw <= 0 || ph <= 0) return {0, 0, sw, sh};
-  // The full width, as tall as the picture's shape allows; a screen wider than that shape (landscape) gives
-  // its full height and the middle of its width.
-  int bh = int(int64_t(sw) * ph / pw);
-  if (bh <= sh) {
-    int top = int(int64_t(sh - bh) * std::clamp(o.band_pos, 0, 100) / 100);
-    return {0, top, sw, std::max(bh, 1)};
+void Rotate(const std::vector<uint8_t> &in, int w, int h, int degrees, std::vector<uint8_t> *out, int *ow, int *oh) {
+  int d = ((degrees % 360) + 360) % 360;
+  int W = (d == 90 || d == 270) ? h : w, H = (d == 90 || d == 270) ? w : h;
+  *ow = W;
+  *oh = H;
+  out->resize(size_t(w) * h);
+  uint8_t *o = out->data();
+  for (int y = 0; y < H; y++) {
+    uint8_t *row = o + size_t(y) * W;
+    switch (d) {
+    case 90:
+      for (int x = 0; x < W; x++) row[x] = in[size_t(h - 1 - x) * w + y];
+      break;
+    case 180:
+      for (int x = 0; x < W; x++) row[x] = in[size_t(h - 1 - y) * w + (w - 1 - x)];
+      break;
+    case 270:
+      for (int x = 0; x < W; x++) row[x] = in[size_t(x) * w + (w - 1 - y)];
+      break;
+    default:
+      std::copy_n(in.data() + size_t(y) * w, w, row);
+    }
   }
-  int bw = std::max(int(int64_t(sh) * pw / ph), 1);
-  return {(sw - bw) / 2, 0, bw, sh};
 }
 
-void Fit(std::vector<uint8_t> *dst, int pw, int ph, const std::vector<uint8_t> &src, int sw, Rect r, bool keep,
+Rect Place(int pw, int ph, const ScreenOptions &o) {
+  int w = std::min(pw, std::max(8, std::clamp(o.out_w, 1, 100) * pw / 100));
+  int h = std::min(ph, std::max(8, std::clamp(o.out_h, 1, 100) * ph / 100));
+  int x = std::clamp(std::clamp(o.out_x, 0, 100) * pw / 100, 0, pw - w);
+  int y = std::clamp(std::clamp(o.out_y, 0, 100) * ph / 100, 0, ph - h);
+  return {x, y, w, h};
+}
+
+Rect Source(int sw, int sh, int dw, int dh, const ScreenOptions &o) {
+  int rw = sw, rh = sh;
+  if (o.fit == ScreenOptions::kFill && dw > 0 && dh > 0) {
+    if (int64_t(sw) * dh > int64_t(sh) * dw) rw = std::max(1, int(int64_t(sh) * dw / dh));
+    else rh = std::max(1, int(int64_t(sw) * dh / dw));
+  }
+  if (o.zoom > 100) {
+    rw = std::max(1, int(int64_t(rw) * 100 / o.zoom));
+    rh = std::max(1, int(int64_t(rh) * 100 / o.zoom));
+  }
+  int px = std::clamp(o.pan_x, 0, 100), py = std::clamp(o.pan_y, 0, 100);
+  return {int(int64_t(sw - rw) * px / 100), int(int64_t(sh - rh) * py / 100), rw, rh};
+}
+
+void Fit(std::vector<uint8_t> *dst, int pw, int ph, const std::vector<uint8_t> &src, int sw, Rect r, Rect d, bool keep,
          uint8_t bg) {
   dst->assign(size_t(pw) * ph, bg);
-  if (r.w <= 0 || r.h <= 0) return;
-  int ow = pw, oh = ph, ox = 0, oy = 0;
+  if (r.w <= 0 || r.h <= 0 || d.w <= 0 || d.h <= 0) return;
+  int ow = d.w, oh = d.h, ox = d.x, oy = d.y;
   if (keep) {
-    double k = std::min(double(pw) / r.w, double(ph) / r.h);
-    ow = std::clamp(int(r.w * k), 1, pw);
-    oh = std::clamp(int(r.h * k), 1, ph);
-    ox = (pw - ow) / 2;
-    oy = (ph - oh) / 2;
+    double k = std::min(double(d.w) / r.w, double(d.h) / r.h);
+    ow = std::clamp(int(r.w * k), 1, d.w);
+    oh = std::clamp(int(r.h * k), 1, d.h);
+    ox = d.x + (d.w - ow) / 2;
+    oy = d.y + (d.h - oh) / 2;
+  }
+  // The source columns under each picture column, worked out once.
+  std::vector<int> x0s(size_t(ow), 0), x1s(size_t(ow), 0);
+  for (int x = 0; x < ow; x++) {
+    x0s[size_t(x)] = r.x + int(int64_t(x) * r.w / ow);
+    x1s[size_t(x)] = std::max(r.x + int(int64_t(x + 1) * r.w / ow), x0s[size_t(x)] + 1);
   }
   for (int y = 0; y < oh; y++) {
     int y0 = r.y + int(int64_t(y) * r.h / oh);
     int y1 = std::max(r.y + int(int64_t(y + 1) * r.h / oh), y0 + 1);
     uint8_t *out = dst->data() + size_t(y + oy) * pw + ox;
     for (int x = 0; x < ow; x++) {
-      int x0 = r.x + int(int64_t(x) * r.w / ow);
-      int x1 = std::max(r.x + int(int64_t(x + 1) * r.w / ow), x0 + 1);
-      int sum = 0, n = 0;
+      int x0 = x0s[size_t(x)], x1 = x1s[size_t(x)];
+      int sum = 0;
       for (int yy = y0; yy < y1; yy++) {
         const uint8_t *row = src.data() + size_t(yy) * sw;
         for (int xx = x0; xx < x1; xx++) sum += row[xx];
-        n += x1 - x0;
       }
-      out[x] = uint8_t(sum / n);
+      out[x] = uint8_t(sum / ((y1 - y0) * (x1 - x0)));
+    }
+  }
+}
+
+void Stretch(std::vector<uint8_t> *p, int amount) {
+  if (amount <= 0 || p->empty()) return;
+  size_t hist[256] = {};
+  for (uint8_t v : *p) hist[v]++;
+  size_t n = p->size(), c = 0;
+  int lo = 0, hi = 255;
+  for (int v = 0; v < 256; v++) {
+    c += hist[v];
+    if (c > n / 50) {
+      lo = v;
+      break;
+    }
+  }
+  c = 0;
+  for (int v = 0; v < 256; v++) {
+    c += hist[v];
+    if (c >= n - n / 50) {
+      hi = v;
+      break;
+    }
+  }
+  if (hi - lo < 16) return; // a flat picture: nothing to stretch
+  int a = std::min(amount, 100);
+  uint8_t lut[256];
+  for (int v = 0; v < 256; v++) {
+    int s = std::clamp((v - lo) * 255 / (hi - lo), 0, 255);
+    lut[v] = uint8_t(v + (s - v) * a / 100);
+  }
+  for (uint8_t &v : *p) v = lut[v];
+}
+
+void Sharpen(std::vector<uint8_t> *p, int w, int h) {
+  if (w < 3 || h < 3 || int(p->size()) < w * h) return;
+  std::vector<uint8_t> src(*p);
+  for (int y = 1; y < h - 1; y++) {
+    const uint8_t *up = &src[size_t(y - 1) * w], *mid = &src[size_t(y) * w], *down = &src[size_t(y + 1) * w];
+    uint8_t *out = p->data() + size_t(y) * w;
+    for (int x = 1; x < w - 1; x++) {
+      int sum = up[x - 1] + up[x] + up[x + 1] + mid[x - 1] + mid[x] + mid[x + 1] + down[x - 1] + down[x] + down[x + 1];
+      out[x] = uint8_t(std::clamp(2 * mid[x] - sum / 9, 0, 255));
     }
   }
 }
@@ -70,12 +175,14 @@ void Tone(std::vector<uint8_t> *p, bool invert, int levels) {
   for (uint8_t &v : *p) v = lut[v];
 }
 
+ScreenMirror::~ScreenMirror() { Stop(); }
+
 void ScreenMirror::Panels(bool on) {
   for (g1::Arm *a : {&g1::left, &g1::right})
     if (a->GetState().connected) a->SetPanel(on);
 }
 
-bool ScreenMirror::Start(int dx, std::string *error) {
+bool ScreenMirror::Start(int dx, int dy, std::string *error) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (started_) return true;
   int dw = sk::gray::display.width, dh = sk::gray::display.height;
@@ -83,6 +190,8 @@ bool ScreenMirror::Start(int dx, std::string *error) {
     if (error) *error = "the glasses are not connected";
     return false;
   }
+  dx_ = dx;
+  dy_ = dy;
   int adx = std::abs(dx);
   w_ = std::min(640 - adx, dw) & ~1; // even: 4-bpp bytes
   h_ = dh;
@@ -94,25 +203,155 @@ bool ScreenMirror::Start(int dx, std::string *error) {
   sk::Flush();
   Panels(false);
   Panels(true);
-  pic_ = &sk::gray::CreateBitmap(w_, h_);
-  if (!pic_->contents.data) {
-    pic_ = nullptr;
-    if (error) *error = "no room on the arms for a " + std::to_string(w_) + " x " + std::to_string(h_) + " picture";
-    return false;
-  }
+  levels_ = 0;
   prev_.clear();
   hidden_ = false;
   props_us_ = 0;
+  error_.clear();
   started_ = true;
   return true;
+}
+
+// Frees the arena the path used; the panels are cleared (VIDEO draws past the gray display's picture).
+void ScreenMirror::DropPath() {
+  if (levels_ == 16 && pic_) {
+    sk::gray::Unload(*pic_);
+    pic_ = nullptr;
+    sk::gray::Clear();
+    sk::Flush();
+  }
+  if (levels_ == 2) {
+    if (video_.base >= 0) g1::Free(g1::Address(video_.base));
+    video_ = Video{};
+    Panels(false);
+    Panels(true);
+  }
+  levels_ = 0;
+  prev_.clear();
+}
+
+bool ScreenMirror::Path(int levels) {
+  int want = levels == 2 ? 2 : 16;
+  if (want == levels_) return true;
+  DropPath();
+  if (want == 16) {
+    pic_ = &sk::gray::CreateBitmap(w_, h_);
+    if (!pic_->contents.data) {
+      // Fonts or pictures nobody uses now (the terminal has stopped): once more without them.
+      sk::UnloadAll();
+      pic_ = &sk::gray::CreateBitmap(w_, h_);
+    }
+    if (!pic_->contents.data) {
+      pic_ = nullptr;
+      error_ = "no room on the arms for a " + std::to_string(w_) + " x " + std::to_string(h_) + " picture";
+      LOG("screen: %s (free %d of %d bytes)", error_.c_str(), sk::free_memory, sk::total_memory);
+      return false;
+    }
+  } else if (!StartVideo()) {
+    LOG("screen: %s", error_.c_str());
+    if (video_.base >= 0) g1::Free(g1::Address(video_.base));
+    video_ = Video{};
+    return false;
+  }
+  levels_ = want;
+  error_.clear();
+  LOG("screen: %s path, %d x %d at (%d, %d)", want == 2 ? "VIDEO" : "gray", w_, h_, x_, y_);
+  return true;
+}
+
+// The VIDEO path (black and white): per arm, stored code that sleeps until the frame's due time and draws the
+// record's changed rows at the eye's place; the host writes the due time, the frame number, the size and the
+// record, then CALLs it (VM.md §3.7). Both arms get the same due time: the eyes change together.
+bool ScreenMirror::StartVideo() {
+  Video &v = video_;
+  v.stride = uint32_t(((w_ + 7) / 8 + 3) & ~3);
+  uint32_t size = kCode + v.stride * uint32_t(h_) + g1::kVideoState + 8 + kHeader + kRecordMax;
+  v.base = g1::Alloc(size);
+  if (v.base < 0) {
+    sk::UnloadAll();
+    v.base = g1::Alloc(size);
+  }
+  if (v.base < 0) {
+    error_ = "no room on the arms for the fast (black and white) path";
+    return false;
+  }
+  v.size = size;
+  v.code = uint32_t(v.base);
+  v.bitmap = v.code + kCode;
+  v.state = (v.bitmap + v.stride * uint32_t(h_) + 3) & ~3u;
+  v.buf = (v.state + g1::kVideoState + 3) & ~3u;
+  for (int i = 0; i < 2; i++) {
+    g1::Arm &arm = i == 0 ? g1::left : g1::right;
+    if (!arm.GetState().present) continue;
+    int px = i == 0 ? x_ - std::max(0, -dx_) : x_ - std::max(0, dx_);
+    int py = i == 0 ? y_ + std::max(0, -dy_) : y_ + std::max(0, dy_);
+    g1::Program p(v.code, 16);
+    g1::Address at = p.Here();
+    p.SleepUntil(g1::ArenaWord(v.buf / 4));
+    p.Video(p.Const(v.bitmap), p.Const(v.stride), p.Const(uint32_t(w_)), p.Const(uint32_t(h_)), p.Const(uint32_t(px)),
+            p.Const(uint32_t(py)), p.Const(15), p.Const(v.buf + kHeader), g1::ArenaWord(v.buf / 4 + 2), p.Const(v.state));
+    p.Ret();
+    std::string why;
+    if (!p.Valid(&why)) {
+      error_ = "the VIDEO code: " + why;
+      return false;
+    }
+    arm.WriteArena(v.bitmap, std::vector<uint8_t>(size_t(v.stride) * h_, 0));
+    if (!arm.Load(p)) {
+      error_ = "the VIDEO code did not load (a firmware before VIDEO?)";
+      return false;
+    }
+    v.call[size_t(i)] = at;
+    v.epochs[size_t(i)] = arm.GetState().epoch_changes;
+  }
+  v.enc = std::make_unique<g1::VideoEncoder>(w_, h_);
+  v.pix.assign(size_t(w_) * h_, 0);
+  v.k = 0;
+  v.redraw = true;
+  return true;
+}
+
+int ScreenMirror::SendVideo() {
+  Video &v = video_;
+  int64_t lead = 30000;
+  for (int i = 0; i < 2; i++) {
+    g1::Arm &arm = i == 0 ? g1::left : g1::right;
+    auto st = arm.GetState();
+    if (!st.present) continue;
+    if (!st.connected || st.queued > kQueued) return kBusy;
+    // A rebooted arm lost its bitmap and decoder state: the path starts again (every row at the next frame).
+    if (st.epoch_changes != v.epochs[size_t(i)]) {
+      LOG("screen: arm %d rebooted, the VIDEO path starts again", i);
+      DropPath();
+      return Path(2) ? kBusy : kSame;
+    }
+    lead = std::max<int64_t>(lead, 2 * st.interval_us + st.clock_error_us + 15000);
+  }
+  for (size_t i = 0; i < v.pix.size(); i++) v.pix[i] = frame_[i] >= 128;
+  std::vector<uint8_t> rec = v.enc->Encode(v.pix, v.redraw, kRecordMax);
+  if (rec.empty()) return kBusy; // too large for one record: the next, smaller change goes
+  lead = std::min<int64_t>(lead + int64_t(rec.size() / 200 + 1) * 10000, 1500000);
+  std::vector<uint8_t> msg(kHeader + rec.size());
+  Put32(msg, 4, v.k);
+  Put32(msg, 8, uint32_t(rec.size()));
+  std::memcpy(msg.data() + kHeader, rec.data(), rec.size());
+  for (int i = 0; i < 2; i++) {
+    g1::Arm &arm = i == 0 ? g1::left : g1::right;
+    if (!arm.GetState().present) continue;
+    Put32(msg, 0, arm.DeviceTime(lead));
+    arm.WriteArena(v.buf, msg);
+    arm.Call(v.call[size_t(i)]);
+  }
+  v.redraw = false;
+  v.k++;
+  return kShown;
 }
 
 void ScreenMirror::Stop() {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!started_) return;
   started_ = false;
-  if (pic_) sk::gray::Unload(*pic_);
-  pic_ = nullptr;
+  DropPath();
   sk::gray::Clear();
   sk::Flush();
   if (hidden_) Panels(true); // the terminal's program decides from here
@@ -126,7 +365,7 @@ int ScreenMirror::frames() {
 
 std::string ScreenMirror::why() {
   std::lock_guard<std::mutex> lock(mutex_);
-  return hidden_ ? why_ : std::string();
+  return hidden_ ? hide_why_ : error_;
 }
 
 bool ScreenMirror::Hidden(const ScreenOptions &o) {
@@ -147,16 +386,15 @@ bool ScreenMirror::Hidden(const ScreenOptions &o) {
       folded = folded && v[1] == 0;
     }
   }
-  // In the case a lit panel disturbs charging; folded nobody looks.
   bool by_case = o.hide_case && in_case, by_fold = o.hide_folded && known && folded;
-  why_ = by_case ? "in the case" : by_fold ? "folded" : "";
+  hide_why_ = by_case ? "in the case" : by_fold ? "folded" : "";
   props_hidden_ = by_case || by_fold;
   return props_hidden_;
 }
 
 int ScreenMirror::Frame(const uint8_t *rgba, int w, int h, int stride, const ScreenOptions &o) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (!started_ || !pic_) return kStopped;
+  if (!started_) return kStopped;
   if (w <= 0 || h <= 0 || stride < w * 4) return kSame;
   bool hide = Hidden(o);
   if (hide != hidden_) {
@@ -168,18 +406,34 @@ int ScreenMirror::Frame(const uint8_t *rgba, int w, int h, int stride, const Scr
     } else {
       Panels(true);
       prev_.clear();
+      video_.redraw = true; // the power-on cleared the panels: every row again
     }
   }
   if (hide) return kHidden;
+  if (!Path(o.levels)) return kSame;
   Luma(rgba, w, h, stride, &luma_);
-  Fit(&frame_, w_, h_, luma_, w, Source(w, h, w_, h_, o), !o.band, o.invert ? 255 : 0);
-  Tone(&frame_, o.invert, o.levels);
-  if (frame_ == prev_) return kSame;
-  sk::gray::Write(*pic_, sk::gray::ConstBitmapView{frame_.data(), w_, h_, w_}, 0, 0, sk::gray::DITHER_NONE);
+  int sw = w, sh = h;
+  const std::vector<uint8_t> *src = &luma_;
+  if (o.rotate % 360 != 0) {
+    Rotate(luma_, w, h, o.rotate, &rot_, &sw, &sh);
+    src = &rot_;
+  }
+  Rect d = Place(w_, h_, o);
+  Fit(&frame_, w_, h_, *src, sw, Source(sw, sh, d.w, d.h, o), d, o.fit == ScreenOptions::kFit, o.invert ? 255 : 0);
+  Stretch(&frame_, o.contrast);
+  if (o.sharpen) Sharpen(&frame_, w_, h_);
+  Tone(&frame_, o.invert, levels_);
+  if (frame_ == prev_ && !(levels_ == 2 && video_.redraw)) return kSame;
+  if (levels_ == 2) {
+    int r = SendVideo();
+    if (r != kShown) return r;
+  } else {
+    sk::gray::Write(*pic_, sk::gray::ConstBitmapView{frame_.data(), w_, h_, w_}, 0, 0, sk::gray::DITHER_NONE);
+    sk::gray::Clear();
+    sk::gray::Draw(*pic_, x_, y_);
+    sk::Flush();
+  }
   prev_ = frame_;
-  sk::gray::Clear();
-  sk::gray::Draw(*pic_, x_, y_);
-  sk::Flush();
   frames_++;
   return kShown;
 }

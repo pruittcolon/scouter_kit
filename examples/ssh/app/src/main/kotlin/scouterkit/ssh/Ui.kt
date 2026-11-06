@@ -342,3 +342,182 @@ fun Context.clipFrame(child: View, heightDp: Int): FrameLayout = FrameLayout(thi
 // Dialogs in the app's colours.
 fun Context.dialog(): android.app.AlertDialog.Builder =
     android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+
+// One arm's battery: its name, the percentage large, and a battery that fills with it (green, amber, red);
+// a bolt while charging; dim while the arm is not linked.
+class BatteryGauge(context: Context, private val label: String) : View(context) {
+    private var pct = -1
+    private var charging = false
+    private var live = false
+    private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+    private val box = android.graphics.RectF()
+
+    fun set(percent: Int, charging: Boolean, live: Boolean) {
+        if (percent == pct && charging == this.charging && live == this.live) return
+        pct = percent
+        this.charging = charging
+        this.live = live
+        invalidate()
+    }
+
+    private fun sp(v: Float) = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, v, resources.displayMetrics)
+
+    override fun onMeasure(widthSpec: Int, heightSpec: Int) =
+        setMeasuredDimension(MeasureSpec.getSize(widthSpec), context.dp(70))
+
+    override fun onDraw(canvas: android.graphics.Canvas) {
+        val d = resources.displayMetrics.density
+        val level = when {
+            !live || pct < 0 -> Ui.FAINT
+            pct <= 15 -> Ui.BAD
+            pct <= 35 -> Ui.WARN
+            else -> Ui.GOOD
+        }
+        paint.style = android.graphics.Paint.Style.FILL
+        paint.typeface = Ui.BOLD
+        paint.textSize = sp(12.5f)
+        paint.color = Ui.MUTED
+        canvas.drawText(label.uppercase() + if (charging && live) "  ·  CHARGING" else "", 0f, sp(13f), paint)
+        paint.typeface = Ui.BLACK
+        paint.textSize = sp(28f)
+        paint.color = if (live && pct >= 0) Ui.TEXT else Ui.FAINT
+        canvas.drawText(if (pct >= 0) "$pct%" else "—", 0f, height - 6 * d, paint)
+        // The battery: an outline, its nub, the fill.
+        val bw = 46 * d
+        val bh = 22 * d
+        val right = width - 6 * d
+        val top = height - bh - 10 * d
+        box.set(right - bw, top, right - 4 * d, top + bh)
+        paint.style = android.graphics.Paint.Style.STROKE
+        paint.strokeWidth = 2 * d
+        paint.color = if (live) 0xFFAEB6C6.toInt() else Ui.STROKE
+        canvas.drawRoundRect(box, 5 * d, 5 * d, paint)
+        paint.style = android.graphics.Paint.Style.FILL
+        canvas.drawRoundRect(right - 3 * d, top + bh * 0.3f, right, top + bh * 0.7f, 2 * d, 2 * d, paint)
+        if (pct > 0) {
+            val inner = box.width() - 6 * d
+            paint.color = level
+            canvas.drawRoundRect(box.left + 3 * d, box.top + 3 * d, box.left + 3 * d + inner * pct.coerceAtMost(100) / 100f,
+                box.bottom - 3 * d, 3 * d, 3 * d, paint)
+        }
+        if (charging && live) {
+            paint.color = Ui.TEXT
+            paint.textSize = sp(15f)
+            paint.textAlign = android.graphics.Paint.Align.CENTER
+            canvas.drawText("⚡", box.centerX(), box.centerY() + sp(5f), paint)
+            paint.textAlign = android.graphics.Paint.Align.LEFT
+        }
+    }
+}
+
+// Where the phone's picture sits on the glasses: their view area with the picture's rectangle on it. Drag inside
+// the rectangle to move it, its corner to resize it, double-tap to fill the area. Values in percent of the area;
+// change: while dragging; commit: on release.
+class LayoutEditor(context: Context, private val aspect: Float, x: Int, y: Int, w: Int, h: Int,
+                   private val change: (Int, Int, Int, Int) -> Unit, private val commit: (Int, Int, Int, Int) -> Unit) : View(context) {
+    var px = x
+    var py = y
+    var pw = w
+    var ph = h
+    private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+    private val area = android.graphics.RectF()
+    private val pic = android.graphics.RectF()
+    private var mode = 0 // 0 none, 1 move, 2 resize
+    private var downX = 0f
+    private var downY = 0f
+    private var start = intArrayOf(0, 0, 0, 0)
+    private val taps = android.view.GestureDetector(context, object : android.view.GestureDetector.SimpleOnGestureListener() {
+        override fun onDoubleTap(e: android.view.MotionEvent): Boolean {
+            set(0, 0, 100, 100)
+            commit(px, py, pw, ph)
+            return true
+        }
+    })
+
+    fun set(x: Int, y: Int, w: Int, h: Int) {
+        pw = w.coerceIn(10, 100)
+        ph = h.coerceIn(10, 100)
+        px = x.coerceIn(0, 100 - pw)
+        py = y.coerceIn(0, 100 - ph)
+        change(px, py, pw, ph)
+        invalidate()
+    }
+
+    override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+        val wd = MeasureSpec.getSize(widthSpec)
+        setMeasuredDimension(wd, (wd / aspect).toInt() + context.dp(8))
+    }
+
+    override fun onDraw(canvas: android.graphics.Canvas) {
+        val d = resources.displayMetrics.density
+        area.set(2 * d, 2 * d, width - 2 * d, height - 6 * d)
+        paint.style = android.graphics.Paint.Style.FILL
+        paint.color = 0xFF000000.toInt()
+        canvas.drawRoundRect(area, 14 * d, 14 * d, paint)
+        paint.style = android.graphics.Paint.Style.STROKE
+        paint.strokeWidth = 1 * d
+        paint.color = Ui.STROKE
+        canvas.drawRoundRect(area, 14 * d, 14 * d, paint)
+        for (i in 1..2) { // thirds, to place by
+            val gx = area.left + area.width() * i / 3
+            val gy = area.top + area.height() * i / 3
+            canvas.drawLine(gx, area.top, gx, area.bottom, paint)
+            canvas.drawLine(area.left, gy, area.right, gy, paint)
+        }
+        pic.set(area.left + area.width() * px / 100, area.top + area.height() * py / 100,
+            area.left + area.width() * (px + pw) / 100, area.top + area.height() * (py + ph) / 100)
+        paint.style = android.graphics.Paint.Style.FILL
+        paint.color = 0x335EEAD4
+        canvas.drawRoundRect(pic, 8 * d, 8 * d, paint)
+        paint.style = android.graphics.Paint.Style.STROKE
+        paint.strokeWidth = 2 * d
+        paint.color = Ui.ACCENT
+        canvas.drawRoundRect(pic, 8 * d, 8 * d, paint)
+        paint.style = android.graphics.Paint.Style.FILL
+        canvas.drawCircle(pic.right, pic.bottom, 9 * d, paint) // the resize handle
+        paint.color = Ui.TEXT
+        paint.textSize = 12 * d
+        paint.textAlign = android.graphics.Paint.Align.CENTER
+        canvas.drawText("$pw × $ph%", pic.centerX(), pic.centerY() + 4 * d, paint)
+        paint.textAlign = android.graphics.Paint.Align.LEFT
+    }
+
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+        if (taps.onTouchEvent(e)) return true
+        when (e.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                val d = resources.displayMetrics.density
+                mode = when {
+                    Math.hypot((e.x - pic.right).toDouble(), (e.y - pic.bottom).toDouble()) < 30 * d -> 2
+                    pic.contains(e.x, e.y) -> 1
+                    else -> 0
+                }
+                downX = e.x
+                downY = e.y
+                start = intArrayOf(px, py, pw, ph)
+                parent?.requestDisallowInterceptTouchEvent(mode != 0)
+                return mode != 0
+            }
+            android.view.MotionEvent.ACTION_MOVE -> {
+                val ddx = ((e.x - downX) / area.width() * 100).toInt()
+                val ddy = ((e.y - downY) / area.height() * 100).toInt()
+                if (mode == 1) set(start[0] + ddx, start[1] + ddy, start[2], start[3])
+                if (mode == 2) {
+                    pw = (start[2] + ddx).coerceIn(10, 100 - start[0])
+                    ph = (start[3] + ddy).coerceIn(10, 100 - start[1])
+                    change(px, py, pw, ph)
+                    invalidate()
+                }
+                return true
+            }
+            android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                if (mode != 0) commit(px, py, pw, ph)
+                mode = 0
+                parent?.requestDisallowInterceptTouchEvent(false)
+                return true
+            }
+        }
+        return false
+    }
+}

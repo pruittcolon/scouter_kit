@@ -46,6 +46,28 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("screen_invert", true)
         set(v) = prefs.edit().putBoolean("screen_invert", v).apply()
     var screenLevels: Int by Number("screen_levels", 16)
+    // How the phone's screen fills its place: FIT (its shape kept), FILL (cropped to fill), STRETCH (distorted).
+    var screenFit: String
+        get() = prefs.getString("screen_fit", null) ?: if (screenBand) FILL else FIT
+        set(v) = prefs.edit().putString("screen_fit", v).apply()
+    // Where a crop sits on the phone's screen (0 left/top ... 100 right/bottom).
+    var screenPanX: Int by Number("screen_pan_x", 50)
+    var screenPanY: Int
+        get() = prefs.getInt("screen_pan_y", screenBandPos)
+        set(v) = prefs.edit().putInt("screen_pan_y", v).apply()
+    // The picture's place on the glasses, in percent of their area: left, top, width, height.
+    var screenOutX: Int by Number("screen_out_x", 0)
+    var screenOutY: Int by Number("screen_out_y", 0)
+    var screenOutW: Int by Number("screen_out_w", 100)
+    var screenOutH: Int by Number("screen_out_h", 100)
+    // The picture turned clockwise (0, 90, 180, 270), magnified (100 ... 400 %), its contrast stretched
+    // (0 ... 100) and sharpened.
+    var screenRotate: Int by Number("screen_rotate", 0)
+    var screenZoom: Int by Number("screen_zoom", 100)
+    var screenContrast: Int by Number("screen_contrast", 60)
+    var screenSharpen: Boolean
+        get() = prefs.getBoolean("screen_sharpen", true)
+        set(v) = prefs.edit().putBoolean("screen_sharpen", v).apply()
     var screenFps: Int by Number("screen_fps", 5)
     // The phone's screen keeps the panels off while an arm is in the case (charging), or while both arms say
     // "not worn" (a guess from the arms' radio, so off by default).
@@ -59,6 +81,11 @@ class Settings(context: Context) {
     var offWhenLocked: Boolean
         get() = prefs.getBoolean("off_when_locked", true)
         set(v) = prefs.edit().putBoolean("off_when_locked", v).apply()
+    // For Native.screenFrame.
+    fun screenOptions() = intArrayOf(listOf(FIT, FILL, STRETCH).indexOf(screenFit).coerceAtLeast(0), screenPanX, screenPanY,
+        screenZoom, screenRotate, screenOutX, screenOutY, screenOutW, screenOutH, if (screenInvert) 1 else 0, screenLevels,
+        screenContrast, if (screenSharpen) 1 else 0, if (screenHideCase) 1 else 0, if (screenHideFolded) 1 else 0)
+
     // Each eye's battery band beside the terminal.
     var battery: Boolean
         get() = prefs.getBoolean("battery", true)
@@ -96,6 +123,9 @@ class Settings(context: Context) {
     companion object {
         const val TERMINAL = "terminal"
         const val SCREEN = "screen"
+        const val FIT = "fit"
+        const val FILL = "fill"
+        const val STRETCH = "stretch"
         // TouchBar actions.
         const val ACTION_NONE = "none"
         const val ACTION_DISPLAY = "display" // the display off / on

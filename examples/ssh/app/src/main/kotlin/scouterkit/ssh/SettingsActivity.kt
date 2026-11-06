@@ -98,24 +98,8 @@ class SettingsActivity : Activity() {
         }
         page.addView(touch)
 
-        val phone = card("Phone screen", "Applies to the next frames at once.")
-        phone.addView(segmented(listOf("whole" to "Whole screen", "band" to "Wide band"), if (settings.screenBand) "band" else "whole") {
-            settings.screenBand = it == "band"
-        })
-        phone.addView(slider("Band position", 0, 100, settings.screenBandPos, {
-            when {
-                it < 10 -> "top"
-                it > 90 -> "bottom"
-                else -> "$it%"
-            }
-        }) { settings.screenBandPos = it })
-        phone.addView(segmented(listOf("16" to "16 greys", "2" to "Black & white"), settings.screenLevels.toString()) {
-            settings.screenLevels = it.toInt()
-        })
-        phone.addView(slider("Frames per second (at most)", 1, 15, settings.screenFps) { settings.screenFps = it })
-        phone.addToggle(toggle("Invert colours", "Light backgrounds go dark: black is see-through", settings.screenInvert) {
-            settings.screenInvert = it
-        })
+        val phone = card("Phone screen", "Its look and place are on the home screen; these are the rest.")
+        phone.addView(slider("Frames per second (at most)", 1, 30, settings.screenFps) { settings.screenFps = it })
         phone.addToggle(toggle("Dark in the charging case", "A lit panel slows charging", settings.screenHideCase) {
             settings.screenHideCase = it
         })

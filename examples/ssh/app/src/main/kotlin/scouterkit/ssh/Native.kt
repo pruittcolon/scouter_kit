@@ -60,9 +60,10 @@ object Native {
     @JvmStatic external fun screenStop()
     // One captured frame: a direct buffer of RGBA_8888 rows `stride` bytes apart. Blocks while the previous
     // frame is not on the display yet. One of SCREEN_*.
-    @JvmStatic external fun screenFrame(buffer: java.nio.ByteBuffer, width: Int, height: Int, stride: Int, band: Boolean,
-                                        bandPos: Int, invert: Boolean, levels: Int, hideCase: Boolean,
-                                        hideFolded: Boolean): Int
+    // options: Settings.screenOptions() (fit, pan x, pan y, zoom, rotate, place x, y, w, h, invert, levels,
+    // contrast, sharpen, dark in the case, dark when folded).
+    @JvmStatic external fun screenFrame(buffer: java.nio.ByteBuffer, width: Int, height: Int, stride: Int,
+                                        options: IntArray): Int
     // Why the mirror keeps the panels off ("in the case", "folded"), or "".
     @JvmStatic external fun screenWhy(): String
     // Each eye's battery band beside the terminal, at once.
@@ -77,6 +78,7 @@ object Native {
     const val SCREEN_SAME = 1
     const val SCREEN_HIDDEN = 2 // in the case or folded: the panels are off
     const val SCREEN_STOPPED = 3
+    const val SCREEN_BUSY = 4 // the link still carries earlier frames: this one waits
     // TOUCH_GESTURE (VM.md §6.7).
     const val GESTURE_TAP = 1
     const val GESTURE_DOUBLE = 2
