@@ -1,4 +1,4 @@
-# SSH Scouter
+# Vox (formerly SSH Scouter)
 
 An Android app that keeps a [mosh](https://mosh.org) session to your server and mirrors its terminal on the
 Even Realities G1 running the ScouterKit firmware, with keys from
@@ -61,6 +61,26 @@ Energy on for other apps) ends the session, and the app then does nothing: Andro
 it until Bluetooth is on again. The mosh session
 continues at the next keyer on while Android keeps the app's process; after that a new one starts (and ends
 the old one), so run tmux on the server (command `tmux new -A -s main`) to keep your work.
+
+## Sources and switching
+
+The main screen has tabs: **Home** (one button per source, the display, brightness, shortcuts), **Screen**
+(the preview of what the glasses get, size and speed, place, look), **Terminal** (its preview, its place on the
+glasses, the saved servers) and **Settings**.
+
+- **Sources**, in order: each saved server's terminal, the phone's screen, and each other server's screen. One
+  tap on Home switches; the launcher's shortcuts (long-press Vox), pinned home-screen shortcuts, the Quick
+  Settings tile "Next source" and the TouchBar (by default: left hold next, left double tap previous, right hold
+  display off / on) do the same from anywhere. The phone's screen needs Android's consent once per sharing, in
+  the app.
+- **Saved servers** (Terminal tab): name, host, port, user, command. The one in use is what Settings, "Server in
+  use" edits. Host keys are trusted per server (host:port), so switching does not ask again. A link
+  `vox://server?name=Laptop&host=HOST&port=22&user=USER&command=...` (e.g. `adb shell am start -d '...'`) adds or
+  updates one after the app asks.
+- **A server's screen** (a laptop's): over SSH, with the same key, the app runs `vox-screen WIDTH HEIGHT FPS`
+  there, which must write baseline JPEG images one after another to stdout (each the whole desktop inside
+  WIDTH x HEIGHT) until stdout closes. They go through the same pipeline as the phone's screen. The width asked
+  for is on the Screen tab (640, 960, 1280).
 
 ## From the phone alone (Termux, the phone's screen)
 

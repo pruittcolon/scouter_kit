@@ -9,10 +9,10 @@ import android.widget.TextView
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.KeyPair
 
-// Settings, in cards: access, the glasses (pairing, brightness, alignment, the looking-up angle), the display
-// (battery icons, always visible, dark while locked), the TouchBar's gestures, the phone's screen, the terminal
-// server and its key (presets for Claude in this phone's Ubuntu), Termux, keyboard and keyer. Switches and
-// sliders apply at once; text fields when the screen is left.
+// Settings, in cards: access, the glasses (pairing, brightness, alignment, the looking-up angle), the TouchBar's
+// gestures, the phone's screen, the server in use and the phone's key (presets for Claude in this phone's
+// Ubuntu), Termux, keyboard and keyer. The terminal's and the screen's everyday controls are on the main
+// screen's tabs. Switches and sliders apply at once; text fields when the screen is left.
 class SettingsActivity : Activity() {
     private lateinit var settings: Settings
     private val fields = mutableListOf<Pair<EditText, (String) -> Unit>>()
@@ -66,21 +66,8 @@ class SettingsActivity : Activity() {
         })
         page.addView(glasses)
 
-        val display = card("Display")
-        display.addToggle(toggle("Battery icons", "Each eye's battery level beside the terminal", settings.battery) {
-            settings.battery = it
-            Thread { Native.setBattery(it) }.start()
-        })
-        display.addToggle(toggle("Always visible", "Off: the terminal shows only when you look up", settings.phoneForce) {
-            settings.phoneForce = it
-            restart()
-        })
-        display.addToggle(toggle("Dark while the phone is locked", "With the phone's screen on the glasses", settings.offWhenLocked) {
-            settings.offWhenLocked = it
-        })
-        page.addView(display)
-
-        val touch = card("TouchBar", "Hold means a press of half a second. Gestures work while the glasses show something.")
+        val touch = card("TouchBar", "Hold means a press of half a second. Gestures work while the glasses show " +
+            "something. Next and previous go through Home's sources.")
         for (arm in intArrayOf(1, 0)) for ((gesture, name) in Settings.GESTURES) {
             val side = if (arm == 1) "Right" else "Left"
             touch.addView(choiceRow("$side $name", Settings.ACTIONS[settings.gestureAction(arm, gesture)] ?: "") { shown ->
@@ -98,8 +85,7 @@ class SettingsActivity : Activity() {
         }
         page.addView(touch)
 
-        val phone = card("Phone screen", "Its look and place are on the home screen; these are the rest.")
-        phone.addView(slider("Frames per second (at most)", 1, 30, settings.screenFps) { settings.screenFps = it })
+        val phone = card("Phone screen", "Its look, place and speed are on the Screen tab; these are the rest.")
         phone.addToggle(toggle("Dark in the charging case", "A lit panel slows charging", settings.screenHideCase) {
             settings.screenHideCase = it
         })
@@ -115,7 +101,8 @@ class SettingsActivity : Activity() {
         })
         page.addView(phone)
 
-        val server = card("Terminal server", "Where the terminal comes from: SSH, then mosh.")
+        val server = card("Server in use", "Editing ${settings.active()?.name ?: "the server"}: SSH, then mosh. Add " +
+            "servers and switch on the main screen (Terminal tab, Home).")
         server.addView(text("Termux on this phone: run examples/ssh/termux/scouter.sh in Termux once, then tap its preset.",
             12.5f, Ui.FAINT))
         server.addView(chipRow(
@@ -158,7 +145,7 @@ class SettingsActivity : Activity() {
             if (line == null) keyState.text = "No key yet: Create a key on this phone first."
             else {
                 getSystemService(android.content.ClipboardManager::class.java)
-                    .setPrimaryClip(android.content.ClipData.newPlainText("SSH Scouter public key", line))
+                    .setPrimaryClip(android.content.ClipData.newPlainText("Vox public key", line))
                 keyState.text = "Public key copied: paste it into Termux (scouter key)."
             }
         })
@@ -177,8 +164,8 @@ class SettingsActivity : Activity() {
         passphrase = field("Its passphrase (if it has one)", "", "", secret = true)
         server.addField(passphrase)
         server.addView(button("Save the pasted key") { save(pasted.text.toString().toByteArray()) })
-        server.addView(button("Forget the server's host key") {
-            Vault(this).delete(Vault.HOST_KEY)
+        server.addView(button("Forget this server's host key") {
+            Bootstrap.forget(Vault(this), "${settings.host}:${settings.port}")
             showKey()
         })
         page.addView(server)
@@ -203,7 +190,7 @@ class SettingsActivity : Activity() {
         })
         page.addView(keys)
 
-        page.addView(text("SSH Scouter ${BuildConfig.VERSION_NAME} · ${Native.version()}", 12f, Ui.FAINT).apply {
+        page.addView(text("Vox ${BuildConfig.VERSION_NAME} · ${Native.version()}", 12f, Ui.FAINT).apply {
             setPadding(dp(4), dp(4), dp(4), 0)
         })
         showKey()
@@ -271,6 +258,7 @@ class SettingsActivity : Activity() {
     override fun onPause() {
         Session.listeners -= listener
         for ((edit, set) in fields) set(edit.text.toString())
+        settings.syncActive() // the saved server in use takes the fields
         super.onPause()
     }
 
@@ -285,7 +273,7 @@ class SettingsActivity : Activity() {
             !Termux.hasRunCommand(this) -> "This Termux (from Google Play) cannot take commands from other apps: run " +
                 "scouter.sh in Termux yourself (bash scouter.sh), then tap the \"Termux on this phone\" preset."
             !Termux.permitted(this) -> "Needed: \"Run commands in Termux\" (the button below). If Android no longer asks: " +
-                "Android's Settings, Apps, SSH Scouter, Permissions, Additional permissions."
+                "Android's Settings, Apps, Vox, Permissions, Additional permissions."
             Session.termux.isNotEmpty() -> "Termux: ${Session.termux}"
             settings.termux -> "Termux: set up (the server below is 127.0.0.1:8022)"
             else -> "Termux: not set up yet"
@@ -331,7 +319,7 @@ class SettingsActivity : Activity() {
         val missing = ScouterService.missing(this)
         permissions.text = if (missing.isEmpty()) "Bluetooth and notifications: allowed." else
             "Needed: Bluetooth (the glasses, keyer and the app's service) and notifications (its state). If Android no " +
-                "longer asks: Android's Settings, Apps, SSH Scouter, Permissions."
+                "longer asks: Android's Settings, Apps, Vox, Permissions."
     }
 
     override fun onRequestPermissionsResult(request: Int, permissions: Array<out String>, results: IntArray) {
@@ -358,13 +346,13 @@ class SettingsActivity : Activity() {
 
     private fun showKey() {
         val vault = Vault(this)
-        val host = vault.text(Vault.HOST_KEY)
+        val host = Bootstrap.trusted(vault, "${settings.host}:${settings.port}")
         val made = vault.text(Vault.SSH_PUBLIC)?.let { Bootstrap.keyFingerprint(it) }
         keyState.text = (when {
             made != null -> "SSH key: made on this phone, $made"
             vault.has(Vault.SSH_KEY) -> "SSH key: imported"
             else -> "SSH key: none (create one below)"
-        }) + (if (host != null) "\nserver's host key: $host" else "")
+        }) + (if (host != null) "\nthis server's host key: $host" else "")
     }
 
     // A new key, in the vault; the private key never leaves the phone.
@@ -416,7 +404,7 @@ class SettingsActivity : Activity() {
             .setMessage("$host:$port\n$fingerprint\n\nOn the server, ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub " +
                 "(or _ed25519_) shows its fingerprint.")
             .setPositiveButton("Trust") { _, _ ->
-                Vault(this).putText(Vault.HOST_KEY, "$host:$port $fingerprint")
+                Bootstrap.remember(Vault(this), "$host:$port", fingerprint)
                 then()
             }
             .setNegativeButton("Cancel") { _, _ -> keyState.text = "not installed: the server was not trusted" }

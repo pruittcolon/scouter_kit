@@ -31,7 +31,8 @@
 
     <application
         android:allowBackup="false"
-        android:icon="@drawable/icon"
+        android:icon="@mipmap/ic_vox"
+        android:roundIcon="@mipmap/ic_vox"
         android:label="@string/app_name"
         android:theme="@android:style/Theme.Material.NoActionBar">
         <activity
@@ -42,7 +43,21 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- vox://server?name=…&host=…&port=…&user=…&command=… adds a saved server (the app asks first). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="vox" android:host="server" />
+            </intent-filter>
         </activity>
+        <!-- The shortcuts' taps (launcher, home screen): no screen of its own. -->
+        <activity
+            android:name=".ShortcutActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay" />
         <activity android:name=".SettingsActivity" android:exported="false" />
         <activity android:name=".HidSpikeActivity" android:exported="false" />
         <activity android:name=".PairingActivity" android:exported="false" />
@@ -64,6 +79,17 @@
             android:exported="true"
             android:icon="@android:drawable/stat_sys_data_bluetooth"
             android:label="Glasses"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <!-- Quick Settings: the next source on the glasses. -->
+        <service
+            android:name=".SourceTile"
+            android:exported="true"
+            android:icon="@drawable/ic_sc_next"
+            android:label="Next source"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />

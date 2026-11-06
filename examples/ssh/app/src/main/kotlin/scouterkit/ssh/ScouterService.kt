@@ -41,6 +41,9 @@ object Session {
     @Volatile var screenFrames = 0
     @Volatile var screenFps = 0f // frames shown on the glasses per second, over the last 2 s
     @Volatile var capturing = false // Android's screen sharing runs (the phone's screen can show without asking)
+    @Volatile var screenSource = "" // the screen the glasses get: Settings.PHONE or "screen:ID" (a server's)
+    @Volatile var remote = "" // a server's screen streams (RemoteScreen): its server id
+    @Volatile var source = "" // the source shown, by name (Settings.sourceName)
     @Volatile var showing = "" // what the glasses show now: Settings.TERMINAL or SCREEN ("" no session)
     @Volatile var blank = false // the display is off (nothing shows; the TouchBar still works)
     @Volatile var battery: IntArray = intArrayOf(-1, -1, -1, -1) // left %, right %, left charging, right charging
@@ -78,17 +81,23 @@ class ScouterService : Service() {
     @Volatile private var ended = false
     // The phone's screen on the glasses (Settings.show SCREEN), while Android's screen sharing runs.
     @Volatile private var screen: PhoneScreen? = null
+    // A server's screen (the laptop's) over SSH, while it is the source.
+    @Volatile private var remote: RemoteScreen? = null
     private var forced = false // the terminal forced on for a session started from the phone (phoneForce)
     private val main = Handler(Looper.getMainLooper())
     private val screenTicker = object : Runnable {
         override fun run() {
-            val s = screen ?: return
+            val remoteShown = Session.screenSource.startsWith("screen:")
+            val s = (if (remoteShown) remote?.state else screen?.state) ?: run {
+                if (screen == null && remote == null) return
+                Native.SCREEN_SAME
+            }
             val status = Native.status()
             val state = when {
                 settings.show != Settings.SCREEN -> "shared (the glasses show the terminal)"
                 Session.blank -> "shared (display off)"
                 status.getOrElse(6) { 0 } != 1 -> if (Session.glasses == "ready") "not on the glasses yet" else "waiting for the glasses"
-                s.state == Native.SCREEN_HIDDEN -> "off: ${Native.screenWhy().ifEmpty { "hidden" }}"
+                s == Native.SCREEN_HIDDEN -> "off: ${Native.screenWhy().ifEmpty { "hidden" }}"
                 else -> "on"
             }
             val frames = status.getOrElse(7) { 0 }
@@ -215,11 +224,18 @@ class ScouterService : Service() {
                 settings.phone = true
                 view(Settings.TERMINAL)
             }
-            // ... or the phone's screen again, while it is shared.
-            ACTION_VIEW_SCREEN -> work.post {
-                settings.phone = true
-                view(Settings.SCREEN)
+            // A saved server's terminal (extra "id"); empty: the next saved server.
+            ACTION_SERVER -> work.post {
+                val id = intent.getStringExtra("id").orEmpty()
+                val all = settings.servers()
+                val pick = all.firstOrNull { it.id == id }
+                    ?: all.getOrNull((all.indexOfFirst { it.id == settings.active()?.id } + 1) % maxOf(1, all.size))
+                pick?.let { source("term:${it.id}") }
             }
+            // ... or the phone's screen again, while it is shared.
+            ACTION_VIEW_SCREEN -> work.post { source(Settings.PHONE) }
+            // A source (Settings.sources), or next / prev: the app's buttons, shortcuts, the tile.
+            ACTION_SOURCE -> work.post { source(intent.getStringExtra(Shortcuts.EXTRA) ?: "") }
             ACTION_STOP_SHARING -> work.post { screenEnded("off") }
             // The display off / on (the notification, the Quick Settings tile, the app): extra "on" true/false,
             // absent: the other way.
@@ -260,6 +276,10 @@ class ScouterService : Service() {
         ended = true
         screen?.release()
         screen = null
+        remote?.release()
+        remote = null
+        Session.remote = ""
+        Session.screenSource = ""
         Session.capturing = false
         Session.showing = ""
         Native.onGesture = null
@@ -361,6 +381,8 @@ class ScouterService : Service() {
         if (forced) Native.force(false)
         forced = false
         work.removeCallbacks(screenTicker)
+        stopRemote()
+        Session.screenSource = ""
         screen?.let {
             screen = null
             it.release()
@@ -463,10 +485,12 @@ class ScouterService : Service() {
         // Termux on this phone: its sshd started first (it does not run by itself).
         if (settings.termux) Termux.ensureSshd(this)?.let { return update(mosh = "error: $it") }
         update(mosh = "starting")
-        val previous = vault.text(Vault.MOSH)?.split(" ")?.getOrNull(3)?.toIntOrNull() ?: 0
+        // The last mosh-server this server ran for the app ends first (the record names its server).
+        val record = vault.text(Vault.MOSH)?.split(" ")
+        val previous = if (record?.getOrNull(4) == "${settings.host}:${settings.port}") record.getOrNull(3)?.toIntOrNull() ?: 0 else 0
         try {
             val m = Bootstrap(vault).start(settings.host, settings.port, settings.user, settings.command, settings.moshPorts, previous)
-            vault.putText(Vault.MOSH, "${m.ip} ${m.port} ${m.key} ${m.pid}")
+            vault.putText(Vault.MOSH, "${m.ip} ${m.port} ${m.key} ${m.pid} ${settings.host}:${settings.port}")
             val error = Native.moshStart(m.ip, m.port, m.key, settings.cols, settings.rows)
             if (error == null) {
                 moshWith = moshSettings()
@@ -476,7 +500,7 @@ class ScouterService : Service() {
         } catch (e: Bootstrap.UnknownHost) {
             // Termux's own host key, as Termux reported it at setup: trusted without asking.
             if (settings.termux && e.fingerprint in settings.termuxKeys.split(" ")) {
-                vault.putText(Vault.HOST_KEY, "${settings.host}:${settings.port} ${e.fingerprint}")
+                Bootstrap.remember(vault, "${settings.host}:${settings.port}", e.fingerprint)
                 update(mosh = "off")
                 return startMosh()
             }
@@ -504,7 +528,7 @@ class ScouterService : Service() {
 
     private fun trust(fingerprint: String?) {
         if (fingerprint == null || fingerprint != Session.unknownHost) return
-        vault.putText(Vault.HOST_KEY, "${settings.host}:${settings.port} $fingerprint")
+        Bootstrap.remember(vault, "${settings.host}:${settings.port}", fingerprint)
         Session.unknownHost = null
         update(mosh = "off")
         startMosh()
@@ -576,6 +600,7 @@ class ScouterService : Service() {
         Session.capturing = this.screen != null
         Session.showing = if (ended || !active()) "" else settings.show
         GlassesTile.refresh(this)
+        SourceTile.refresh(this)
         // R4: awake only while the terminal is live, shown on an eye or typed into with keyer, or started from
         // the phone (Claude's output reaches the glasses with the phone's screen off).
         val live = Session.mosh == "connected" && Session.glasses == "ready" &&
@@ -638,6 +663,10 @@ class ScouterService : Service() {
         screen = capture
         work.post {
             if (screen !== capture) return@post
+            stopRemote()
+            Session.screenSource = Settings.PHONE
+            settings.source = Settings.PHONE
+            Session.source = settings.sourceName(Settings.PHONE)
             settings.phone = true
             settings.show = Settings.SCREEN
             val error = Native.screenStart()
@@ -652,10 +681,82 @@ class ScouterService : Service() {
         }
     }
 
+    // A source on the glasses (Settings.sources): "term:ID" (that saved server's terminal), PHONE (the phone's
+    // screen, while it is shared: Android asks in the app), "screen:ID" (that server's screen over SSH), or
+    // next / prev through them.
+    private fun source(want: String) {
+        val all = settings.sources().map { it.first }.filter { it != Settings.PHONE || screen != null }
+        val key = if (want == Settings.ACTION_NEXT || want == Settings.ACTION_PREV) {
+            if (all.isEmpty()) return
+            val now = if (settings.show == Settings.TERMINAL) "term:${settings.active()?.id}" else Session.screenSource
+            val i = all.indexOf(now)
+            all[Math.floorMod(if (i < 0) 0 else i + if (want == Settings.ACTION_NEXT) 1 else -1, all.size)]
+        } else want
+        settings.phone = true
+        when {
+            key.startsWith("term:") -> {
+                val id = key.removePrefix("term:")
+                if (settings.servers().none { it.id == id }) return
+                if (settings.activeServer != id || settings.host.isEmpty()) settings.useServer(id)
+                view(Settings.TERMINAL)
+            }
+            key == Settings.PHONE -> {
+                if (screen == null) return update(screen = "not shared: tap Phone screen in the app")
+                stopRemote()
+                Session.screenSource = key
+                view(Settings.SCREEN)
+            }
+            key.startsWith("screen:") -> {
+                val s = settings.servers().firstOrNull { it.id == key.removePrefix("screen:") } ?: return
+                startRemote(s)
+                Session.screenSource = key
+                view(Settings.SCREEN)
+                update(screen = "starting")
+                work.removeCallbacks(screenTicker)
+                work.postDelayed(screenTicker, 2000)
+            }
+        }
+        SourceTile.refresh(this)
+    }
+
+    private fun startRemote(s: Settings.Server) {
+        if (remote?.server?.id == s.id) return
+        stopRemote()
+        lateinit var r: RemoteScreen
+        r = RemoteScreen(this, s) { why -> work.post { remoteEnded(r, why) } }
+        remote = r
+        Session.remote = s.id
+        r.start()
+    }
+
+    private fun stopRemote() {
+        remote?.release()
+        remote = null
+        Session.remote = ""
+        if (Session.screenSource.startsWith("screen:")) Session.screenSource = ""
+    }
+
+    // A server's screen stopped by itself (not reachable, no vox-screen there, ended): the terminal comes back.
+    private fun remoteEnded(r: RemoteScreen, why: String) {
+        if (remote !== r) return
+        remote = null
+        Session.remote = ""
+        if (Session.screenSource == r.key) {
+            Session.screenSource = ""
+            if (screen == null) Native.screenStop()
+            view(Settings.TERMINAL)
+        }
+        update(screen = why)
+    }
+
     // What the glasses show: the terminal, or the phone's screen (only while it is shared).
     private fun view(show: String) {
-        if (show == Settings.SCREEN && screen == null) return update(screen = "not shared: tap Phone screen in the app")
+        if (show == Settings.SCREEN && screen == null && remote == null) return update(screen = "not shared: tap Phone screen in the app")
+        if (show == Settings.SCREEN && Session.screenSource.isEmpty()) Session.screenSource = if (remote != null) remote!!.key else Settings.PHONE
+        if (show == Settings.TERMINAL) stopRemote()
         settings.show = show
+        settings.source = if (show == Settings.TERMINAL) "term:${settings.active()?.id ?: ""}" else Session.screenSource
+        Session.source = settings.sourceName(settings.source)
         if (show == Settings.SCREEN) {
             val error = Native.screenStart()
             if (error != null) {
@@ -691,7 +792,9 @@ class ScouterService : Service() {
                 blankByLock = false
                 display(Session.blank, name)
             }
-            Settings.ACTION_VIEW -> if (screen != null) view(if (settings.show == Settings.SCREEN) Settings.TERMINAL else Settings.SCREEN)
+            Settings.ACTION_VIEW -> if (screen != null || remote != null)
+                view(if (settings.show == Settings.SCREEN) Settings.TERMINAL else Settings.SCREEN)
+            Settings.ACTION_NEXT, Settings.ACTION_PREV -> source(action)
             Settings.ACTION_STOP -> {
                 settings.phone = false
                 end()
@@ -705,8 +808,14 @@ class ScouterService : Service() {
         val capture = screen ?: return
         screen = null
         capture.release()
+        // A server's screen on the glasses goes on.
+        if (remote != null && Session.screenSource.startsWith("screen:")) {
+            foreground()
+            return update(screen = why)
+        }
         work.removeCallbacks(screenTicker)
         Native.screenStop()
+        Session.screenSource = ""
         settings.show = Settings.TERMINAL
         foreground()
         update(screen = why)
@@ -755,6 +864,8 @@ class ScouterService : Service() {
         const val ACTION_VIEW_SCREEN = "scouterkit.ssh.VIEW_SCREEN" // the phone's screen again, while it is shared
         const val ACTION_STOP_SHARING = "scouterkit.ssh.STOP_SHARING" // screen sharing ends
         const val ACTION_DISPLAY = "scouterkit.ssh.DISPLAY" // the display on / off (EXTRA_ON, else the other way)
+        const val ACTION_SOURCE = "scouterkit.ssh.SOURCE" // a source on the glasses (Shortcuts.EXTRA: a key, next, prev)
+        const val ACTION_SERVER = "scouterkit.ssh.SERVER" // a saved server's terminal (extra "id"; none: the next)
         const val EXTRA_ON = "on"
         const val EXTRA_CODE = "code"
         const val EXTRA_DATA = "data"

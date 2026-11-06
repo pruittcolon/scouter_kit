@@ -127,6 +127,13 @@ class PhoneScreen(
             due = true
             previewDirty = true
         }
+        // Another source on the glasses (the laptop's screen): the capture waits, its newest image kept.
+        val mine = Session.screenSource.isEmpty() || Session.screenSource == Settings.PHONE
+        if (!mine) {
+            state = Native.SCREEN_STOPPED
+            due = true // back on the glasses later: this image goes again
+            return
+        }
         if (due) {
             state = Native.screenFrame(plane.buffer, image.width, image.height, plane.rowStride, options)
             // Again later: the link was busy, a coarser version went, the panels are off (in the case), or the

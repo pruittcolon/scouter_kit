@@ -5,6 +5,7 @@ import android.content.Context
 // Plain settings (R6): secrets live in the Vault, not here.
 class Settings(context: Context) {
     private val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    private val app: Context = context.applicationContext
 
     var host: String by Text("host", "")
     var port: Int by Number("port", 22)
@@ -127,11 +128,14 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("battery", true)
         set(v) = prefs.edit().putBoolean("battery", v).apply()
 
-    // What a TouchBar gesture does (ACTIONS): arm 0 left, 1 right; Native.GESTURE_*. Holding the right arm turns
-    // the display off and on by default.
-    fun gestureAction(arm: Int, gesture: Int): String =
-        prefs.getString("gesture_${arm}_$gesture", if (arm == 1 && gesture == Native.GESTURE_HOLD) ACTION_DISPLAY else ACTION_NONE)
-            ?: ACTION_NONE
+    // What a TouchBar gesture does (ACTIONS): arm 0 left, 1 right; Native.GESTURE_*. By default: right hold turns
+    // the display off and on, left hold goes to the next source, left double tap back to the one before.
+    fun gestureAction(arm: Int, gesture: Int): String = prefs.getString("gesture_${arm}_$gesture", when {
+        arm == 1 && gesture == Native.GESTURE_HOLD -> ACTION_DISPLAY
+        arm == 0 && gesture == Native.GESTURE_HOLD -> ACTION_NEXT
+        arm == 0 && gesture == Native.GESTURE_DOUBLE -> ACTION_PREV
+        else -> ACTION_NONE
+    }) ?: ACTION_NONE
 
     fun setGestureAction(arm: Int, gesture: Int, action: String) = prefs.edit().putString("gesture_${arm}_$gesture", action).apply()
     // Termux's sshd host keys (SHA256:... fingerprints, space separated), as Termux itself reported them: trusted
@@ -139,6 +143,95 @@ class Settings(context: Context) {
     var termuxKeys: String by Text("termux_keys", "")
     // The server is Termux on this phone: its sshd is started before each session.
     val termux get() = (host == Termux.HOST || host == "localhost") && port == Termux.PORT
+
+    // Saved servers. The active one's fields are host, port, user, command and moshPorts (what the service uses):
+    // switching copies a saved server into them, and editing them (Settings, Terminal server) updates it.
+    data class Server(val id: String, val name: String, val host: String, val port: Int, val user: String,
+                      val command: String = "", val moshPorts: String = "") {
+        val address get() = "$user@$host" + if (port != 22) ":$port" else ""
+        // This phone's own server: its screen is the phone's (no screen over SSH).
+        val local get() = host == Termux.HOST || host == "localhost"
+    }
+
+    var activeServer: String by Text("server_active", "")
+
+    fun servers(): List<Server> {
+        val list = runCatching {
+            val a = org.json.JSONArray(prefs.getString("servers", null) ?: "[]")
+            (0 until a.length()).map { i ->
+                val o = a.getJSONObject(i)
+                Server(o.getString("id"), o.optString("name"), o.optString("host"), o.optInt("port", 22),
+                    o.optString("user"), o.optString("command"), o.optString("mosh_ports"))
+            }
+        }.getOrDefault(emptyList())
+        if (list.isNotEmpty() || host.isEmpty()) return list
+        // From before saved servers: the one in the fields.
+        val first = Server(newServerId(), nameFor(host, command), host, port, user, command, moshPorts)
+        activeServer = first.id
+        saveServers(listOf(first))
+        return listOf(first)
+    }
+
+    private fun saveServers(list: List<Server>) {
+        val a = org.json.JSONArray()
+        for (s in list) a.put(org.json.JSONObject().put("id", s.id).put("name", s.name).put("host", s.host)
+            .put("port", s.port).put("user", s.user).put("command", s.command).put("mosh_ports", s.moshPorts))
+        prefs.edit().putString("servers", a.toString()).apply()
+        Shortcuts.update(app)
+    }
+
+    fun active(): Server? = servers().let { l -> l.firstOrNull { it.id == activeServer } ?: l.firstOrNull() }
+
+    // The terminal from this saved server from now on (a running session connects again).
+    fun useServer(id: String): Server? {
+        val s = servers().firstOrNull { it.id == id } ?: return null
+        host = s.host
+        port = s.port
+        user = s.user
+        command = s.command
+        moshPorts = s.moshPorts
+        activeServer = s.id
+        return s
+    }
+
+    // Adds or replaces (the same id); the active one's fields follow.
+    fun putServer(s: Server) {
+        val l = servers().toMutableList()
+        val i = l.indexOfFirst { it.id == s.id }
+        if (i >= 0) l[i] = s else l += s
+        saveServers(l)
+        if (s.id == active()?.id) useServer(s.id)
+    }
+
+    fun removeServer(id: String) {
+        val l = servers().filter { it.id != id }
+        saveServers(l)
+        if (activeServer == id) l.firstOrNull()?.let { useServer(it.id) } ?: run { activeServer = "" }
+    }
+
+    // The fields were edited (Settings, Terminal server): the active saved server takes them.
+    fun syncActive() {
+        if (host.isEmpty()) return
+        val a = active() ?: return
+        if (a.host != host || a.port != port || a.user != user || a.command != command || a.moshPorts != moshPorts)
+            putServer(a.copy(host = host, port = port, user = user, command = command, moshPorts = moshPorts))
+    }
+
+    // What the glasses can show, in order: each saved server's terminal, the phone's screen, each other server's
+    // screen (SSH, vox-screen). Keys: "term:ID", PHONE, "screen:ID"; with a name for buttons and shortcuts.
+    fun sources(): List<Pair<String, String>> {
+        val l = servers()
+        return l.map { "term:${it.id}" to "${it.name} · terminal" } + (PHONE to "Phone screen") +
+            l.filter { !it.local }.map { "screen:${it.id}" to "${it.name} · screen" }
+    }
+
+    // The source the glasses show (or last showed).
+    var source: String by Text("source", "")
+
+    fun sourceName(key: String) = sources().firstOrNull { it.first == key }?.second ?: key
+
+    // The laptop's (or another server's) screen: its width asked for, in pixels (the height follows its shape).
+    var remoteWidth: Int by Number("remote_width", 960)
 
     // The app connects to G1 arms only when this is on and both addresses are set (off by default).
     var glassesAllowed: Boolean
@@ -167,8 +260,17 @@ class Settings(context: Context) {
         const val ACTION_DISPLAY = "display" // the display off / on
         const val ACTION_VIEW = "view" // the terminal / the phone's screen (while it is shared)
         const val ACTION_STOP = "stop" // the session ends
+        const val ACTION_NEXT = "next" // the next source (sources())
+        const val ACTION_PREV = "prev" // the source before
         val ACTIONS = linkedMapOf(ACTION_NONE to "Nothing", ACTION_DISPLAY to "Display off / on",
-            ACTION_VIEW to "Switch terminal / phone screen", ACTION_STOP to "Stop everything")
+            ACTION_NEXT to "Next source", ACTION_PREV to "Previous source",
+            ACTION_VIEW to "Switch terminal / screen", ACTION_STOP to "Stop everything")
+        const val PHONE = "phone" // the phone's own screen (a source)
+
+        fun newServerId() = java.util.UUID.randomUUID().toString().take(8)
+        // A name for a server from before saved servers: this phone's own is "Phone".
+        @Suppress("UNUSED_PARAMETER")
+        fun nameFor(host: String, command: String) = if (host == Termux.HOST || host == "localhost") "Phone" else host
         val GESTURES = listOf(Native.GESTURE_HOLD to "hold", Native.GESTURE_DOUBLE to "double tap",
             Native.GESTURE_TRIPLE to "triple tap", Native.GESTURE_TAP to "tap")
 
