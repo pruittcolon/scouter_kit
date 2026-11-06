@@ -122,6 +122,13 @@ class Settings(context: Context) {
     // The look-up view (LookUp): the fade when the terminal comes and goes (ms, 0: none), and the header above the
     // terminal with the time, date and batteries, and the newest phone notification.
     var fadeMs: Int by Number("fade_ms", 400)
+    // The graphical dashboard above the terminal (Dashboard) instead of the header's text lines, and its height.
+    var dashboard: Boolean
+        get() = prefs.getBoolean("dashboard", true)
+        set(v) = prefs.edit().putBoolean("dashboard", v).apply()
+    var dashHeight: Int by Number("dash_height", 88)
+    // The dashboard's height on the glasses, 0 without it (even, as the native side takes it).
+    val dashRows get() = if (dashboard && (lookUpClock || lookUpNotifications)) dashHeight.coerceIn(56, 140) and 1.inv() else 0
     var lookUpClock: Boolean
         get() = prefs.getBoolean("look_up_clock", true)
         set(v) = prefs.edit().putBoolean("look_up_clock", v).apply()
@@ -312,7 +319,7 @@ class Settings(context: Context) {
 
     val cols get() = grid(dx, dy, termTop, termBottom).first
     // The terminal's rows for the SSH session: the glasses' rows less the look-up header's.
-    val rows get() = maxOf(2, grid(dx, dy, termTop, termBottom).second - LookUp.rows(this))
+    val rows get() = maxOf(2, grid(dx, dy, termTop + dashRows, termBottom).second - LookUp.rows(this))
 
     companion object {
         const val TERMINAL = "terminal"

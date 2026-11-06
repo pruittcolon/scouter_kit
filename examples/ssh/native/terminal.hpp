@@ -43,6 +43,8 @@ public:
     // Looking up, the panel comes on dim and brightens to its level in this long (0: at once); looking down it
     // dims in 5/8 of it, then goes off.
     int fade_ms = 400;
+    // The dashboard above the terminal (SetDash), this many pixels high (0: none); the terminal gets fewer rows.
+    int dash_h = 0;
   };
   // After g1::Init. `font`: a font blob (departure_mono_nerd.skf); `changed` runs when visibility changes.
   bool Start(const Config &, std::vector<uint8_t> font, std::function<void()> changed, std::string *error);
@@ -51,6 +53,12 @@ public:
   void Stop(bool keep = false);
   void Show(std::shared_ptr<const Snapshot>); // a new screen, from any thread
   void Force(bool on);
+  // The dashboard's picture: 4 bpp (the high nibble the left pixel), dash_w() / 2 bytes a row, dash_h() rows.
+  // Each arm gets the rows that changed (in its memory); it draws them while the terminal shows, and with it
+  // when the terminal comes.
+  void SetDash(const std::vector<uint8_t> &pixels);
+  int dash_w() const { return dash_h_ ? geo_.W() : 0; }
+  int dash_h() const { return dash_h_; }
   bool Shown();
   // Read-back (T3): both arms' rendered areas are equal and not blank, and each eye's panel rows hold that
   // area at the eye's offset (PanelCrc). One line per check; "ok" when all pass.
@@ -64,7 +72,7 @@ public:
     int W() const { return (cols * cw + 1) & ~1; } // even: 4-bpp bytes
   };
   struct Layout {
-    uint32_t base, state, dirty, ring, area, batt, batt_text, end;
+    uint32_t base, state, dirty, ring, area, batt, batt_text, dash, end;
   };
   struct Row {
     std::vector<uint8_t> rec;
@@ -105,6 +113,9 @@ private:
 
   Geometry geo_{};
   Layout l_{};
+  int dash_h_ = 0;
+  std::mutex dash_mutex_;
+  std::array<std::vector<uint8_t>, 2> dash_sent_; // what each arm holds
   int angle_ = 20;
   bool battery_ = true;
   std::function<void(int, uint32_t)> on_touch_;

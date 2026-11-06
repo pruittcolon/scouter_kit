@@ -88,7 +88,14 @@ glasses, the saved servers) and **Settings**.
   had in 8 steps on a square curve (*Fade in*, Terminal tab, 0 ... 800 ms; 400 by default); looking down it
   lowers it in 5 steps over 5/8 of that, switches the panel off and writes the level back for the next power-on.
   The arm reports the change before fading, so the other eye follows at once.
-- **The header** above the terminal (`Native.lookUpHeader`): the time, the date and the glasses' batteries, and
+- **The dashboard** (by default; `Dashboard.kt`, `GlassesTerminal::SetDash`): a strip above the terminal (*Dashboard
+  height*, 88 px by default; the terminal gets fewer rows) that the phone draws at the glasses' pixels in their 16
+  levels: a thin clock with a halo and the date, a card with the newest notification (or, while voice is in use,
+  what is heard), a ring gauge per arm's battery, corner brackets and a ticked rule. Each arm keeps the picture
+  in its memory (only the bytes of each row that changed are sent), draws it with the terminal when the head goes
+  up (so it fades in with it) and again on USER3 when the phone sends a new one. The Terminal tab shows it as the
+  glasses get it.
+- **The header** instead, as text lines (*Graphical dashboard* off; `Native.lookUpHeader`): the time, the date and the glasses' batteries, and
   the newest phone notification (a `NotificationListenerService`, once the user allows Notification access),
   then a rule. The SSH session gets as many rows fewer; the voice band takes the header's rows while voice is in
   use. It is redrawn each minute and when notifications or the batteries change.

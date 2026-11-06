@@ -39,6 +39,7 @@ class MainActivity : Activity() {
     private lateinit var forceSwitch: Switch
     private lateinit var homeForce: Switch
     private lateinit var notesState: TextView
+    private lateinit var dashPreview: android.widget.ImageView
     private lateinit var voiceState: TextView
     private lateinit var voiceModel: TextView
     private lateinit var voiceListen: TextView
@@ -401,16 +402,36 @@ class MainActivity : Activity() {
         fun lookUpChanged() {
             if (ScouterService.running) ScouterService.send(this, ScouterService.ACTION_LOOK_UP)
         }
+        dashPreview = android.widget.ImageView(this).apply {
+            adjustViewBounds = true
+            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+            setBackgroundColor(0xFF000000.toInt())
+        }
+        view.addView(dashPreview, lp().apply { topMargin = dp(4); bottomMargin = dp(6) })
+        view.addToggle(toggle("Graphical dashboard", "Off: the header as two lines of text", settings.dashboard) {
+            settings.dashboard = it
+            showDash()
+            lookUpChanged()
+        })
+        view.addView(slider("Dashboard height", 56, 140, settings.dashHeight, { "$it px" }, {
+            settings.dashHeight = it
+            showDash()
+        }) { v ->
+            settings.dashHeight = v
+            lookUpChanged()
+        })
         view.addView(slider("Fade in", 0, 800, settings.fadeMs, { if (it == 0) "off" else "$it ms" }) { v ->
             settings.fadeMs = v
             lookUpChanged()
         })
-        view.addToggle(toggle("Time, date and batteries", "The header's first line", settings.lookUpClock) {
+        view.addToggle(toggle("Time, date and batteries", "The clock, the date, each arm's battery", settings.lookUpClock) {
             settings.lookUpClock = it
+            showDash()
             lookUpChanged()
         })
         view.addToggle(toggle("Phone notifications", "The newest one, and how many there are", settings.lookUpNotifications) {
             settings.lookUpNotifications = it
+            showDash()
             lookUpChanged()
         })
         notesState = text("", 12.5f, Ui.FAINT)
@@ -478,6 +499,18 @@ class MainActivity : Activity() {
         got.addView(heardText)
         page.addView(got)
         return scroll
+    }
+
+    // The dashboard as the glasses get it (their green), at the width the terminal has now.
+    private fun showDash() {
+        if (!::dashPreview.isInitialized) return
+        val settings = Settings(this)
+        val h = settings.dashHeight.coerceIn(56, 140) and 1.inv()
+        dashPreview.visibility = if (settings.dashboard) View.VISIBLE else View.GONE
+        if (!settings.dashboard) return
+        val voice = if (Session.listening || Session.voice.isNotEmpty()) Session.voice.ifEmpty { null } else null
+        val f = Dashboard.render(this, settings, Dashboard.width(settings), h, voice, Session.listening)
+        dashPreview.setImageDrawable(android.graphics.drawable.BitmapDrawable(resources, f.preview).apply { setFilterBitmap(false) })
     }
 
     private fun showVoice() {
@@ -1021,6 +1054,7 @@ class MainActivity : Activity() {
         if (batterySwitch.isChecked != settings.battery) batterySwitch.isChecked = settings.battery
         if (forceSwitch.isChecked != settings.phoneForce) forceSwitch.isChecked = settings.phoneForce
         if (homeForce.isChecked != settings.phoneForce) homeForce.isChecked = settings.phoneForce
+        showDash()
         notesState.text = if (LookUp.allowed(this)) "Notification access: allowed (${LookUp.notes.size} now)." else
             "Notification access: not allowed yet. If Android says it is restricted: Apps, Vox, ⋮, Allow restricted " +
                 "settings, then try again."

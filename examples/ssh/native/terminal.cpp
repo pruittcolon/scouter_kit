@@ -186,7 +186,7 @@ int BattY(const GlassesTerminal::Geometry &g) {
   return std::clamp((480 - g.bh) / 2, g.y, std::max(g.y, g.y + g.rows * g.ch - g.bh));
 }
 
-GlassesTerminal::Layout MakeLayout(uint32_t base, const GlassesTerminal::Geometry &g) {
+GlassesTerminal::Layout MakeLayout(uint32_t base, const GlassesTerminal::Geometry &g, int dash_h) {
   GlassesTerminal::Layout l;
   l.base = base;
   l.state = base + kCodeBytes;
@@ -195,7 +195,8 @@ GlassesTerminal::Layout MakeLayout(uint32_t base, const GlassesTerminal::Geometr
   l.area = l.ring + uint32_t(g.rows * kRecordBytes);
   l.batt = l.area + uint32_t(g.W() / 2 * g.rows * g.ch);
   l.batt_text = l.batt + uint32_t(g.bw / 2 * g.bh); // 3 digits and %
-  l.end = l.batt_text + 4;
+  l.dash = l.batt_text + 4;
+  l.end = l.dash + uint32_t(g.W() / 2 * dash_h);
   return l;
 }
 
@@ -205,7 +206,7 @@ GlassesTerminal::Layout MakeLayout(uint32_t base, const GlassesTerminal::Geometr
 // whether the terminal shows and NOTIFY (shown | kByHost when the host caused it, PITCH). The battery band
 // shows at (bx, by) with the terminal; BATTERY redraws it.
 g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal::Geometry &g, int px, int py,
-                        int bx, int by, int angle, bool ignore_worn, int fade_us) {
+                        int bx, int by, int angle, bool ignore_worn, int fade_us, int dash_h) {
   g1::Program p(l.base, kPoolWords);
   auto c = [&](uint32_t v) { return p.Const(v); };
   auto n = [&](int v) { return p.Const(uint32_t(int32_t(v))); };
@@ -314,6 +315,11 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   // only while the head is up. show / hide: r6 = 0 (the arm's own decision) or kByHost.
   auto up_range = p.NewLabel(), down_range = p.NewLabel(), show = p.NewLabel(), on_panel = p.NewLabel(),
        no_band = p.NewLabel(), hide = p.NewLabel(), band_off = p.NewLabel();
+  // The dashboard right above the terminal (dash_h > 0): its picture as the host left it in l.dash.
+  auto dash = p.NewLabel();
+  p.Bind(dash);
+  if (dash_h > 0) p.Draw(c(l.dash), stride, c(0), c(0), n(px), n(py - dash_h), n(g.W()), n(dash_h));
+  p.Ret();
   // The look-up fade (fade_us > 0): BRIGHTNESS from 0 to r10 (the level it had: the host's, kept while hidden) in
   // kFadeSteps, or from r10 to 0 in kFadeOutSteps, on a square curve (the eye sees brightness about so). Uses
   // r10 ... r13.
@@ -351,6 +357,7 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
     p.SysWrite(bright, c(0));
   }
   p.Call(draw_all);
+  p.Call(dash);
   p.Mov(shown, c(1));
   p.SysRead(R(7), pitch);
   p.Or(R(8), shown, R(6));
@@ -541,8 +548,16 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.Bind(redraw);
   p.Beq(shown, c(0), done);
   p.Call(draw_all);
+  p.Call(dash);
   p.Beq(up, c(0), done);
   p.Call(label);
+  p.End();
+
+  // USER3: the host wrote the dashboard's picture: drawn while the terminal shows.
+  auto user3 = p.NewLabel();
+  p.Bind(user3);
+  p.Beq(shown, c(0), done);
+  p.Call(dash);
   p.End();
 
   // BATTERY: the band again where it shows.
@@ -557,6 +572,7 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.On(g1::TRIGGER_USER0, chunk);
   p.On(g1::TRIGGER_USER1, present);
   p.On(g1::TRIGGER_USER2, user2);
+  p.On(g1::TRIGGER_USER3, user3);
   p.On(g1::TRIGGER_TILT, tilt);
   p.On(g1::TRIGGER_TIMER, tick);
   p.On(g1::TRIGGER_BATTERY, battery);
@@ -740,10 +756,12 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
   // The margins leave at least two rows.
   int top = std::clamp(config.top, 0, std::max(0, vh - 2 * geo_.ch));
   int bottom = std::clamp(config.bottom, 0, std::max(0, vh - 2 * geo_.ch - top));
-  int avail = vh - top - bottom;
+  // The dashboard takes its height above the terminal (it leaves the terminal at least four rows).
+  dash_h_ = std::clamp(config.dash_h, 0, std::max(0, vh - top - bottom - 4 * geo_.ch)) & ~1;
+  int avail = vh - top - bottom - dash_h_;
   geo_.rows = std::min(255, avail / geo_.ch);
   geo_.x = (vw - geo_.W()) / 2;
-  geo_.y = top + (avail - geo_.rows * geo_.ch) / 2;
+  geo_.y = top + dash_h_ + (avail - geo_.rows * geo_.ch) / 2;
   // The battery band's font: the digits (glyphs 0 ... 9, VM.md §4.1) and % at 2x.
   sk::Font &batt = sk::LoadFont(std::span<const uint8_t>(blob_), "0123456789%", nullptr, 2);
   auto percent = batt.pimpl ? g1::GlyphIndices(batt, "%") : std::vector<uint32_t>{};
@@ -757,12 +775,12 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
   geo_.bascent = batt.ascent;
   geo_.bw = (4 * geo_.bcw + 2 + 2 * kBattPad + 1) & ~1;
   geo_.bh = batt.line_spacing + 2 + 2 * kBattPadY;
-  int64_t base_address = g1::Alloc(MakeLayout(0, geo_).end);
+  int64_t base_address = g1::Alloc(MakeLayout(0, geo_, dash_h_).end);
   if (base_address < 0) {
     *error = "the terminal does not fit the arena";
     return false;
   }
-  l_ = MakeLayout(uint32_t(base_address), geo_);
+  l_ = MakeLayout(uint32_t(base_address), geo_, dash_h_);
   for (int i = 0; i < 2; i++) {
     if (!present_[i]) continue;
     pos_[i] = i == 0 ? std::array<int, 2>{geo_.x - std::max(0, -config.dx), geo_.y + std::max(0, -config.dy)}
@@ -772,7 +790,7 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
     int right = pos_[i][0] + geo_.W();
     int bx = i == 0 ? std::max(2, (pos_[i][0] - geo_.bw) / 2) : std::min(640 - geo_.bw - 2, right + (640 - right - geo_.bw) / 2);
     g1::Program p = MakeProgram(l_, geo_, pos_[i][0], pos_[i][1], bx, BattY(geo_), angle_, config.ignore_worn,
-                                std::clamp(config.fade_ms, 0, 1000) * 1000);
+                                std::clamp(config.fade_ms, 0, 1000) * 1000, dash_h_);
     if (!p.Valid(error)) return false;
     if (p.Here() > l_.state) {
       *error = "the terminal program overlaps its state";
@@ -830,6 +848,33 @@ void GlassesTerminal::Show(std::shared_ptr<const Snapshot> s) {
     pending_ = std::move(s);
   }
   cv_.notify_all();
+}
+
+void GlassesTerminal::SetDash(const std::vector<uint8_t> &pixels) {
+  int stride = geo_.W() / 2;
+  if (!dash_h_ || pixels.size() != size_t(stride) * dash_h_) return;
+  std::lock_guard<std::mutex> lock(dash_mutex_);
+  for (int i = 0; i < 2; i++) {
+    if (!present_[i]) continue;
+    std::vector<uint8_t> &had = dash_sent_[size_t(i)];
+    bool all = had.size() != pixels.size();
+    bool any = false;
+    // Each row's changed span (all of it the first time).
+    for (int y = 0; y < dash_h_; y++) {
+      const uint8_t *now = pixels.data() + size_t(y) * stride;
+      int a = 0, b = stride;
+      if (!all) {
+        const uint8_t *old = had.data() + size_t(y) * stride;
+        while (a < stride && now[a] == old[a]) a++;
+        if (a == stride) continue;
+        while (b > a && now[b - 1] == old[b - 1]) b--;
+      }
+      arms_[i]->WriteArena(l_.dash + uint32_t(y * stride + a), std::span<const uint8_t>(now + a, size_t(b - a)));
+      any = true;
+    }
+    had = pixels;
+    if (any) arms_[i]->Raise(g1::TRIGGER_USER3);
+  }
 }
 
 void GlassesTerminal::Force(bool on) {

@@ -20,6 +20,7 @@ object LookUp {
     @Volatile var onChange: (() -> Unit)? = null
 
     fun lines(context: Context, settings: Settings): Array<String> {
+        if (settings.dashRows > 0) return emptyArray() // the graphical dashboard instead
         val cols = settings.cols
         val out = mutableListOf<String>()
         if (settings.lookUpClock) {
@@ -43,6 +44,7 @@ object LookUp {
 
     // The header's rows on the glasses (its lines and the rule; 0 without a header).
     fun rows(settings: Settings): Int {
+        if (settings.dashRows > 0) return 0
         val lines = (if (settings.lookUpClock) 1 else 0) + (if (settings.lookUpNotifications) 1 else 0)
         return if (lines == 0) 0 else lines + 1
     }

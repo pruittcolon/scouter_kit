@@ -83,6 +83,11 @@ object Native {
     // The look-up view: the header's lines above the terminal (none: no header), and the fade in ms (0: none).
     @JvmStatic external fun lookUpHeader(lines: Array<String>)
     @JvmStatic external fun terminalFade(ms: Int)
+    // The graphical dashboard above the terminal: its height (0: none), its size on the running terminal (width,
+    // height; 0, 0: none) and its picture (4 bpp, the high nibble the left pixel).
+    @JvmStatic external fun terminalDash(h: Int)
+    @JvmStatic external fun dashSize(): IntArray
+    @JvmStatic external fun dash(pixels: ByteArray)
     @JvmStatic external fun micStart(): Boolean
     @JvmStatic external fun micStop()
     @JvmStatic external fun micRead(out: FloatArray): Int

@@ -254,8 +254,9 @@ class ScouterService : Service() {
             ACTION_TRUST -> work.post { trust(intent.getStringExtra("fingerprint")) }
             // The look-up view's settings changed: the header and the fade again.
             ACTION_LOOK_UP -> work.post {
-                header()
                 Native.terminalFade(settings.fadeMs)
+                Native.terminalDash(settings.dashRows)
+                header()
                 refresh()
             }
             // Voice: "listen" (one command; again: stop), "stop", or "always" (Settings.voiceAlways changed).
@@ -457,6 +458,7 @@ class ScouterService : Service() {
         val font = assets.open("departure_mono_nerd.skf").use { it.readBytes() }
         Native.terminalMargins(settings.termTop, settings.termBottom)
         Native.terminalFade(settings.fadeMs)
+        Native.terminalDash(settings.dashRows)
         Native.lookUpHeader(LookUp.lines(this, settings))
         val error = Native.glassesStart(l, settings.left, settings.right, settings.dx, settings.dy, settings.brightness,
             settings.angle, font, BuildConfig.DEBUG && settings.ignoreWorn, settings.battery)
@@ -474,6 +476,7 @@ class ScouterService : Service() {
         update(glasses = "ready")
         work.removeCallbacks(batteryTicker)
         work.postDelayed(batteryTicker, 3000)
+        header() // the dashboard on the new terminal
     }
 
     // An arm's bond is gone, or its encryption failed: no reconnect and no pairing (Android would pair again by
@@ -795,6 +798,16 @@ class ScouterService : Service() {
     private fun header() {
         if (ended) return
         Native.lookUpHeader(LookUp.lines(this, settings))
+        dash()
+    }
+
+    // The graphical dashboard: drawn again (the arms get the rows that changed) while the terminal runs.
+    private var dashVoice: String? = null // what voice says on it, or null
+    private fun dash() {
+        if (ended || settings.dashRows == 0) return
+        val size = Native.dashSize()
+        if (size[0] <= 0 || size[1] <= 0) return
+        Native.dash(Dashboard.render(this, settings, size[0], size[1], dashVoice, Session.listening).packed)
     }
 
     // ------------------------------------------------ voice
@@ -807,13 +820,18 @@ class ScouterService : Service() {
     private val bandOff = Runnable {
         Native.voiceBand("", 1)
         if (!Session.listening) Session.voice = ""
+        dashVoice = null
+        dash()
         Session.changed()
     }
 
     // The band on the glasses (and the Voice tab): hold keeps it, else it goes after Settings.voiceBandSecs.
     private fun voiceSay(text: String, hold: Boolean = false) {
         Session.voice = text
-        Native.voiceBand(if (settings.voiceBand) text else "", 2)
+        if (settings.dashRows > 0) { // on the dashboard's card instead of over the terminal
+            dashVoice = if (settings.voiceBand) text else null
+            dash()
+        } else Native.voiceBand(if (settings.voiceBand) text else "", 2)
         work.removeCallbacks(bandOff)
         if (!hold) work.postDelayed(bandOff, settings.voiceBandSecs.coerceIn(1, 30) * 1000L)
         Session.changed()
@@ -989,6 +1007,7 @@ class ScouterService : Service() {
         if (blankByLock) blankByLock = false
         update()
         refresh()
+        if (show == Settings.TERMINAL) header()
     }
 
     // The display on or off; why: for the status line.

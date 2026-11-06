@@ -261,6 +261,38 @@ int main(int argc, char **argv) {
   if (lcheck.rfind("ok", 0) != 0) std::printf("margins: %s", lcheck.c_str());
   CHECK(lcheck.rfind("ok", 0) == 0);
   low.Stop();
+
+  // The dashboard: 80 px above the terminal (fewer rows), its picture drawn there on both eyes when the
+  // terminal shows, and again when it changes.
+  ssh::GlassesTerminal::Config dc{100, 9, 20, true};
+  dc.dash_h = 80;
+  dc.fade_ms = 0;
+  ssh::GlassesTerminal dashed;
+  CHECK(dashed.Start(dc, font, [] {}, &error));
+  int drows = (471 - 80) / 14;
+  int dw = dashed.dash_w(); // the terminal's width, even
+  CHECK(dashed.rows() == drows && dashed.dash_h() == 80 && dw == 540);
+  std::vector<uint8_t> pic(size_t(dw / 2) * 80, 0);
+  for (int yy = 20; yy < 60; yy++)
+    for (int xx = 10; xx < 110; xx++) pic[size_t(yy) * (dw / 2) + xx / 2] |= uint8_t(xx % 2 ? 0x0F : 0xF0);
+  dashed.SetDash(pic);
+  dashed.Show(Screen(77, drows, "under the dashboard"));
+  dashed.Force(true);
+  CHECK(WaitFor([&] { return dashed.Shown() && PanelProp(0) != 0; }));
+  int dy0 = 80 + (471 - 80 - drows * 14) / 2 - 80; // the dashboard's top: the terminal's top less its height
+  auto lit_in = [&](int arm, int x0, int y0, int x1, int y1) {
+    const uint8_t *p = g1::emulator::Panel(arm);
+    int k = 0;
+    for (int yy = y0; yy < y1; yy++)
+      for (int xx = x0; xx < x1; xx++) k += p[yy * 640 + xx] != 0;
+    return k;
+  };
+  CHECK(WaitFor([&] { return lit_in(0, x + 10, dy0 + 20, x + 110, dy0 + 60) == 4000; }));
+  CHECK(SameArea(x, dy0, x - 100, dy0 + 9, dw, 80));
+  std::fill(pic.begin(), pic.end(), 0);
+  dashed.SetDash(pic); // cleared while shown
+  CHECK(WaitFor([&] { return lit_in(0, x + 10, dy0 + 20, x + 110, dy0 + 60) == 0; }));
+  dashed.Stop();
   g1::Deinit();
   std::printf("%s (%d failures)\n", failures ? "FAILED" : "all tests passed", failures);
   return failures ? 1 : 0;

@@ -59,6 +59,8 @@ std::vector<std::string> g_band;
 // as many rows fewer. Guarded by g_band_mutex.
 std::vector<std::string> g_header;
 int g_fade = 400; // the look-up fade, ms (terminalFade)
+int g_dash_h = 0;  // the dashboard's height above the terminal (terminalDash)
+std::vector<uint8_t> g_dash; // its last picture (dash), for a terminal that starts again; guarded by g_term_mutex
 int g_top = 0, g_bottom = 0; // pixels left empty above and below the terminal (terminalMargins)
 bool g_panels_off = false;
 
@@ -226,6 +228,7 @@ std::string StartTerminal() {
   config.top = g_top;
   config.bottom = g_bottom;
   config.fade_ms = g_fade;
+  config.dash_h = g_dash_h;
   config.on_touch = [](int arm, uint32_t gesture) { Gesture(arm, gesture); };
   if (!term->Start(config, g_font, Changed, &error)) return error;
   std::shared_ptr<const ssh::Snapshot> s;
@@ -235,6 +238,7 @@ std::string StartTerminal() {
   }
   std::lock_guard<std::mutex> lock(g_term_mutex);
   term->Force(g_force);
+  if (!g_dash.empty()) term->SetDash(g_dash);
   if (s) term->Show(WithBand(s));
   g_term = term;
   return {};
@@ -354,7 +358,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *) {
 }
 
 JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_version(JNIEnv *env, jclass) {
-  return env->NewStringUTF("scouter_ssh 0.10, mosh 1.4.0");
+  return env->NewStringUTF("scouter_ssh 0.11, mosh 1.4.0");
 }
 
 // ------------------------------------------------ glasses
@@ -660,6 +664,45 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_lookUpHeader(JNIEnv *env, jcla
   }
   std::lock_guard<std::mutex> lock(g_term_mutex);
   if (g_term && s) g_term->Show(WithBand(s));
+}
+
+// The dashboard above the terminal, h pixels high (0: none), at once (a running terminal starts again).
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_terminalDash(JNIEnv *, jclass, jint h) {
+  std::lock_guard<std::mutex> lock(g_glasses_mutex);
+  if (g_dash_h == h) return;
+  g_dash_h = h;
+  {
+    std::lock_guard<std::mutex> l(g_term_mutex);
+    g_dash.clear();
+  }
+  if (!g_glasses || Current() != Show::kTerminal) return;
+  StopTerminal(false);
+  StartTerminal();
+}
+
+// The dashboard's size on the running terminal: width, height (0, 0: none).
+JNIEXPORT jintArray JNICALL Java_scouterkit_ssh_Native_dashSize(JNIEnv *env, jclass) {
+  jint v[2] = {0, 0};
+  {
+    std::lock_guard<std::mutex> lock(g_term_mutex);
+    if (g_term) {
+      v[0] = g_term->dash_w();
+      v[1] = g_term->dash_h();
+    }
+  }
+  jintArray a = env->NewIntArray(2);
+  env->SetIntArrayRegion(a, 0, 2, v);
+  return a;
+}
+
+// The dashboard's picture (4 bpp, the high nibble the left pixel, width / 2 bytes a row): to the arms (the rows
+// that changed), and kept for a terminal that starts again.
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_dash(JNIEnv *env, jclass, jbyteArray pixels) {
+  std::vector<uint8_t> p(size_t(env->GetArrayLength(pixels)));
+  env->GetByteArrayRegion(pixels, 0, jsize(p.size()), reinterpret_cast<jbyte *>(p.data()));
+  std::lock_guard<std::mutex> lock(g_term_mutex);
+  g_dash = p;
+  if (g_term) g_term->SetDash(g_dash);
 }
 
 // The look-up fade in ms (0: none), at once (a running terminal starts again).
