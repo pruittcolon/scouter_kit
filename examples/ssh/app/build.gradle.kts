@@ -22,7 +22,7 @@ android {
     ndkVersion = "27.3.13750724"
 
     defaultConfig {
-        applicationId = "eu.mrogalski.scouter" // the code stays in package scouterkit.ssh (JNI names)
+        applicationId = "io.github.pruittcolon.scouter" // this fork's ID; the code stays in package scouterkit.ssh (JNI names)
         minSdk = 31
         targetSdk = 34
         versionCode = 1

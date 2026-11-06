@@ -18,7 +18,7 @@ includes mosh; third-party notices in `NOTICE` and `licenses/`.
     native/third_party/build.sh          # OpenSSL 3.5.9, protobuf 21.12, mosh 1.4.0 at pinned SHA-256
     ./gradlew assembleGlassesDebug       # -PthirdPartyDir=OUT if build.sh got another OUT
 
-A signed release (application ID `eu.mrogalski.scouter`; no R8, since JNI and JSch find classes by name):
+A signed release (application ID `io.github.pruittcolon.scouter` in this fork; no R8, since JNI and JSch find classes by name):
 
     ./gradlew assembleGlassesRelease
 
