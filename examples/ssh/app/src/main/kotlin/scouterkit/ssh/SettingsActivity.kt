@@ -68,7 +68,7 @@ class SettingsActivity : Activity() {
         glassesState = TextView(this)
         list.addView(glassesState)
         connect = android.widget.CheckBox(this).apply {
-            text = "Connect to the glasses while keyer is on"
+            text = "Connect to the glasses while keyer is on (or, in keyboard mode, while the app is open)"
             setOnCheckedChangeListener { _, on -> settings.glassesAllowed = on }
         }
         list.addView(connect)
@@ -104,6 +104,14 @@ class SettingsActivity : Activity() {
             text = "Debug: show the terminal with the glasses folded"
             isChecked = settings.ignoreWorn
             setOnCheckedChangeListener { _, on -> settings.ignoreWorn = on }
+        })
+
+        heading("Keyboard")
+        list.addView(android.widget.CheckBox(this).apply {
+            text = "Use a keyboard paired with this phone instead of keyer: the terminal runs while this app is " +
+                "open (its screen stays on) and shows on the glasses whatever the head's angle"
+            isChecked = settings.keyboard
+            setOnCheckedChangeListener { _, on -> settings.keyboard = on }
         })
 
         heading("keyer")
