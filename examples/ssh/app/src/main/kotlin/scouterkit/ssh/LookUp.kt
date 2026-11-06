@@ -72,6 +72,12 @@ object LookUp {
 // The phone's notifications for the look-up header: the clearable ones from other apps, newest first (no
 // ongoing ones such as music or this app's own). Only while the user allows it (Notification access).
 class VoxNotifications : NotificationListenerService() {
+    companion object {
+        val QUIET = setOf(Notification.CATEGORY_SERVICE, Notification.CATEGORY_TRANSPORT, Notification.CATEGORY_PROGRESS,
+            Notification.CATEGORY_STATUS, Notification.CATEGORY_SYSTEM, Notification.CATEGORY_NAVIGATION,
+            Notification.CATEGORY_STOPWATCH, Notification.CATEGORY_LOCATION_SHARING)
+    }
+
     override fun onListenerConnected() = refresh()
     override fun onNotificationPosted(sbn: StatusBarNotification?) = refresh()
     override fun onNotificationRemoved(sbn: StatusBarNotification?) = refresh()
@@ -83,15 +89,29 @@ class VoxNotifications : NotificationListenerService() {
 
     private fun refresh() {
         val all = runCatching { activeNotifications }.getOrNull() ?: return
-        LookUp.notes = all.filter {
-            it.packageName != packageName && !it.isOngoing && it.isClearable &&
-                (it.notification.flags and Notification.FLAG_GROUP_SUMMARY) == 0
-        }.sortedByDescending { it.postTime }.map { sbn ->
+        val ranking = runCatching { currentRanking }.getOrNull()
+        LookUp.notes = all.filter { keep(it, ranking) }.sortedByDescending { it.postTime }.map { sbn ->
             val e = sbn.notification.extras
             LookUp.Note(label(sbn.packageName), e.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty(),
                 e.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty(), sbn.postTime)
         }.filter { it.title.isNotBlank() || it.text.isNotBlank() }
         LookUp.onChange?.invoke()
+    }
+
+    // What a person would call a notification: from another app, clearable, not ongoing, a service's, media's,
+    // a progress bar, navigation or the system's, and not silent or minimised (its channel below default
+    // importance: Samsung's "ongoing activity" and media notices are).
+    private fun keep(sbn: StatusBarNotification, ranking: NotificationListenerService.RankingMap?): Boolean {
+        val n = sbn.notification
+        val noise = Notification.FLAG_GROUP_SUMMARY or Notification.FLAG_FOREGROUND_SERVICE or
+            Notification.FLAG_ONGOING_EVENT or Notification.FLAG_NO_CLEAR
+        if (sbn.packageName == packageName || sbn.packageName == "android" || sbn.packageName == "com.android.systemui") return false
+        if (sbn.isOngoing || !sbn.isClearable || (n.flags and noise) != 0) return false
+        if (n.category in QUIET || n.extras.containsKey(Notification.EXTRA_MEDIA_SESSION)) return false
+        val r = NotificationListenerService.Ranking()
+        if (ranking != null && ranking.getRanking(sbn.key, r) && r.importance < android.app.NotificationManager.IMPORTANCE_DEFAULT)
+            return false
+        return true
     }
 
     private fun label(pkg: String): String = runCatching {

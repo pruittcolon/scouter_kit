@@ -53,6 +53,7 @@ object Session {
     @Volatile var dictating = false // what is said is typed into the terminal
     @Volatile var pointer = false // the pointer is on (its keys move and click it)
     @Volatile var tabs = "" // the last tab action's problem, if any
+    @Volatile var tabList = listOf<Tabs.Tab>() // the terminal's tabs (tmux windows), for the dashboard
     @Volatile var heard = listOf<String>() // the last phrases, newest first
     // The devices Android reports near (ScouterCompanionService: keyer); null: unknown (none reported since the
     // process started, Bluetooth was off since, or keyer's link did not come after the last report).
@@ -195,6 +196,7 @@ class ScouterService : Service() {
         Native.onGesture = { a, g -> work.post { gesture(a, g) } }
         LookUp.onChange = { work.post { header() } }
         work.post(headerTick)
+        work.postDelayed(tabPoll, 5000)
         work.postDelayed(watchdog, 60000)
         work.postDelayed(batteryTicker, 5000)
         registerReceiver(lock, IntentFilter(Intent.ACTION_SCREEN_OFF).apply { addAction(Intent.ACTION_SCREEN_ON) })
@@ -318,6 +320,8 @@ class ScouterService : Service() {
         ended = true
         LookUp.onChange = null
         work.removeCallbacks(headerTick)
+        work.removeCallbacks(tabPoll)
+        Thread { Bootstrap.dropShared() }.start()
         screen?.release()
         screen = null
         remote?.release()
@@ -884,6 +888,42 @@ class ScouterService : Service() {
         work.postDelayed(pointerIdle, 10000)
     }
 
+    // The tabs for the dashboard: asked of tmux every 5 s while the terminal shows on the glasses (over the kept
+    // SSH connection), and right after a tab action.
+    private var tabsAsking = false
+    private val tabPoll = object : Runnable {
+        override fun run() {
+            if (Session.shown && settings.show == Settings.TERMINAL && settings.dashRows > 0) fetchTabs()
+            work.postDelayed(this, 5000)
+        }
+    }
+
+    private fun fetchTabs() {
+        val s = settings.active() ?: return
+        val session = Tabs.session(s)
+        if (session == null) {
+            if (Session.tabList.isNotEmpty()) {
+                Session.tabList = emptyList()
+                dash()
+            }
+            return
+        }
+        if (tabsAsking) return
+        val cmd = Tabs.command("list", session) ?: return
+        tabsAsking = true
+        Thread {
+            val list = runCatching { Tabs.parse(Bootstrap(vault).runShared(s.host, s.port, s.user, cmd)) }.getOrNull()
+            work.post {
+                tabsAsking = false
+                if (list != null && (list.size != Session.tabList.size ||
+                        list.zip(Session.tabList).any { (a, b) -> a.index != b.index || a.name != b.name || a.active != b.active })) {
+                    Session.tabList = list
+                    dash()
+                }
+            }
+        }.start()
+    }
+
     // A tab action (Tabs.command) in the server in use, over SSH beside mosh, off the work thread.
     private fun tabs(action: String) {
         val s = settings.active() ?: return
@@ -895,10 +935,11 @@ class ScouterService : Service() {
         }
         val cmd = Tabs.command(action, session) ?: return
         Thread {
-            val r = runCatching { Bootstrap(vault).run(s.host, s.port, s.user, cmd) }
+            val r = runCatching { Bootstrap(vault).runShared(s.host, s.port, s.user, cmd) }
             work.post {
                 Session.tabs = r.exceptionOrNull()?.let { "tabs: ${it.message}" } ?: ""
                 Session.changed()
+                fetchTabs() // the dashboard's tab bar at once
             }
         }.start()
     }
@@ -1155,6 +1196,9 @@ class ScouterService : Service() {
                 view(if (settings.show == Settings.SCREEN) Settings.TERMINAL else Settings.SCREEN)
             Settings.ACTION_NEXT, Settings.ACTION_PREV -> source(action)
             Settings.ACTION_LISTEN -> listen(true)
+            Settings.ACTION_TAB_NEXT -> tabs("next")
+            Settings.ACTION_TAB_PREV -> tabs("prev")
+            Settings.ACTION_TAB_NEW -> tabs("new")
             Settings.ACTION_STOP -> {
                 settings.phone = false
                 end()

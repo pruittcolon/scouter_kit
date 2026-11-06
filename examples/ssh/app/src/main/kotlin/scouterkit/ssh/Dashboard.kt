@@ -41,139 +41,158 @@ object Dashboard {
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
         c.drawColor(Color.BLACK)
-        val pad = 6f
+        val pad = 5f
         val line = Paint().apply { isAntiAlias = true; style = Paint.Style.STROKE; strokeWidth = 1f }
+        val fill = Paint().apply { isAntiAlias = true }
 
-        // The frame: corner brackets and a ticked rule along the bottom.
-        line.color = grey(11)
-        val k = 10f
+        // The frame: corner brackets.
+        line.color = grey(9)
+        val k = 8f
         for ((x, dx) in listOf(0.5f to 1f, w - 0.5f to -1f)) {
             c.drawLine(x, 0.5f, x + dx * k, 0.5f, line)
             c.drawLine(x, 0.5f, x, k, line)
-            c.drawLine(x, h - 1.5f, x + dx * k, h - 1.5f, line)
-            c.drawLine(x, h - 1.5f, x, h - k, line)
+            c.drawLine(x, h - 0.5f, x + dx * k, h - 0.5f, line)
+            c.drawLine(x, h - 0.5f, x, h - k, line)
+        }
+
+        // The tab bar: the terminal's name ("PHONE TMUX"), its tabs (the one shown filled), and a + for another.
+        val barH = maxOf(14f, h * 0.18f)
+        val barY = pad
+        val server = settings.active()
+        val tabs = Session.tabList
+        val tmux = server != null && Tabs.session(server) != null
+        val label = paint(barH * 0.62f, 9, CONDENSED, 0.18f)
+        val name = ((server?.name ?: "Terminal") + if (tmux) " tmux" else "").uppercase(Locale.getDefault())
+        var x = pad + 6f
+        val textY = barY + barH * 0.72f
+        c.drawText(name, x, textY, label)
+        x += label.measureText(name) + 10f
+        val tabText = paint(barH * 0.66f, 13, MEDIUM)
+        val dark = paint(barH * 0.66f, 0, MEDIUM)
+        val room = w - pad - 6f - (barH + 6f) // the + at the end
+        var shown = 0
+        for (t in tabs) {
+            val text = "${t.index} " + TextUtils.ellipsize(t.name, tabText, barH * 6f, TextUtils.TruncateAt.END)
+            val tw = tabText.measureText(text) + 12f
+            if (x + tw > room) {
+                c.drawText("…", x, textY, tabText)
+                x += tabText.measureText("…") + 6f
+                break
+            }
+            val box = RectF(x, barY, x + tw, barY + barH)
+            if (t.active) {
+                fill.color = grey(14)
+                c.drawRoundRect(box, 4f, 4f, fill)
+                c.drawText(text, x + 6f, textY, dark)
+            } else {
+                line.color = grey(5)
+                c.drawRoundRect(box, 4f, 4f, line)
+                c.drawText(text, x + 6f, textY, tabText)
+            }
+            x += tw + 5f
+            shown++
+        }
+        if (tmux) { // +: another tab (Alt+T, "new tab", the TouchBar)
+            val box = RectF(x, barY, x + barH, barY + barH)
+            line.color = grey(8)
+            c.drawRoundRect(box, 4f, 4f, line)
+            val plus = paint(barH * 0.8f, 13, LIGHT).apply { textAlign = Paint.Align.CENTER }
+            c.drawText("+", box.centerX(), textY + barH * 0.06f, plus)
         }
         line.color = grey(3)
-        c.drawLine(k + 4, h - 1.5f, w - k - 4, h - 1.5f, line)
-        line.color = grey(6)
-        var tx = k + 4 + 24f
-        while (tx < w - k - 8) {
-            c.drawLine(tx, h - 4.5f, tx, h - 1.5f, line)
-            tx += 24f
-        }
+        val ruleY = barY + barH + 3.5f
+        c.drawLine(pad + 6f, ruleY, w - pad - 6f, ruleY, line)
 
-        // The clock: large and thin, a dim halo around it.
-        val now = Date()
-        val h24 = android.text.format.DateFormat.is24HourFormat(context)
-        val clock = SimpleDateFormat(if (h24) "H:mm" else "h:mm", Locale.getDefault()).format(now)
-        val ampm = if (h24) "" else SimpleDateFormat("a", Locale.US).format(now).uppercase(Locale.US)
-        val date = SimpleDateFormat("EEE dd MMM", Locale.getDefault()).format(now).uppercase(Locale.getDefault())
-        val x0 = pad + 8f
-        var right = x0
+        // The row under it.
+        val top = ruleY + 3f
+        val rowH = h - top - pad
+        // Left: the clock with a dim halo, the date under it.
+        var left = pad + 6f
         if (settings.lookUpClock) {
-            val big = paint(h * 0.56f, 15, THIN).apply { setShadowLayer(5f, 0f, 0f, grey(5)) }
-            val base = pad + h * 0.53f
-            c.drawText(clock, x0, base, big)
+            val now = Date()
+            val h24 = android.text.format.DateFormat.is24HourFormat(context)
+            val clock = SimpleDateFormat(if (h24) "H:mm" else "h:mm", Locale.getDefault()).format(now)
+            val ampm = if (h24) "" else SimpleDateFormat("a", Locale.US).format(now).uppercase(Locale.US)
+            val date = SimpleDateFormat("EEE dd MMM", Locale.getDefault()).format(now).uppercase(Locale.getDefault())
+            val big = paint(rowH * 0.58f, 15, THIN).apply { setShadowLayer(4f, 0f, 0f, grey(5)) }
+            val base = top + rowH * 0.6f
+            c.drawText(clock, left, base, big)
             val cw = big.measureText(clock)
-            if (ampm.isNotEmpty()) c.drawText(ampm, x0 + cw + 4f, pad + h * 0.2f, paint(h * 0.15f, 9, MEDIUM, 0.08f))
-            val small = paint(h * 0.145f, 10, CONDENSED, 0.22f)
-            val dateBase = h - pad - 9f
-            c.drawText(date, x0 + 1f, dateBase, small)
-            // An accent under the date, fading out to the right.
-            val dw = small.measureText(date)
-            for (i in 0 until 6) {
-                line.color = grey(12 - i * 2)
-                c.drawLine(x0 + 1f + i * dw / 6, dateBase + 4f, x0 + 1f + (i + 1) * dw / 6, dateBase + 4f, line)
-            }
-            right = maxOf(x0 + cw + (if (ampm.isNotEmpty()) paint(h * 0.15f, 9, MEDIUM).measureText(ampm) + 6f else 0f), x0 + dw)
+            val ap = paint(rowH * 0.17f, 9, MEDIUM, 0.08f)
+            if (ampm.isNotEmpty()) c.drawText(ampm, left + cw + 3f, top + rowH * 0.27f, ap)
+            val small = paint(rowH * 0.17f, 10, CONDENSED, 0.2f)
+            c.drawText(date, left + 1f, top + rowH * 0.92f, small)
+            left += maxOf(cw + (if (ampm.isNotEmpty()) ap.measureText(ampm) + 5f else 0f), small.measureText(date)) + 12f
+            line.color = grey(3)
+            c.drawLine(left - 6f, top + 2f, left - 6f, top + rowH - 2f, line)
         }
 
-        // The batteries: a ring each, the level inside, L and R under them.
-        val r = h * 0.27f
-        val cy = h * 0.42f
-        val cxR = w - pad - r - 6f
-        val cxL = cxR - 2 * r - 16f
+        // Right: each arm's battery, small: a letter, a bar, the level.
+        val bw = 30f
+        val bh = maxOf(6f, rowH * 0.13f)
+        val pct = paint(rowH * 0.2f, 13, MEDIUM).apply { textAlign = Paint.Align.RIGHT }
+        val letter = paint(rowH * 0.17f, 8, CONDENSED)
+        val right = w - pad - 6f
+        val battLeft = right - pct.measureText("100%") - 4f - bw - 4f - letter.measureText("L")
         val b = Session.battery
-        val ring = Paint().apply { isAntiAlias = true; style = Paint.Style.STROKE; strokeWidth = 3.5f; strokeCap = Paint.Cap.ROUND }
-        for ((i, cx) in listOf(cxL, cxR).withIndex()) {
-            val pct = b.getOrElse(i) { -1 }
-            val box = RectF(cx - r, cy - r, cx + r, cy + r)
-            ring.color = grey(3)
-            c.drawArc(box, 0f, 360f, false, ring)
-            if (pct >= 0) {
-                ring.color = grey(if (pct <= 15) 15 else 13)
-                c.drawArc(box, -90f, 360f * pct.coerceIn(0, 100) / 100f, false, ring)
+        for (i in 0..1) {
+            val cy = top + rowH * (if (i == 0) 0.32f else 0.74f)
+            val level = b.getOrElse(i) { -1 }
+            c.drawText(if (i == 0) "L" else "R", battLeft, cy + letter.textSize * 0.35f, letter)
+            val bx = battLeft + letter.measureText("L") + 4f
+            val box = RectF(bx, cy - bh / 2, bx + bw, cy + bh / 2)
+            line.color = grey(6)
+            c.drawRoundRect(box, 2f, 2f, line)
+            fill.color = grey(6)
+            c.drawRect(box.right + 0.5f, cy - bh / 4, box.right + 2f, cy + bh / 4, fill) // the cap
+            if (level >= 0) {
+                fill.color = grey(if (level <= 15) 15 else 12)
+                c.drawRect(box.left + 1.5f, box.top + 1.5f, box.left + 1.5f + (bw - 3f) * level.coerceIn(0, 100) / 100f, box.bottom - 1.5f, fill)
             }
-            val num = paint(r * 0.72f, 15, MEDIUM).apply { textAlign = Paint.Align.CENTER }
-            c.drawText(if (pct >= 0) "$pct" else "–", cx, cy + num.textSize * 0.36f, num)
-            val tag = paint(h * 0.12f, 8, CONDENSED, 0.2f).apply { textAlign = Paint.Align.CENTER }
             val charging = b.getOrElse(i + 2) { 0 } == 1
-            c.drawText(if (i == 0) "L" else "R", cx, cy + r + h * 0.17f, tag)
-            if (charging) { // a small bolt at the ring's top right
-                val p = Path().apply {
-                    val bx = cx + r * 0.62f
-                    val by = cy - r * 0.95f
-                    moveTo(bx + 2f, by); lineTo(bx - 2f, by + 6f); lineTo(bx + 1f, by + 6f)
-                    lineTo(bx - 1f, by + 11f); lineTo(bx + 4f, by + 4f); lineTo(bx + 1f, by + 4f); close()
-                }
-                c.drawPath(p, Paint().apply { isAntiAlias = true; color = grey(15) })
-            }
+            c.drawText(if (level >= 0) "$level%" + if (charging) "+" else "" else "–", right, cy + pct.textSize * 0.36f, pct)
         }
 
-        // The card between them: voice while it is in use, else the newest notification.
-        val left = right + 16f
-        val cardRight = cxL - r - 14f
-        if (cardRight - left >= 110f) {
-            val card = RectF(left, pad + 2f, cardRight, h - pad - 6f)
-            line.color = grey(4)
-            c.drawRoundRect(card, 6f, 6f, line)
-            val accent = Paint().apply { color = grey(13) }
-            c.drawRect(card.left, card.top + 6f, card.left + 3f, card.bottom - 6f, accent)
-            val tx0 = card.left + 11f
-            val room = card.right - tx0 - 8f
-            val label = paint(h * 0.12f, 9, CONDENSED, 0.18f)
-            val title = paint(h * 0.17f, 15, MEDIUM)
-            val body = paint(h * 0.145f, 10, LIGHT)
-            val y1 = card.top + h * 0.19f
-            val y2 = card.top + h * 0.42f
-            val y3 = card.top + h * 0.64f
+        // Middle: voice while it is in use, else the newest three notifications.
+        val mx = left
+        val mRight = battLeft - 12f
+        val mw = mRight - mx
+        if (mw > 80f) {
+            line.color = grey(3)
+            c.drawLine(mRight + 6f, top + 2f, mRight + 6f, top + rowH - 2f, line)
+            val app = paint(rowH * 0.16f, 9, CONDENSED, 0.15f)
+            val title = paint(rowH * 0.19f, 15, MEDIUM)
+            val body = paint(rowH * 0.18f, 10, LIGHT)
+            val lineH = rowH / 3f
             if (voice != null) {
-                // A microphone in a ring, the state, and what is heard (two lines, the newest words).
-                val mx = tx0 + 7f
-                val my = y1 - h * 0.04f
-                val mic = Paint().apply { isAntiAlias = true; style = Paint.Style.STROKE; strokeWidth = 1.5f; color = grey(15) }
-                c.drawRoundRect(RectF(mx - 2.5f, my - 5f, mx + 2.5f, my + 2f), 2.5f, 2.5f, mic)
-                c.drawArc(RectF(mx - 4.5f, my - 3f, mx + 4.5f, my + 4.5f), 0f, 180f, false, mic)
-                c.drawLine(mx, my + 4.5f, mx, my + 6.5f, mic)
-                c.drawText(if (listening) "LISTENING" else "VOICE", tx0 + 18f, y1, label)
+                c.drawText(if (listening) "\u25CF LISTENING" else "VOICE", mx, top + lineH * 0.62f, app)
                 val words = voice.replace(ScouterService.MIC, "").trim()
-                val lines = wrap(words, title, room)
-                val shown = lines.takeLast(2)
-                c.drawText(shown.getOrElse(0) { "" }, tx0, y2 + h * 0.03f, title)
-                if (shown.size > 1) c.drawText(shown[1], tx0, y3 + h * 0.06f, title)
+                val lines = wrap(words, title, mw).takeLast(2)
+                for ((i, l) in lines.withIndex()) c.drawText(l, mx, top + lineH * (1.62f + i), title)
             } else if (settings.lookUpNotifications) {
-                val n = LookUp.notes.firstOrNull()
-                if (n == null) {
-                    c.drawText("ALL CLEAR", tx0, y1, label)
-                    c.drawText("No new notifications", tx0, y2 + h * 0.03f, paint(h * 0.16f, 8, LIGHT))
-                } else {
-                    c.drawText(TextUtils.ellipsize(n.app.uppercase(Locale.getDefault()), label, room - 30f, TextUtils.TruncateAt.END).toString(),
-                        tx0, y1, label)
-                    val count = LookUp.notes.size
-                    if (count > 1) { // a pill with how many
-                        val t = "$count"
-                        val pill = paint(h * 0.12f, 15, MEDIUM).apply { textAlign = Paint.Align.CENTER }
-                        val pw = pill.measureText(t) + 10f
-                        val pr = RectF(card.right - 8f - pw, y1 - h * 0.13f, card.right - 8f, y1 + h * 0.03f)
-                        line.color = grey(9)
-                        c.drawRoundRect(pr, 7f, 7f, line)
-                        c.drawText(t, pr.centerX(), y1 - h * 0.005f, pill)
-                    }
+                val notes = LookUp.notes.take(3)
+                if (notes.isEmpty()) {
+                    c.drawText("NOTIFICATIONS", mx, top + lineH * 0.62f, app)
+                    c.drawText("All clear", mx, top + lineH * 1.62f, paint(rowH * 0.19f, 8, LIGHT))
+                }
+                val appW = minOf(mw * 0.3f, app.measureText("MESSAGES") + 6f)
+                for ((i, n) in notes.withIndex()) {
+                    val y = top + lineH * (i + 0.66f)
+                    c.drawText(TextUtils.ellipsize(n.app.uppercase(Locale.getDefault()), app, appW - 4f, TextUtils.TruncateAt.END).toString(), mx, y, app)
                     val head = n.title.ifBlank { n.app }
-                    c.drawText(TextUtils.ellipsize(head, title, room, TextUtils.TruncateAt.END).toString(), tx0, y2 + h * 0.03f, title)
-                    if (n.text.isNotBlank())
-                        c.drawText(TextUtils.ellipsize(n.text.replace('\n', ' '), body, room, TextUtils.TruncateAt.END).toString(),
-                            tx0, y3 + h * 0.07f, body)
+                    val tx = mx + appW
+                    val avail = mw - appW
+                    val headText = TextUtils.ellipsize(head, title, avail * 0.55f, TextUtils.TruncateAt.END).toString()
+                    c.drawText(headText, tx, y, title)
+                    if (n.text.isNotBlank()) {
+                        val rest = avail - title.measureText(headText) - 6f
+                        if (rest > 20f) c.drawText(TextUtils.ellipsize(n.text.replace('\n', ' '), body, rest, TextUtils.TruncateAt.END).toString(),
+                            tx + title.measureText(headText) + 6f, y, body)
+                    }
+                }
+                if (LookUp.notes.size > 3) {
+                    val more = paint(rowH * 0.15f, 7, CONDENSED).apply { textAlign = Paint.Align.RIGHT }
+                    c.drawText("+${LookUp.notes.size - 3}", mRight, top + lineH * 2.66f, more)
                 }
             }
         }

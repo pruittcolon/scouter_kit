@@ -152,6 +152,7 @@ class Settings(context: Context) {
         arm == 0 && gesture == Native.GESTURE_HOLD -> ACTION_NEXT
         arm == 0 && gesture == Native.GESTURE_DOUBLE -> ACTION_PREV
         arm == 1 && gesture == Native.GESTURE_DOUBLE -> ACTION_LISTEN
+        arm == 1 && gesture == Native.GESTURE_TRIPLE -> ACTION_TAB_NEXT
         else -> ACTION_NONE
     }) ?: ACTION_NONE
 
@@ -355,8 +356,12 @@ class Settings(context: Context) {
         const val ACTION_NEXT = "next" // the next source (sources())
         const val ACTION_PREV = "prev" // the source before
         const val ACTION_LISTEN = "listen" // voice: listen for one command (again: stop)
+        const val ACTION_TAB_NEXT = "tab_next" // the terminal's next tab (tmux window)
+        const val ACTION_TAB_PREV = "tab_prev"
+        const val ACTION_TAB_NEW = "tab_new"
         val ACTIONS = linkedMapOf(ACTION_NONE to "Nothing", ACTION_DISPLAY to "Display off / on",
             ACTION_NEXT to "Next source", ACTION_PREV to "Previous source", ACTION_LISTEN to "Listen (voice command)",
+            ACTION_TAB_NEXT to "Next tab", ACTION_TAB_PREV to "Previous tab", ACTION_TAB_NEW to "New tab",
             ACTION_VIEW to "Switch terminal / screen", ACTION_STOP to "Stop everything")
         const val PHONE = "phone" // the phone's own screen (a source)
 

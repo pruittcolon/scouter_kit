@@ -4,6 +4,15 @@ package scouterkit.ssh
 // shell, Claude or Cursor (switched to when one runs already), the next and previous, one by number, closing
 // the one shown (never the session's first), and tmux's mouse for the pointer.
 object Tabs {
+    class Tab(val index: Int, val name: String, val active: Boolean)
+
+    // tmux list-windows' lines (index|name|active) as tabs.
+    fun parse(out: String): List<Tab> = out.lines().mapNotNull { line ->
+        val p = line.split("|")
+        val index = p.getOrNull(0)?.trim()?.toIntOrNull() ?: return@mapNotNull null
+        Tab(index, p.getOrElse(1) { "" }.trim(), p.getOrNull(2)?.trim() == "1")
+    }
+
     // The tmux session a server's command attaches to: its "-s NAME", or "claude" for the phone's Claude preset
     // (bash -ic claude: tmux session claude); null without tmux.
     fun session(s: Settings.Server): String? =
@@ -28,6 +37,7 @@ object Tabs {
             action == "prev" -> "tmux previous-window -t $t"
             action == "close" -> "[ \"$(tmux display -p -t $t '#{window_index}')\" != 0 ] && tmux kill-window -t $t"
             action.startsWith("select:") -> "tmux select-window -t $t:${action.removePrefix("select:").filter { it.isDigit() }}"
+            action == "list" -> "tmux list-windows -t $t -F '#{window_index}|#{window_name}|#{window_active}'"
             action == "mouse" -> "tmux set -g mouse on"
             action == "mouse_off" -> "tmux set -g mouse off"
             else -> return null

@@ -65,6 +65,35 @@ class Bootstrap(private val vault: Vault) {
         return Stream(session, channel, input, err)
     }
 
+    // A short command's output on a connection kept open between calls (the tabs: tmux, every few seconds while
+    // the terminal shows), opened again when it dropped or the server changed.
+    fun runShared(host: String, port: Int, user: String, command: String): String = synchronized(Bootstrap) {
+        val key = "$user@$host:$port"
+        val s: com.jcraft.jsch.Session = shared?.takeIf { sharedKey == key && it.isConnected } ?: run {
+            runCatching { shared?.disconnect() }
+            val fresh = connect(host, port, user)
+            fresh.setServerAliveInterval(15000)
+            fresh.timeout = 15000
+            shared = fresh
+            sharedKey = key
+            fresh
+        }
+        try {
+            val channel = s.openChannel("exec") as ChannelExec
+            channel.setCommand(command)
+            channel.setErrStream(java.io.ByteArrayOutputStream())
+            val input = channel.inputStream
+            channel.connect(15000)
+            val out = input.readBytes().toString(Charsets.UTF_8)
+            channel.disconnect()
+            out
+        } catch (e: Exception) {
+            runCatching { s.disconnect() } // the next call opens a fresh one
+            shared = null
+            throw e
+        }
+    }
+
     // A short command's output (tmux for the tabs), on a connection of its own; at most 15 s.
     fun run(host: String, port: Int, user: String, command: String): String {
         val session = connect(host, port, user)
@@ -201,6 +230,15 @@ class Bootstrap(private val vault: Vault) {
     }
 
     companion object {
+        // The connection runShared keeps (one at a time), and whose it is.
+        private var shared: com.jcraft.jsch.Session? = null
+        private var sharedKey = ""
+
+        fun dropShared() = synchronized(Bootstrap) {
+            runCatching { shared?.disconnect() }
+            shared = null
+        }
+
         // A new key made on this phone (ECDSA P-256: JSch cannot write Ed25519 private keys): the private key goes
         // into the vault, the public key line is returned for the server.
         fun newKey(vault: Vault): String {

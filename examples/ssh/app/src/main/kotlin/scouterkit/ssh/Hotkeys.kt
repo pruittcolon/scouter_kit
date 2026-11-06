@@ -39,6 +39,13 @@ object Hotkeys {
                 ScouterService.send(context, ScouterService.ACTION_POINTER, "cmd" to cmd)
             return true
         }
+        // Ctrl+Alt+Left / Right: the tab before / after.
+        if (e.isAltPressed && e.isCtrlPressed && !e.isMetaPressed &&
+            (e.keyCode == KeyEvent.KEYCODE_DPAD_LEFT || e.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)) {
+            if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0)
+                ScouterService.send(context, ScouterService.ACTION_TABS, "tab" to if (e.keyCode == KeyEvent.KEYCODE_DPAD_LEFT) "prev" else "next")
+            return true
+        }
         if (!e.isAltPressed || e.isCtrlPressed || e.isMetaPressed) return false
         // Alt+M the pointer; Alt+T a new tab, Alt+[ / ] the tab before / after, Alt+W closes the tab shown.
         val tab = when (e.keyCode) {
