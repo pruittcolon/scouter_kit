@@ -53,6 +53,9 @@ class Settings(context: Context) {
         set(v) = prefs.edit().putInt("screen_invert_pct", v).apply()
     var screenGamma: Int by Number("screen_gamma", 100)
     var screenThreshold: Int by Number("screen_threshold", 128)
+    var screenDither: Boolean
+        get() = prefs.getBoolean("screen_dither", false)
+        set(v) = prefs.edit().putBoolean("screen_dither", v).apply()
     var screenSteady: Boolean
         get() = prefs.getBoolean("screen_steady", true)
         set(v) = prefs.edit().putBoolean("screen_steady", v).apply()
@@ -95,7 +98,14 @@ class Settings(context: Context) {
     fun screenOptions() = intArrayOf(listOf(FIT, FILL, STRETCH).indexOf(screenFit).coerceAtLeast(0), screenPanX, screenPanY,
         screenZoom, screenRotate, screenOutX, screenOutY, screenOutW, screenOutH, screenInvertPct, screenLevels,
         screenContrast, if (screenSharpen) 1 else 0, if (screenHideCase) 1 else 0, if (screenHideFolded) 1 else 0,
-        screenGamma, screenThreshold, if (screenSteady) 1 else 0)
+        screenGamma, screenThreshold, if (screenSteady) 1 else 0, if (screenDither) 1 else 0)
+
+    // Once: the fast path (black and white) for everyone, as 0.4 made it the default.
+    fun migrate() {
+        if (prefs.getBoolean("migrated_04", false)) return
+        screenLevels = 2
+        prefs.edit().putBoolean("migrated_04", true).apply()
+    }
 
     // Each eye's battery band beside the terminal.
     var battery: Boolean

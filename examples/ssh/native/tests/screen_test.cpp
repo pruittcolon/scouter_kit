@@ -59,6 +59,9 @@ int main() {
   t = {0, 255};
   ssh::Tone(&t, 2, {0, 0, 2, 1}, 70, 100, 128, 16); // 70 % inverted: dark goes light grey, light goes dark grey
   CHECK(t[0] == 170 && t[1] == 85);
+  t = {128, 128, 128, 128}; // a mid grey dithered: some pixels lit, some not
+  ssh::Tone(&t, 4, {0, 0, 4, 1}, 0, 100, 128, 2, true);
+  CHECK((t[0] == 255) + (t[1] == 255) + (t[2] == 255) + (t[3] == 255) == 2);
   t = {9, 9, 9};
   ssh::Tone(&t, 3, {1, 0, 1, 1}, 100, 100, 128, 16); // outside the content: untouched
   CHECK(t[0] == 9 && t[1] == 238 && t[2] == 9);

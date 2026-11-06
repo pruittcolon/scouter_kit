@@ -39,6 +39,7 @@ object Session {
     @Volatile var termux = "" // Termux's setup, as its last run reported it
     @Volatile var screen = "off" // the phone's screen on the glasses: off, starting, on, hidden, or why it stopped
     @Volatile var screenFrames = 0
+    @Volatile var screenFps = 0f // frames shown on the glasses per second, over the last 2 s
     @Volatile var capturing = false // Android's screen sharing runs (the phone's screen can show without asking)
     @Volatile var showing = "" // what the glasses show now: Settings.TERMINAL or SCREEN ("" no session)
     @Volatile var blank = false // the display is off (nothing shows; the TouchBar still works)
@@ -90,7 +91,9 @@ class ScouterService : Service() {
                 s.state == Native.SCREEN_HIDDEN -> "off: ${Native.screenWhy().ifEmpty { "hidden" }}"
                 else -> "on"
             }
-            Session.screenFrames = status.getOrElse(7) { 0 }
+            val frames = status.getOrElse(7) { 0 }
+            Session.screenFps = if (frames >= Session.screenFrames) (frames - Session.screenFrames) / 2f else 0f
+            Session.screenFrames = frames
             if (state != Session.screen) update(screen = state) else Session.changed()
             work.postDelayed(this, 2000)
         }

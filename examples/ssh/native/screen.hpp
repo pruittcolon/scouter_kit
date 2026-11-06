@@ -29,6 +29,7 @@ struct ScreenOptions {
   int threshold = 128;      // black and white: brighter than this lights
   bool steady = true;       // 16 greys: a pixel changed by one level only keeps its old level (less flicker and
                             // fewer pixels to send)
+  bool dither = false;      // black and white: an ordered (4 x 4 Bayer) dither shows greys as patterns (photos)
   int levels = 16;          // 16 greys, or 2 (black and white: sent as VIDEO records, much faster)
   int contrast = 0;         // 0 ... 100: how far the levels stretch toward the picture's darkest and brightest
   bool sharpen = false;     // an unsharp mask after scaling: crisper text
@@ -67,7 +68,8 @@ void Sharpen(std::vector<uint8_t> *p, int pw, Rect c);
 // Inside c: toward the inverse by `invert` percent, the midtones by gamma (x100), then the glasses' levels:
 // multiples of 17, which the library writes as they are (no dithering noise to send); 2 levels: 255 from
 // threshold up, else 0. Outside c stays black (see-through).
-void Tone(std::vector<uint8_t> *p, int pw, Rect c, int invert, int gamma, int threshold, int levels);
+void Tone(std::vector<uint8_t> *p, int pw, Rect c, int invert, int gamma, int threshold, int levels,
+          bool dither = false);
 
 // The phone's screen on both eyes, in the columns both eyes see (the display's x from dx), all rows. 16 greys
 // go through the library's gray display (a bitmap, changed pixels uploaded); 2 levels as VIDEO records (VM.md

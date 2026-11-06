@@ -22,7 +22,7 @@ namespace {
 constexpr uint32_t kCode = 512;        // the VIDEO path's stored code (table, pool, a few instructions)
 constexpr uint32_t kRecordMax = 65536; // the largest record sent; a larger change waits for a smaller one
 constexpr uint32_t kHeader = 12;       // due time, frame number, record size
-constexpr int kQueued = 2;             // commands not yet sent on an arm's link: more, and a frame is skipped
+constexpr int kQueued = 4;             // commands not yet sent on an arm's link: more, and a frame is skipped
 
 void Put32(std::vector<uint8_t> &v, size_t at, uint32_t x) {
   v[at] = uint8_t(x);
@@ -172,7 +172,7 @@ void Sharpen(std::vector<uint8_t> *p, int pw, Rect c) {
   }
 }
 
-void Tone(std::vector<uint8_t> *p, int pw, Rect c, int invert, int gamma, int threshold, int levels) {
+void Tone(std::vector<uint8_t> *p, int pw, Rect c, int invert, int gamma, int threshold, int levels, bool dither) {
   int a = std::clamp(invert, 0, 100);
   double g = std::clamp(gamma, 20, 500) / 100.0;
   uint8_t lut[256];
@@ -180,6 +180,25 @@ void Tone(std::vector<uint8_t> *p, int pw, Rect c, int invert, int gamma, int th
     int f = v + (255 - 2 * v) * a / 100; // a blend toward the inverse
     int q = g == 1.0 ? f : int(std::pow(f / 255.0, g) * 255.0 + 0.5);
     lut[v] = levels == 2 ? (q >= threshold ? 255 : 0) : uint8_t((q * 15 + 127) / 255 * 17);
+  }
+  if (levels == 2 && dither) {
+    // The cut-off moves with a 4 x 4 Bayer matrix (fixed in place, so a still picture stays still): greys come
+    // out as patterns. The levels before the cut-off are the toned ones (lut without the cut).
+    static const int kBayer[4][4] = {{0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
+    uint8_t tone[256];
+    for (int v = 0; v < 256; v++) {
+      int f = v + (255 - 2 * v) * a / 100;
+      tone[v] = uint8_t(g == 1.0 ? f : int(std::pow(f / 255.0, g) * 255.0 + 0.5));
+    }
+    int shift = threshold - 128; // the cut-off still biases light or dark
+    for (int y = c.y; y < c.y + c.h; y++) {
+      uint8_t *row = p->data() + size_t(y) * pw + c.x;
+      for (int x = 0; x < c.w; x++) {
+        int cut = kBayer[y & 3][(c.x + x) & 3] * 16 + 8 + shift;
+        row[x] = tone[row[x]] >= cut ? 255 : 0;
+      }
+    }
+    return;
   }
   for (int y = c.y; y < c.y + c.h; y++) {
     uint8_t *row = p->data() + size_t(y) * pw + c.x;
@@ -337,12 +356,14 @@ int ScreenMirror::SendVideo() {
       DropPath();
       return Path(2) ? kBusy : kSame;
     }
-    lead = std::max<int64_t>(lead, 2 * st.interval_us + st.clock_error_us + 15000);
+    lead = std::max<int64_t>(lead, st.interval_us + st.clock_error_us + 10000);
   }
   for (size_t i = 0; i < v.pix.size(); i++) v.pix[i] = frame_[i] >= 128;
   std::vector<uint8_t> rec = v.enc->Encode(v.pix, v.redraw, kRecordMax);
   if (rec.empty()) return kBusy; // too large for one record: the next, smaller change goes
-  lead = std::min<int64_t>(lead + int64_t(rec.size() / 200 + 1) * 10000, 1500000);
+  // The record's time on the link at about 40 KB/s (2M PHY, short intervals); an arm that gets it later draws it
+  // as soon as it is in, so a short lead only costs the eyes' sync on large changes, a long one the frame rate.
+  lead = std::min<int64_t>(lead + int64_t(rec.size()) * 1000000 / 40000, 1000000);
   std::vector<uint8_t> msg(kHeader + rec.size());
   Put32(msg, 4, v.k);
   Put32(msg, 8, uint32_t(rec.size()));
@@ -434,7 +455,7 @@ int ScreenMirror::Frame(const uint8_t *rgba, int w, int h, int stride, const Scr
   Rect c = Fit(&frame_, w_, h_, *src, sw, Source(sw, sh, d.w, d.h, o), d, o.fit == ScreenOptions::kFit);
   Stretch(&frame_, w_, c, o.contrast);
   if (o.sharpen) Sharpen(&frame_, w_, c);
-  Tone(&frame_, w_, c, o.invert, o.gamma, o.threshold, levels_);
+  Tone(&frame_, w_, c, o.invert, o.gamma, o.threshold, levels_, o.dither);
   if (o.steady && levels_ == 16 && prev_.size() == frame_.size())
     for (size_t i = 0; i < frame_.size(); i++)
       if (std::abs(int(frame_[i]) - int(prev_[i])) <= 17) frame_[i] = prev_[i];

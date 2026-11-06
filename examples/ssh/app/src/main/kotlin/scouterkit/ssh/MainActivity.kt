@@ -38,6 +38,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val settings = Settings(this)
+        settings.migrate()
         val page = page()
         page.addView(header("Scouter", "G1 glasses · runs on this phone", "Settings") {
             startActivity(Intent(this, SettingsActivity::class.java))
@@ -87,7 +88,7 @@ class MainActivity : Activity() {
         quick.addToggle(toggle("Dark while the phone is locked", "With the phone's screen on the glasses", settings.offWhenLocked) {
             settings.offWhenLocked = it
         })
-        quick.addView(slider("Depth", 0, 320, settings.dx, { "$it" }) { v ->
+        quick.addView(slider("Depth", 0, 320, settings.dx, { "$it · picture ${640 - it} px wide" }) { v ->
             // The eyes' horizontal offset: the picture seems nearer or farther. The glasses reconnect to apply it.
             settings.dx = v
             if (ScouterService.running) ScouterService.send(this)
@@ -178,6 +179,9 @@ class MainActivity : Activity() {
         thresholdBar = bar(thresholdRow)
         look.addView(thresholdRow)
         look.addToggle(toggle("Sharpen", "Crisper text", settings.screenSharpen) { settings.screenSharpen = it })
+        look.addToggle(toggle("Dither", "Black & white: greys as fine patterns (photos, video; more to send)", settings.screenDither) {
+            settings.screenDither = it
+        })
         look.addToggle(toggle("Steady", "16 greys: ignore one-step flicker (smoother, less to send)", settings.screenSteady) {
             settings.screenSteady = it
         })
@@ -406,7 +410,9 @@ class MainActivity : Activity() {
         }
         if (running && Session.showing == Settings.TERMINAL) lines += "Terminal: " + Session.mosh.replaceFirstChar { it.uppercase() }
         if (Session.capturing || Session.screen.startsWith("stopped") || Session.screen.startsWith("error"))
-            lines += "Phone screen: ${Session.screen}"
+            lines += "Phone screen: ${Session.screen}" + if (Session.screen == "on")
+                String.format(java.util.Locale.US, " · %.1f fps (%s)", Session.screenFps,
+                    if (settings.screenLevels == 2) "fast black & white" else "16 greys: slower") else ""
         if (Session.blank) lines += "Turn it back on here, in the notification, or with your TouchBar gesture."
         if (Session.gesture.isNotEmpty()) lines += "Last gesture: ${Session.gesture}"
         if (starting) lines += "Connecting to the glasses and the server…"

@@ -268,7 +268,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *) {
 }
 
 JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_version(JNIEnv *env, jclass) {
-  return env->NewStringUTF("scouter_ssh 0.4, mosh 1.4.0");
+  return env->NewStringUTF("scouter_ssh 0.5, mosh 1.4.0");
 }
 
 // ------------------------------------------------ glasses
@@ -527,9 +527,9 @@ JNIEXPORT jint JNICALL Java_scouterkit_ssh_Native_screenFrame(JNIEnv *env, jclas
   // The last row may lack its padding.
   if (!p || w <= 0 || h <= 0 || capacity < jlong(stride) * (h - 1) + jlong(w) * 4) return ssh::ScreenMirror::kSame;
   // Settings.screenOptions: fit, pan x, pan y, zoom, rotate, place x, y, w, h, invert %, levels, contrast,
-  // sharpen, hide in the case, hide folded, gamma (x100), threshold, steady.
-  jint v[18] = {0, 50, 0, 100, 0, 0, 0, 100, 100, 100, 2, 0, 0, 1, 0, 100, 128, 1};
-  jsize n = std::min<jsize>(env->GetArrayLength(options), 18);
+  // sharpen, hide in the case, hide folded, gamma (x100), threshold, steady, dither.
+  jint v[19] = {0, 50, 0, 100, 0, 0, 0, 100, 100, 100, 2, 0, 0, 1, 0, 100, 128, 1, 0};
+  jsize n = std::min<jsize>(env->GetArrayLength(options), 19);
   env->GetIntArrayRegion(options, 0, n, v);
   ssh::ScreenOptions o;
   o.fit = std::clamp(int(v[0]), 0, 2);
@@ -545,6 +545,7 @@ JNIEXPORT jint JNICALL Java_scouterkit_ssh_Native_screenFrame(JNIEnv *env, jclas
   o.gamma = std::clamp(int(v[15]), 20, 500);
   o.threshold = std::clamp(int(v[16]), 1, 254);
   o.steady = v[17] != 0;
+  o.dither = v[18] != 0;
   o.levels = v[10] == 2 ? 2 : 16;
   o.contrast = std::clamp(int(v[11]), 0, 100);
   o.sharpen = v[12] != 0;
