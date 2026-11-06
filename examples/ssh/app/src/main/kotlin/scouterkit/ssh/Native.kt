@@ -77,6 +77,12 @@ object Native {
     @JvmStatic external fun screenWhy(): String
     // Pixels left empty above and below the terminal on the glasses (fewer rows), at once.
     @JvmStatic external fun terminalMargins(top: Int, bottom: Int)
+    // Voice: the band over the terminal's top rows (wrapped into at most `lines` lines; empty: gone), and the
+    // glasses' microphone (micRead: 16 kHz mono since the last call, no waiting; -1 when it is off).
+    @JvmStatic external fun voiceBand(text: String, lines: Int)
+    @JvmStatic external fun micStart(): Boolean
+    @JvmStatic external fun micStop()
+    @JvmStatic external fun micRead(out: FloatArray): Int
     // Each eye's battery band beside the terminal, at once.
     @JvmStatic external fun setBattery(on: Boolean)
     // Both arms' brightness (0 ... 42), at once.

@@ -35,6 +35,14 @@ else()
 endif()
 find_package(Threads REQUIRED)
 target_link_libraries(scouter_kit PUBLIC Threads::Threads)
+# The glasses' microphone (Arm::MicStart, voice commands): liblc3 decodes its frames (src/README.md).
+file(GLOB LC3_SOURCES ${SCOUTER_KIT}/third_party/liblc3/src/*.c)
+add_library(lc3 STATIC ${LC3_SOURCES})
+set_target_properties(lc3 PROPERTIES C_STANDARD 11 POSITION_INDEPENDENT_CODE ON)
+target_compile_definitions(lc3 PRIVATE LC3_PLUS=0 LC3_PLUS_HR=0)
+target_include_directories(lc3 PUBLIC ${SCOUTER_KIT}/third_party/liblc3/include)
+target_compile_definitions(scouter_kit PUBLIC SCOUTER_G1_MIC)
+target_link_libraries(scouter_kit PUBLIC lc3 m)
 
 # Object libraries link whole, so mosh's static registrations stay.
 add_library(ssh_core OBJECT mosh_client.cpp glasses.cpp keys.cpp terminal.cpp screen.cpp)

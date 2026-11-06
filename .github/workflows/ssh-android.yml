@@ -13,6 +13,8 @@ on:
       - "examples/ssh/**"
       - "src/**"
       - "go/examples/term/fonts/**"
+      - "third_party/sherpa_onnx_kotlin/**"
+      - "third_party/liblc3/**"
       - "third_party/departure_mono_nerd/**"
       - ".github/workflows/ssh-android.yml"
   workflow_dispatch:
@@ -55,6 +57,9 @@ jobs:
 
       - name: Third-party code (pinned, checked by SHA-256)
         run: ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/$NDK_VERSION" examples/ssh/native/third_party/build.sh
+
+      - name: Speech engine for voice commands (sherpa-onnx 1.13.8, checked by SHA-256)
+        run: examples/ssh/native/third_party/fetch_sherpa.sh examples/ssh/native/third_party/sherpa
 
       - name: Native host tests (screen mirror and terminal on emulated arms, keys)
         working-directory: examples/ssh

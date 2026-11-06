@@ -82,6 +82,24 @@ glasses, the saved servers) and **Settings**.
   WIDTH x HEIGHT) until stdout closes. They go through the same pipeline as the phone's screen. The width asked
   for is on the Screen tab (640, 960, 1280).
 
+## Voice
+
+Commands by voice through the glasses' microphone (the right arm; liblc3 decodes it, `SCOUTER_G1_MIC`), recognised
+on the phone, offline, by sherpa-onnx 1.13.8 (`native/third_party/fetch_sherpa.sh`; its Kotlin API in
+`scouter_kit/third_party/sherpa_onnx_kotlin`) with NVIDIA's Parakeet TDT 0.6B v2 (English, int8). The Voice tab
+downloads the model once (about 660 MB from Hugging Face and GitHub at pinned revisions, each file checked by
+SHA-256, resumed where it stopped).
+
+- **Listening**: push to talk (the right TouchBar's double tap by default, Alt+Space or Alt+V, the app's Listen
+  buttons; again stops it), or always (Settings on the Voice tab: phrases must start with "Vox"). Silero VAD cuts
+  phrases at half a second of quiet; *Realtime words* reads the phrase so far again every 0.6 s while it is spoken.
+- **The band**: while voice is in use the terminal's top rows show what was heard and what it did, above a rule
+  (the rows under it come back when it goes, a few seconds after; `Native.voiceBand`).
+- **Commands**: the sources by name ("laptop screen", "phone terminal"), next, back, terminal, screen, display
+  off / on, brighter, dimmer, always visible, "type …", "run …" and "claude …" (typed, the last two with Enter),
+  Enter, Escape, Tab, Control C, Up, Down, dictation (everything said is typed; "send" is Enter), and the user's
+  own phrases (Voice tab: a phrase and what it does).
+
 ## From the phone alone (Termux, the phone's screen)
 
 No keyer needed: the main screen's buttons start a session that runs until Stop (also in the notification),

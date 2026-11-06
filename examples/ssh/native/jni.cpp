@@ -52,6 +52,9 @@ bool g_screen_wanted = false;
 // beside the terminal, and whether Apply switched the panels off.
 bool g_blank = false;
 bool g_battery = true;
+// Voice: lines shown in the terminal's top rows (above a rule) while voice is in use; empty: none.
+std::mutex g_band_mutex;
+std::vector<std::string> g_band;
 int g_top = 0, g_bottom = 0; // pixels left empty above and below the terminal (terminalMargins)
 bool g_panels_off = false;
 
@@ -131,6 +134,47 @@ void SetLink(std::shared_ptr<ssh::AndroidTransport> t) {
   g_transport = std::move(t);
 }
 
+// UTF-8 text split into its characters.
+std::vector<std::string> Chars(const std::string &s) {
+  std::vector<std::string> out;
+  for (size_t i = 0; i < s.size();) {
+    unsigned char c = static_cast<unsigned char>(s[i]);
+    size_t n = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 1;
+    out.push_back(s.substr(i, n));
+    i += n;
+  }
+  return out;
+}
+
+// The screen with the voice band over its top rows: the band's lines (bold), then a rule. The rows under it
+// are hidden while it shows; the cursor too, when it is there.
+std::shared_ptr<const ssh::Snapshot> WithBand(std::shared_ptr<const ssh::Snapshot> s) {
+  std::vector<std::string> band;
+  {
+    std::lock_guard<std::mutex> lock(g_band_mutex);
+    band = g_band;
+  }
+  if (!s || band.empty() || s->rows < 4 || s->cols < 8) return s;
+  auto out = std::make_shared<ssh::Snapshot>(*s);
+  int lines = std::min<int>(int(band.size()), out->rows / 3);
+  for (int r = 0; r <= lines; r++) {
+    std::vector<std::string> chars = r < lines ? Chars(band[size_t(r)]) : std::vector<std::string>();
+    for (int c = 0; c < out->cols; c++) {
+      ssh::Cell cell;
+      if (r < lines) {
+        if (size_t(c) < chars.size()) cell.text = chars[size_t(c)];
+        cell.bold = true;
+      } else {
+        cell.text = "\u2500";
+        cell.faint = true;
+      }
+      out->cells[size_t(r) * out->cols + c] = cell;
+    }
+  }
+  if (out->cursor_row <= lines) out->cursor_visible = false;
+  return out;
+}
+
 // The terminal on the arms, with the latest screen (g_glasses_mutex held).
 std::string StartTerminal() {
   auto term = std::make_shared<ssh::GlassesTerminal>();
@@ -152,7 +196,7 @@ std::string StartTerminal() {
   }
   std::lock_guard<std::mutex> lock(g_term_mutex);
   term->Force(g_force);
-  if (s) term->Show(s);
+  if (s) term->Show(WithBand(s));
   g_term = term;
   return {};
 }
@@ -271,7 +315,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *) {
 }
 
 JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_version(JNIEnv *env, jclass) {
-  return env->NewStringUTF("scouter_ssh 0.8, mosh 1.4.0");
+  return env->NewStringUTF("scouter_ssh 0.9, mosh 1.4.0");
 }
 
 // ------------------------------------------------ glasses
@@ -390,7 +434,7 @@ JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_moshStart(JNIEnv *env, jcla
     if (ssh::MoshClient *m = g_mosh_live.load()) {
       std::lock_guard<std::mutex> lock(g_term_mutex);
       if (g_term)
-        if (auto s = m->Latest()) g_term->Show(s);
+        if (auto s = m->Latest()) g_term->Show(WithBand(s));
     }
     Changed();
   });
@@ -483,6 +527,109 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_terminalMargins(JNIEnv *, jcla
   if (!g_glasses || Current() != Show::kTerminal) return;
   StopTerminal(false);
   StartTerminal();
+}
+
+// ------------------------------------------------ voice
+
+} // extern "C"
+
+namespace {
+// The arm with the microphone (on the G1 the right one), or null.
+scouter_kit::g1::Arm *MicArm() {
+  for (scouter_kit::g1::Arm *a : {&scouter_kit::g1::right, &scouter_kit::g1::left}) {
+    auto st = a->GetState();
+    if (st.present && st.connected && st.microphone) return a;
+  }
+  return nullptr;
+}
+
+// Words wrapped into lines of at most `cols` characters; the last `max` lines (the newest words).
+std::vector<std::string> Wrap(const std::string &text, int cols, int max) {
+  std::vector<std::string> lines;
+  std::string line;
+  size_t len = 0;
+  std::string word;
+  auto flush = [&] {
+    if (!line.empty()) lines.push_back(line);
+    line.clear();
+    len = 0;
+  };
+  auto put = [&](const std::string &w) {
+    size_t n = Chars(w).size();
+    if (len && len + 1 + n > size_t(cols)) flush();
+    if (len) {
+      line += ' ';
+      len++;
+    }
+    line += w;
+    len += n;
+  };
+  for (char ch : text + " ") {
+    if (ch == ' ' || ch == '\n') {
+      if (!word.empty()) put(word);
+      word.clear();
+      if (ch == '\n') flush();
+    } else {
+      word += ch;
+    }
+  }
+  flush();
+  if (int(lines.size()) > max) lines.erase(lines.begin(), lines.end() - max);
+  return lines;
+}
+} // namespace
+
+extern "C" {
+
+// The voice band over the terminal's top rows: the text wrapped into at most `lines` lines (the newest words);
+// empty: the band goes. The terminal shows the change at once.
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_voiceBand(JNIEnv *env, jclass, jstring text, jint lines) {
+  std::string t = Text(env, text);
+  std::shared_ptr<const ssh::Snapshot> s;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_mosh) s = g_mosh->Latest();
+  }
+  int cols = s ? s->cols : 80;
+  {
+    std::lock_guard<std::mutex> lock(g_band_mutex);
+    g_band = t.empty() ? std::vector<std::string>() : Wrap(t, cols, std::clamp(int(lines), 1, 4));
+  }
+  std::lock_guard<std::mutex> lock(g_term_mutex);
+  if (g_term && s) g_term->Show(WithBand(s));
+}
+
+// The glasses' microphone on (the arm that has one): false without glasses, such an arm, or if it refused.
+JNIEXPORT jboolean JNICALL Java_scouterkit_ssh_Native_micStart(JNIEnv *, jclass) {
+  std::lock_guard<std::mutex> lock(g_glasses_mutex);
+  if (!g_glasses) return JNI_FALSE;
+  scouter_kit::g1::Arm *a = MicArm();
+  return a && a->MicStart(scouter_kit::g1::MIC_32KBPS) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_micStop(JNIEnv *, jclass) {
+  std::lock_guard<std::mutex> lock(g_glasses_mutex);
+  if (!g_glasses) return;
+  for (scouter_kit::g1::Arm *a : {&scouter_kit::g1::right, &scouter_kit::g1::left})
+    if (a->GetState().present && a->GetMicState().on) a->MicStop();
+}
+
+// What the microphone heard since the last call (16 kHz mono, -1 ... 1), as much as fits in out; it does not
+// wait. -1: the microphone is off (stopped, or the link dropped).
+JNIEXPORT jint JNICALL Java_scouterkit_ssh_Native_micRead(JNIEnv *env, jclass, jfloatArray out) {
+  std::lock_guard<std::mutex> lock(g_glasses_mutex);
+  if (!g_glasses) return -1;
+  scouter_kit::g1::Arm *arm = nullptr;
+  for (scouter_kit::g1::Arm *a : {&scouter_kit::g1::right, &scouter_kit::g1::left})
+    if (a->GetState().present && a->GetMicState().on) arm = a;
+  if (!arm) return -1;
+  jsize cap = env->GetArrayLength(out);
+  std::vector<float> got;
+  scouter_kit::g1::MicFrame f;
+  while (jsize(got.size()) + scouter_kit::g1::kMicFrameSamples <= cap && arm->MicRead(&f, 0))
+    for (int16_t v : f.pcm) got.push_back(float(v) / 32768.0f);
+  if (!got.empty()) env->SetFloatArrayRegion(out, 0, jsize(got.size()), got.data());
+  return jint(got.size());
 }
 
 // Both arms' brightness (0 ... 42), at once.

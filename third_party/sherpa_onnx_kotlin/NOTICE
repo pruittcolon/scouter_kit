@@ -1,0 +1,19 @@
+sherpa_onnx_kotlin
+
+OfflineRecognizer.kt, OfflineStream.kt, FeatureConfig.kt, HomophoneReplacerConfig.kt, QnnConfig.kt and Vad.kt
+are unmodified files of sherpa-onnx 1.13.8's Kotlin API (https://github.com/k2-fsa/sherpa-onnx, tag v1.13.8,
+commit 11afbd009a7f8c08f4bcf2fc1b265d0df4670fbf, directory sherpa-onnx/kotlin-api), and LICENSE its licence
+file. SHA-256:
+  85054fa9722913bce96c94c5c7eaaa7fd99606b79fbfbeac6cfb60040eae2164  OfflineRecognizer.kt
+  5c90b7c060cdd0a2222cc935b54f69465a4a7544de29240bafe4d3a8d86dbb6e  OfflineStream.kt
+  829c7adc4db1324f21b9a9cbf5bf10eacf759714fe50956f48317c1ffef044f6  FeatureConfig.kt
+  fe926b6413f4d87e67c41feb21b8363923a67cbd3a5eb687b76390a5f1f7db60  HomophoneReplacerConfig.kt
+  86c963f27677f690eb0d6639735052eba5e60d9f81ccd4c1df0aa831fd680d6f  QnnConfig.kt
+  dc3fe3b63cea2becd4780a9cc8ef2aaee552eed9533d4c0f178db1172a53662c  Vad.kt
+  cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30  LICENSE
+
+Copyright Xiaomi Corporation and the sherpa-onnx authors. Apache License, Version 2.0 (LICENSE).
+
+Used by examples/ssh (voice commands) with the matching JNI library, fetched by
+examples/ssh/native/third_party/fetch_sherpa.sh (sherpa-onnx-v1.13.8-android-static-link-onnxruntime: ONNX Runtime
+is linked into it, MIT). The rest of the Kotlin API (other recognisers, TTS, speaker tools) is left out.

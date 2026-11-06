@@ -9,7 +9,8 @@ import android.view.accessibility.AccessibilityEvent
 
 // A keyboard's shortcuts (a Bluetooth keyboard paired with the phone): Alt with an arrow moves around the
 // sources as a grid (left and right: this phone, then each other server; up and down: terminal, screen),
-// Alt+1 ... Alt+9 picks Home's source of that number, Alt+0 turns the display off or on. MainActivity takes them
+// Alt+1 ... Alt+9 picks Home's source of that number, Alt+0 turns the display off or on, Alt+Space (or Alt+V)
+// listens for a voice command. MainActivity takes them
 // while Vox is in front; VoxKeys (an accessibility service the user turns on) everywhere.
 object Hotkeys {
     // The event was a shortcut (both its press and its release are ours then).
@@ -22,6 +23,7 @@ object Hotkeys {
             KeyEvent.KEYCODE_DPAD_UP -> "up"
             KeyEvent.KEYCODE_DPAD_DOWN -> "down"
             KeyEvent.KEYCODE_0 -> Shortcuts.DISPLAY
+            KeyEvent.KEYCODE_SPACE, KeyEvent.KEYCODE_V -> LISTEN
             in KeyEvent.KEYCODE_1..KeyEvent.KEYCODE_9 -> (e.keyCode - KeyEvent.KEYCODE_0).toString()
             else -> return false
         }
@@ -31,6 +33,7 @@ object Hotkeys {
 
     private fun run(context: Context, settings: Settings, target: String) {
         if (target == Shortcuts.DISPLAY) return ScouterService.send(context, ScouterService.ACTION_DISPLAY)
+        if (target == LISTEN) return ScouterService.send(context, ScouterService.ACTION_VOICE, "mode" to "listen")
         val key = when (target) {
             "left", "right", "up", "down" -> settings.move(current(settings), target)
             else -> settings.sources().getOrNull(target.toInt() - 1)?.first
@@ -51,6 +54,8 @@ object Hotkeys {
         Settings.TERMINAL -> "term:${settings.active()?.id}"
         else -> settings.source.ifEmpty { "term:${settings.active()?.id}" }
     }
+
+    private const val LISTEN = "listen" // Alt+Space or Alt+V: voice
 
     // Whether VoxKeys is turned on in Android's accessibility settings.
     fun everywhere(context: Context): Boolean {

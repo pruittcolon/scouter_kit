@@ -134,6 +134,7 @@ class Settings(context: Context) {
         arm == 1 && gesture == Native.GESTURE_HOLD -> ACTION_DISPLAY
         arm == 0 && gesture == Native.GESTURE_HOLD -> ACTION_NEXT
         arm == 0 && gesture == Native.GESTURE_DOUBLE -> ACTION_PREV
+        arm == 1 && gesture == Native.GESTURE_DOUBLE -> ACTION_LISTEN
         else -> ACTION_NONE
     }) ?: ACTION_NONE
 
@@ -246,6 +247,33 @@ class Settings(context: Context) {
         }
     }
 
+    // Voice (Voice.kt): realtime words, always listening (after the wake word "Vox"), the band on the glasses and
+    // how long it stays after a command, and the user's own commands.
+    var voiceRealtime: Boolean
+        get() = prefs.getBoolean("voice_realtime", true)
+        set(v) = prefs.edit().putBoolean("voice_realtime", v).apply()
+    var voiceAlways: Boolean
+        get() = prefs.getBoolean("voice_always", false)
+        set(v) = prefs.edit().putBoolean("voice_always", v).apply()
+    var voiceBand: Boolean
+        get() = prefs.getBoolean("voice_band", true)
+        set(v) = prefs.edit().putBoolean("voice_band", v).apply()
+    var voiceBandSecs: Int by Number("voice_band_secs", 4)
+
+    fun voiceCommands(): List<VoiceCommands.Command> = runCatching {
+        val a = org.json.JSONArray(prefs.getString("voice_commands", null) ?: "[]")
+        (0 until a.length()).map { i ->
+            val o = a.getJSONObject(i)
+            VoiceCommands.Command(o.getString("phrase"), o.getString("action"), o.optString("arg"))
+        }
+    }.getOrDefault(emptyList())
+
+    fun saveVoiceCommands(list: List<VoiceCommands.Command>) {
+        val a = org.json.JSONArray()
+        for (c in list) a.put(org.json.JSONObject().put("phrase", c.phrase).put("action", c.action).put("arg", c.arg))
+        prefs.edit().putString("voice_commands", a.toString()).apply()
+    }
+
     // A keyboard's Alt shortcuts (Hotkeys).
     var hotkeys: Boolean
         get() = prefs.getBoolean("hotkeys", true)
@@ -288,8 +316,9 @@ class Settings(context: Context) {
         const val ACTION_STOP = "stop" // the session ends
         const val ACTION_NEXT = "next" // the next source (sources())
         const val ACTION_PREV = "prev" // the source before
+        const val ACTION_LISTEN = "listen" // voice: listen for one command (again: stop)
         val ACTIONS = linkedMapOf(ACTION_NONE to "Nothing", ACTION_DISPLAY to "Display off / on",
-            ACTION_NEXT to "Next source", ACTION_PREV to "Previous source",
+            ACTION_NEXT to "Next source", ACTION_PREV to "Previous source", ACTION_LISTEN to "Listen (voice command)",
             ACTION_VIEW to "Switch terminal / screen", ACTION_STOP to "Stop everything")
         const val PHONE = "phone" // the phone's own screen (a source)
 

@@ -37,6 +37,20 @@ class MainActivity : Activity() {
     private lateinit var stopSharing: View
     private lateinit var batterySwitch: Switch
     private lateinit var forceSwitch: Switch
+    private lateinit var homeForce: Switch
+    private lateinit var voiceState: TextView
+    private lateinit var voiceModel: TextView
+    private lateinit var voiceListen: TextView
+    private lateinit var downloadButton: View
+    private lateinit var commandsBox: LinearLayout
+    private lateinit var heardText: TextView
+    // While the speech model downloads: its progress on the Voice tab.
+    private val modelTicker = object : Runnable {
+        override fun run() {
+            showVoice()
+            if (VoiceModel.progress >= 0) content.postDelayed(this, 500)
+        }
+    }
     private lateinit var previewView: PreviewView
     private lateinit var previewText: TextView
     private lateinit var content: FrameLayout
@@ -76,6 +90,7 @@ class MainActivity : Activity() {
         pages += homePage(settings)
         pages += screenPage(settings)
         pages += terminalPage(settings)
+        pages += voicePage(settings)
         for (p in pages) content.addView(p, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         selectTab(getPreferences(MODE_PRIVATE).getInt("tab", 0))
         handle(intent)
@@ -102,11 +117,11 @@ class MainActivity : Activity() {
             setBackgroundColor(Ui.SURFACE)
             setPadding(dp(8), dp(6), dp(8), dp(8))
         }
-        for ((i, name) in listOf("Home", "Screen", "Terminal", "Settings").withIndex()) {
-            val t = text(name, 13.5f, Ui.MUTED, Ui.BOLD).apply {
+        for ((i, name) in listOf("Home", "Screen", "Terminal", "Voice", "Settings").withIndex()) {
+            val t = text(name, 12.5f, Ui.MUTED, Ui.BOLD).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(11), 0, dp(11))
-                setOnClickListener { if (i == 3) startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) else selectTab(i) }
+                setOnClickListener { if (i == 4) startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) else selectTab(i) }
             }
             tabLabels += t
             bar.addView(t, lp(0, weight = 1f).apply { if (i > 0) leftMargin = dp(6) })
@@ -162,6 +177,14 @@ class MainActivity : Activity() {
         quick.addView(slider("Brightness", 0, 42, settings.brightness, { "${it * 100 / 42}%" }) { v ->
             settings.brightness = v
             Thread { Native.brightness(v) }.start()
+        })
+        homeForce = toggle("Always visible", "Off: the terminal shows only when you look up", settings.phoneForce) {
+            settings.phoneForce = it
+            if (ScouterService.running) ScouterService.send(this)
+        }
+        quick.addToggle(homeForce)
+        quick.addView(button("Listen for a voice command") {
+            ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "listen")
         })
         quick.addView(button("Stop everything", DANGER) {
             note = null
@@ -375,6 +398,161 @@ class MainActivity : Activity() {
         return scroll
     }
 
+    private fun voicePage(settings: Settings): View {
+        val (scroll, page) = scrollPage()
+        page.addView(header("Voice", "Commands by voice, through the glasses' microphone"))
+        val now = card()
+        voiceState = text("", 15.5f, Ui.TEXT, Ui.BOLD)
+        now.addView(voiceState)
+        voiceListen = button("Listen", PRIMARY) { ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "listen") }
+        now.addView(voiceListen)
+        now.addView(text("Or double-tap the right TouchBar, or Alt+Space on a keyboard. Say a command; the top of the " +
+            "glasses shows what was heard and what it did, then the band goes.", 12.5f, Ui.FAINT).apply { setPadding(0, dp(8), 0, 0) })
+        page.addView(now)
+
+        val model = card("Speech model", "NVIDIA Parakeet TDT 0.6B v2 (English), on this phone, offline: " +
+            "${VoiceModel.bytes / 1_000_000} MB, downloaded once.")
+        voiceModel = text("", 13.5f, Ui.MUTED)
+        model.addView(voiceModel)
+        downloadButton = button("Download the speech model", PRIMARY) { download() }
+        model.addView(downloadButton)
+        model.addView(button("Delete it") {
+            dialog().setTitle("Delete the speech model?").setMessage("Voice commands need it; you can download it again.")
+                .setPositiveButton("Delete") { _, _ ->
+                    VoiceModel.delete(this)
+                    showVoice()
+                }
+                .setNegativeButton("Cancel", null).show()
+        })
+        page.addView(model)
+
+        val how = card("How it listens")
+        how.addToggle(toggle("Realtime words", "The words show while you speak (more of the phone's CPU)", settings.voiceRealtime) {
+            settings.voiceRealtime = it
+        })
+        how.addToggle(toggle("Always listening", "Say \"Vox\" first: \"Vox, laptop screen\". The glasses' microphone stays " +
+            "on (their battery; the right arm shows a dot).", settings.voiceAlways) {
+            settings.voiceAlways = it
+            ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "always")
+        })
+        how.addToggle(toggle("Show on the glasses", "A band at the top while you use voice, gone a few seconds after", settings.voiceBand) {
+            settings.voiceBand = it
+        })
+        how.addView(slider("The band stays", 1, 15, settings.voiceBandSecs, { "$it s" }) { settings.voiceBandSecs = it })
+        page.addView(how)
+
+        val cmds = card("Commands", VoiceCommands.HELP)
+        cmds.addView(text("Your own", 13f, Ui.MUTED, Ui.BOLD).apply { setPadding(0, dp(6), 0, dp(4)) })
+        commandsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        cmds.addView(commandsBox)
+        cmds.addView(button("Add a command") { addCommand() })
+        page.addView(cmds)
+
+        val got = card("Heard")
+        heardText = text("", 13f, Ui.MUTED)
+        got.addView(heardText)
+        page.addView(got)
+        return scroll
+    }
+
+    private fun showVoice() {
+        if (!::voiceState.isInitialized) return
+        fun mb(b: Long) = "${b / 1_000_000} MB"
+        voiceModel.text = when {
+            !VoiceModel.available -> "This build has no speech engine."
+            VoiceModel.progress >= 0 -> "Downloading… ${mb(VoiceModel.progress)} of ${mb(VoiceModel.bytes)}"
+            VoiceModel.ready(this) -> "Ready (${mb(VoiceModel.bytes)} on this phone)."
+            VoiceModel.problem != null -> "Not downloaded: ${VoiceModel.problem}"
+            else -> "Not downloaded yet (${mb(VoiceModel.bytes)}; Wi-Fi is best)."
+        }
+        downloadButton.visibility = if (VoiceModel.available && !VoiceModel.ready(this) && VoiceModel.progress < 0) View.VISIBLE else View.GONE
+        val said = Session.voice.replace(ScouterService.MIC, "").trim()
+        voiceState.text = (if (Session.listening) said.ifEmpty { "Listening…" } else said.ifEmpty { "Not listening" }) +
+            if (Session.dictating) " · dictating" else ""
+        voiceListen.text = if (Session.listening) "Stop listening" else "Listen"
+        heardText.text = Session.heard.joinToString("\n").ifEmpty { "Nothing yet." }
+    }
+
+    private fun download() {
+        if (VoiceModel.progress >= 0) return
+        dialog().setTitle("Download the speech model?")
+            .setMessage("${VoiceModel.bytes / 1_000_000} MB from Hugging Face and GitHub, each file checked. Wi-Fi is best. " +
+                "It goes on where it stopped if interrupted.")
+            .setPositiveButton("Download") { _, _ ->
+                VoiceModel.progress = 0
+                Thread {
+                    VoiceModel.download(applicationContext)
+                    runOnUiThread { showVoice() }
+                }.start()
+                content.post(modelTicker)
+            }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    // The Voice tab's own commands: each phrase and what it does.
+    private fun buildCommands() {
+        val settings = Settings(this)
+        commandsBox.removeAllViews()
+        val list = settings.voiceCommands()
+        for ((i, c) in list.withIndex()) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(6), 0, dp(6))
+            }
+            val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            texts.addView(text("\u201c${c.phrase}\u201d", 15f, Ui.TEXT, Ui.BOLD))
+            val (action, arg) = if (c.action.startsWith("key:")) VoiceCommands.KEY to c.action.removePrefix("key:") else c.action to c.arg
+            texts.addView(text(VoiceCommands.label(settings, action, arg), 12.5f, Ui.MUTED))
+            row.addView(texts, lp(0, weight = 1f).apply { rightMargin = dp(8) })
+            row.addView(chip("Delete", false) {
+                settings.saveVoiceCommands(list.filterIndexed { k, _ -> k != i })
+                buildCommands()
+            })
+            commandsBox.addView(row)
+        }
+        if (list.isEmpty()) commandsBox.addView(text("None yet: for example \"work\" to show the laptop's terminal.", 12.5f, Ui.FAINT))
+    }
+
+    private fun addCommand() {
+        val settings = Settings(this)
+        val options = settings.sources().map { (key, name) -> "source|$key" to "Show $name" } +
+            VoiceCommands.CHOICES.map { (k, v) -> k to v }
+        var pick = options.first().first
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(4), dp(20), dp(8))
+        }
+        val phrase = field("When I say", "", "e.g. work")
+        box.addField(phrase)
+        box.addView(choiceRow("It does", options.first().second) { shown ->
+            dialog().setTitle("It does")
+                .setSingleChoiceItems(options.map { it.second }.toTypedArray(), options.indexOfFirst { it.first == pick }) { d, w ->
+                    pick = options[w].first
+                    shown.text = options[w].second
+                    d.dismiss()
+                }
+                .show()
+        })
+        val arg = field("Text (for Type text, Type text and Enter)", "", "e.g. git status")
+        box.addField(arg)
+        dialog().setTitle("Add a voice command")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Add") { _, _ ->
+                val p = phrase.text.toString().trim()
+                val (action, a) = if (pick.startsWith("source|")) VoiceCommands.SOURCE to pick.removePrefix("source|")
+                    else pick to arg.text.toString().trim()
+                if (p.isEmpty() || ((action == VoiceCommands.TYPE || action == VoiceCommands.RUN) && a.isEmpty())) {
+                    note = "A voice command needs words to say (and text for typing)."
+                    return@setPositiveButton show()
+                }
+                settings.saveVoiceCommands(settings.voiceCommands() + VoiceCommands.Command(p, action, a))
+                buildCommands()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     // Home's buttons, one per source (Settings.sources) and the display, two a row; and the shortcuts to add.
     private fun buildSources() {
         val settings = Settings(this)
@@ -511,6 +689,8 @@ class MainActivity : Activity() {
         Preview.listener = previewListener
         buildSources()
         buildServers()
+        buildCommands()
+        if (VoiceModel.progress >= 0) content.post(modelTicker)
         selectTab(tab)
         val keyboard = Settings(this).keyboard
         // Keyboard mode: the keys come only while this screen is in front, so it stays on (dimmed by Android).
@@ -815,6 +995,8 @@ class MainActivity : Activity() {
         stopSharing.visibility = if (Session.capturing) View.VISIBLE else View.GONE
         if (batterySwitch.isChecked != settings.battery) batterySwitch.isChecked = settings.battery
         if (forceSwitch.isChecked != settings.phoneForce) forceSwitch.isChecked = settings.phoneForce
+        if (homeForce.isChecked != settings.phoneForce) homeForce.isChecked = settings.phoneForce
+        showVoice()
 
         status.text = (if (exempt()) "" else "battery optimised · ") +
             "glasses ${Session.glasses} (L ${Session.left} R ${Session.right}" + (if (Session.shown) ", shown" else "") +

@@ -48,6 +48,10 @@ object Session {
     @Volatile var blank = false // the display is off (nothing shows; the TouchBar still works)
     @Volatile var battery: IntArray = intArrayOf(-1, -1, -1, -1) // left %, right %, left charging, right charging
     @Volatile var gesture = "" // the last TouchBar gesture and what it did
+    @Volatile var voice = "" // voice: what the band says (or last said)
+    @Volatile var listening = false
+    @Volatile var dictating = false // what is said is typed into the terminal
+    @Volatile var heard = listOf<String>() // the last phrases, newest first
     // The devices Android reports near (ScouterCompanionService: keyer); null: unknown (none reported since the
     // process started, Bluetooth was off since, or keyer's link did not come after the last report).
     @Volatile var near: Set<String>? = null
@@ -245,6 +249,17 @@ class ScouterService : Service() {
                 display(on, "app")
             }
             ACTION_TRUST -> work.post { trust(intent.getStringExtra("fingerprint")) }
+            // Voice: "listen" (one command; again: stop), "stop", or "always" (Settings.voiceAlways changed).
+            ACTION_VOICE -> work.post {
+                when (intent.getStringExtra("mode")) {
+                    "stop" -> stopListening()
+                    "always" -> {
+                        if (!settings.voiceAlways && listener?.once == false) stopListening()
+                        voiceAlways()
+                    }
+                    else -> listen(true)
+                }
+            }
             // Android reported keyer near (or gone): a report of near gets keyer's link 30 s to come.
             ACTION_NEAR -> work.post {
                 if (keyerNear()) {
@@ -337,7 +352,8 @@ class ScouterService : Service() {
         }
         work.removeCallbacks(letGo)
         // The screen needs Android's screen sharing, which ends with the process: then the terminal.
-        if (settings.show == Settings.SCREEN && screen == null) settings.show = Settings.TERMINAL
+        if (settings.show == Settings.SCREEN && screen == null && remote == null) settings.show = Settings.TERMINAL
+        voiceAlways()
         // Keyboard mode: the terminal shows on the glasses whatever the head's angle, as while keyer's keys come.
         if (settings.keyboard && Session.keyer != KEYBOARD) {
             Native.force(true)
@@ -371,6 +387,9 @@ class ScouterService : Service() {
     // notification.
     private fun end() {
         ended = true
+        stopListening()
+        voiceEngine?.let { e -> Thread { runCatching { e.release() } }.start() }
+        voiceEngine = null
         work.removeCallbacks(watchdog)
         work.removeCallbacks(letGo)
         stopKeyer()
@@ -749,6 +768,177 @@ class ScouterService : Service() {
         update(screen = why)
     }
 
+    // ------------------------------------------------ voice
+
+    // Parakeet, loaded on first use; the listener while the microphone is on.
+    @Volatile private var voiceEngine: VoiceEngine? = null
+    private var listener: VoiceListener? = null
+    private var voiceLoading = false
+    private var voiceFailedAt = 0L // always listening waits a while after a failure
+    private val bandOff = Runnable {
+        Native.voiceBand("", 1)
+        if (!Session.listening) Session.voice = ""
+        Session.changed()
+    }
+
+    // The band on the glasses (and the Voice tab): hold keeps it, else it goes after Settings.voiceBandSecs.
+    private fun voiceSay(text: String, hold: Boolean = false) {
+        Session.voice = text
+        Native.voiceBand(if (settings.voiceBand) text else "", 2)
+        work.removeCallbacks(bandOff)
+        if (!hold) work.postDelayed(bandOff, settings.voiceBandSecs.coerceIn(1, 30) * 1000L)
+        Session.changed()
+    }
+
+    // Listening on the glasses' microphone: once (push to talk: a TouchBar gesture, Alt+Space, the app; again
+    // stops it) or always (Settings.voiceAlways: phrases that start with "Vox").
+    private fun listen(once: Boolean) {
+        if (listener != null || voiceLoading) {
+            if (once) stopListening()
+            return
+        }
+        if (!VoiceModel.available) return voiceSay("$MIC voice is not in this build")
+        if (!VoiceModel.ready(this)) return voiceSay("$MIC download the speech model first: Vox, Voice tab")
+        if (Session.glasses != "ready") return voiceSay("$MIC the glasses are not connected")
+        voiceLoading = true
+        voiceSay(if (voiceEngine == null) "$MIC loading the speech model…" else listeningText(once), hold = true)
+        Thread {
+            val engine = voiceEngine ?: runCatching { VoiceEngine(this) }.getOrElse { e ->
+                work.post {
+                    voiceLoading = false
+                    voiceFailedAt = SystemClock.elapsedRealtime()
+                    voiceSay("$MIC the speech model did not load: ${e.message}")
+                }
+                return@Thread
+            }
+            voiceEngine = engine
+            work.post {
+                voiceLoading = false
+                if (ended || listener != null) return@post
+                lateinit var l: VoiceListener
+                l = VoiceListener(engine, settings.voiceRealtime, once,
+                    onPartial = { t -> work.post { if (listener === l) voiceSay("$MIC $t…", hold = true) } },
+                    onPhrase = { t -> work.post { if (listener === l) heard(t, once) } },
+                    onEnd = { why -> work.post { listenerEnded(l, why) } })
+                listener = l
+                Session.listening = true
+                voiceSay(listeningText(once), hold = true)
+                l.start()
+            }
+        }.start()
+    }
+
+    private fun listeningText(once: Boolean) = if (once) "$MIC listening… say a command" else "$MIC say \"Vox\" and a command"
+
+    private fun stopListening() {
+        listener?.stop()
+    }
+
+    private fun listenerEnded(l: VoiceListener, why: String) {
+        if (listener !== l) return
+        listener = null
+        Session.listening = false
+        if (why.isNotEmpty()) {
+            if (!l.once) voiceFailedAt = SystemClock.elapsedRealtime()
+            voiceSay("$MIC $why")
+        } else if (Session.voice.endsWith("…")) voiceSay(Session.voice.removeSuffix("…"))
+        else work.postDelayed(bandOff, settings.voiceBandSecs.coerceIn(1, 30) * 1000L)
+        Session.changed()
+        if (!l.once) work.postDelayed({ voiceAlways() }, 1000)
+    }
+
+    // Always listening: on while the glasses are up and the setting is on (not again within 30 s of a failure).
+    private fun voiceAlways() {
+        if (!settings.voiceAlways || listener != null || voiceLoading || ended || Session.glasses != "ready") return
+        if (!VoiceModel.available || !VoiceModel.ready(this)) return
+        if (SystemClock.elapsedRealtime() - voiceFailedAt < 30000) return
+        listen(false)
+    }
+
+    // A phrase: a command (always listening: only after "Vox"), or, while dictating, text for the terminal.
+    private fun heard(text: String, once: Boolean) {
+        Session.heard = (listOf(text) + Session.heard).take(8)
+        var said = text
+        if (!once && !Session.dictating) said = VoiceCommands.afterWake(text) ?: run {
+            Session.changed()
+            return
+        }
+        val m = VoiceCommands.match(settings, said)
+        if (Session.dictating && (m == null || m.action == VoiceCommands.TYPE)) {
+            type((m?.arg ?: said) + " ")
+            return voiceSay("$MIC typing: $said", hold = true)
+        }
+        if (m == null) return voiceSay("$MIC \u201c$said\u201d: no such command")
+        voiceSay("$MIC \u201c$said\u201d \u2192 ${m.label}")
+        voiceDo(m)
+    }
+
+    private fun voiceDo(m: VoiceCommands.Match) {
+        when (m.action) {
+            VoiceCommands.SOURCE -> if (m.arg == Settings.PHONE && screen == null)
+                voiceSay("$MIC share the phone's screen in the app first") else source(m.arg)
+            VoiceCommands.NEXT -> source(Settings.ACTION_NEXT)
+            VoiceCommands.PREV -> source(Settings.ACTION_PREV)
+            VoiceCommands.UP, VoiceCommands.DOWN -> {
+                val now = if (settings.show == Settings.TERMINAL) "term:${settings.active()?.id}" else Session.screenSource.ifEmpty { Settings.PHONE }
+                settings.move(now, m.action)?.let { key ->
+                    if (key == Settings.PHONE && screen == null) voiceSay("$MIC share the phone's screen in the app first")
+                    else source(key)
+                }
+            }
+            VoiceCommands.DISPLAY_ON -> display(true, "voice")
+            VoiceCommands.DISPLAY_OFF -> display(false, "voice")
+            VoiceCommands.BRIGHTER, VoiceCommands.DIMMER -> {
+                settings.brightness = (settings.brightness + if (m.action == VoiceCommands.BRIGHTER) 6 else -6).coerceIn(0, 42)
+                Native.brightness(settings.brightness)
+            }
+            VoiceCommands.VISIBLE_ON, VoiceCommands.VISIBLE_OFF -> {
+                settings.phoneForce = m.action == VoiceCommands.VISIBLE_ON
+                refresh()
+            }
+            VoiceCommands.TYPE -> type(m.arg)
+            VoiceCommands.RUN -> {
+                type(m.arg)
+                key("enter")
+            }
+            VoiceCommands.KEY -> key(m.arg)
+            VoiceCommands.DICTATE_ON -> {
+                Session.dictating = true
+                voiceSay("$MIC dictating: say \"send\" for Enter, \"stop dictating\" to end", hold = true)
+                if (listener == null) listen(false)
+            }
+            VoiceCommands.DICTATE_OFF -> Session.dictating = false
+            VoiceCommands.STOP -> {
+                Session.dictating = false
+                stopListening()
+            }
+        }
+        Session.changed()
+    }
+
+    // Text into the terminal, as keyer would type it.
+    private fun type(text: String) {
+        var i = 0
+        while (i < text.length) {
+            val cp = text.codePointAt(i)
+            Native.keyEvent(1, 0, cp)
+            i += Character.charCount(cp)
+        }
+    }
+
+    private fun key(name: String) = when (name) {
+        "enter" -> Native.keyEvent(2, 0, 0x28)
+        "escape" -> Native.keyEvent(2, 0, 0x29)
+        "backspace" -> Native.keyEvent(2, 0, 0x2A)
+        "tab" -> Native.keyEvent(2, 0, 0x2B)
+        "right" -> Native.keyEvent(2, 0, 0x4F)
+        "left" -> Native.keyEvent(2, 0, 0x50)
+        "down" -> Native.keyEvent(2, 0, 0x51)
+        "up" -> Native.keyEvent(2, 0, 0x52)
+        "ctrl-c" -> Native.keyEvent(1, 0x01, 'c'.code)
+        else -> {}
+    }
+
     // What the glasses show: the terminal, or the phone's screen (only while it is shared).
     private fun view(show: String) {
         if (show == Settings.SCREEN && screen == null && remote == null) return update(screen = "not shared: tap Phone screen in the app")
@@ -795,6 +985,7 @@ class ScouterService : Service() {
             Settings.ACTION_VIEW -> if (screen != null || remote != null)
                 view(if (settings.show == Settings.SCREEN) Settings.TERMINAL else Settings.SCREEN)
             Settings.ACTION_NEXT, Settings.ACTION_PREV -> source(action)
+            Settings.ACTION_LISTEN -> listen(true)
             Settings.ACTION_STOP -> {
                 settings.phone = false
                 end()
@@ -866,6 +1057,8 @@ class ScouterService : Service() {
         const val ACTION_DISPLAY = "scouterkit.ssh.DISPLAY" // the display on / off (EXTRA_ON, else the other way)
         const val ACTION_SOURCE = "scouterkit.ssh.SOURCE" // a source on the glasses (Shortcuts.EXTRA: a key, next, prev)
         const val ACTION_SERVER = "scouterkit.ssh.SERVER" // a saved server's terminal (extra "id"; none: the next)
+        const val ACTION_VOICE = "scouterkit.ssh.VOICE" // voice (extra "mode": listen, stop, always)
+        const val MIC = "\uF130" // the terminal font's microphone (Nerd Fonts)
         const val EXTRA_ON = "on"
         const val EXTRA_CODE = "code"
         const val EXTRA_DATA = "data"
