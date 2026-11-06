@@ -110,7 +110,8 @@ class BluetoothSwitch : BroadcastReceiver() {
         if (!on) Session.near = null
         CompanionApp.observe(context, on)
         // Start by itself (Settings.autoStart): after an update, the phone's start, or Bluetooth coming on.
-        if (on && Settings(context).startsByItself())
+        if (on && Settings(context).startsByItself().also {
+                if (it) android.util.Log.i(ScouterService.TAG, "start by itself: ${intent.action}") })
             runCatching { ScouterService.send(context) }.onFailure { android.util.Log.w(ScouterService.TAG, "start: ${it.message}") }
         Session.changed()
     }

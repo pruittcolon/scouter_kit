@@ -78,7 +78,13 @@ class VoxNotifications : NotificationListenerService() {
             Notification.CATEGORY_STOPWATCH, Notification.CATEGORY_LOCATION_SHARING)
     }
 
-    override fun onListenerConnected() = refresh()
+    override fun onListenerConnected() {
+        refresh()
+        // After an update or the phone's start Android binds this listener, and may not tell the app it was
+        // replaced (BluetoothSwitch): Vox starts by itself (Settings.autoStart) from here as well.
+        if (!ScouterService.running && Settings(this).startsByItself())
+            runCatching { ScouterService.send(this) }.onFailure { android.util.Log.w(ScouterService.TAG, "start: ${it.message}") }
+    }
     override fun onNotificationPosted(sbn: StatusBarNotification?) = refresh()
     override fun onNotificationRemoved(sbn: StatusBarNotification?) = refresh()
 

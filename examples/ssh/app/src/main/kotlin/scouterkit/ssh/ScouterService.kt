@@ -843,7 +843,19 @@ class ScouterService : Service() {
 
     private var pointerRow = 0
     private var pointerCol = 0
-    private val pointerIdle = Runnable { Native.pointer(-1, -1) } // hidden after a while; its keys still work
+    // Above the terminal's top row the pointer is on the dashboard's tab bar: the place it is on (an index in
+    // barHits, the bar's tabs and + as last drawn), or -1 while it is in the terminal.
+    private var pointerBar = -1
+    private var barHits: List<Dashboard.Hit> = emptyList()
+    private var barWidth = 0
+    private val pointerIdle = Runnable { // hidden after a while; its keys still work
+        Native.pointer(-1, -1)
+        if (pointerBar >= 0) {
+            pointerBar = -1
+            pointerRow = 0
+            dash()
+        }
+    }
 
     private fun pointer(cmd: String) {
         val parts = cmd.split(":")
@@ -852,20 +864,81 @@ class ScouterService : Service() {
             "off" -> pointerOff()
             "move" -> {
                 if (!Session.pointer) pointerOn()
-                pointerRow = (pointerRow + (parts.getOrNull(2)?.toIntOrNull() ?: 0)).coerceIn(0, settings.rows - 1)
-                pointerCol = (pointerCol + (parts.getOrNull(1)?.toIntOrNull() ?: 0)).coerceIn(0, settings.cols - 1)
+                val dx = parts.getOrNull(1)?.toIntOrNull() ?: 0
+                val dy = parts.getOrNull(2)?.toIntOrNull() ?: 0
+                if (pointerBar >= 0) barMove(dx, dy)
+                else if (pointerRow + dy < 0 && barHits.isNotEmpty() && settings.dashRows > 0) barEnter()
+                else {
+                    pointerRow = (pointerRow + dy).coerceIn(0, settings.rows - 1)
+                    pointerCol = (pointerCol + dx).coerceIn(0, settings.cols - 1)
+                }
                 showPointer()
             }
             "click", "right", "up", "down" -> {
                 if (!Session.pointer) pointerOn()
-                val button = when (parts[0]) { "right" -> 2; "up" -> 64; "down" -> 65; else -> 0 }
-                if (!Native.mouse(button, pointerRow, pointerCol))
-                    Session.tabs = "the terminal's program takes no mouse (in tmux: Mouse in tmux, Terminal tab)"
-                else Session.tabs = ""
+                if (pointerBar >= 0) barClick(parts[0])
+                else {
+                    val button = when (parts[0]) { "right" -> 2; "up" -> 64; "down" -> 65; else -> 0 }
+                    if (!Native.mouse(button, pointerRow, pointerCol))
+                        Session.tabs = "the terminal's program takes no mouse (in tmux: Mouse in tmux, Terminal tab)"
+                    else Session.tabs = ""
+                }
                 showPointer()
             }
         }
         Session.changed()
+    }
+
+    // The column under a place on the bar, and the place nearest a column (the dashboard is the terminal's width).
+    private fun barCol(hit: Dashboard.Hit): Int =
+        if (barWidth <= 0) pointerCol else (hit.center * settings.cols / barWidth).toInt().coerceIn(0, settings.cols - 1)
+
+    private fun barNearest(col: Int): Int {
+        val x = if (settings.cols <= 0) 0f else (col + 0.5f) * barWidth / settings.cols
+        return barHits.indices.minByOrNull { i ->
+            val h = barHits[i]
+            if (x < h.left) h.left - x else if (x > h.right) x - h.right else 0f
+        } ?: -1
+    }
+
+    // Up from the terminal's top row: onto the bar, at the tab above the pointer (else the nearest).
+    private fun barEnter() {
+        pointerBar = barNearest(pointerCol)
+        if (pointerBar < 0) return
+        Native.pointer(-1, -1) // the cell in the terminal goes; the bar shows where it is
+        dash()
+    }
+
+    // On the bar: left and right go a tab at a time, down goes back into the terminal under it.
+    private fun barMove(dx: Int, dy: Int) {
+        if (dy > 0) {
+            pointerCol = barCol(barHits.getOrNull(pointerBar) ?: return barLeave())
+            barLeave()
+            return
+        }
+        if (dx == 0) return
+        val next = (pointerBar + if (dx > 0) 1 else -1).coerceIn(0, barHits.size - 1)
+        if (next != pointerBar) {
+            pointerBar = next
+            dash()
+        }
+    }
+
+    private fun barLeave() {
+        pointerBar = -1
+        pointerRow = 0
+        dash()
+    }
+
+    // A click on the bar: a tab is shown, the + makes another; the wheel goes to the tab before or after.
+    private fun barClick(what: String) {
+        val hit = barHits.getOrNull(pointerBar) ?: return
+        Session.tabs = ""
+        when (what) {
+            "click" -> tabs(hit.action)
+            "up" -> tabs("prev")
+            "down" -> tabs("next")
+        }
     }
 
     private fun pointerOn() {
@@ -880,10 +953,11 @@ class ScouterService : Service() {
         Session.pointer = false
         work.removeCallbacks(pointerIdle)
         Native.pointer(-1, -1)
+        if (pointerBar >= 0) barLeave()
     }
 
     private fun showPointer() {
-        Native.pointer(pointerRow, pointerCol)
+        Native.pointer(if (pointerBar >= 0) -1 else pointerRow, if (pointerBar >= 0) -1 else pointerCol)
         work.removeCallbacks(pointerIdle)
         work.postDelayed(pointerIdle, 10000)
     }
@@ -967,7 +1041,12 @@ class ScouterService : Service() {
         if (ended || settings.dashRows == 0) return
         val size = Native.dashSize()
         if (size[0] <= 0 || size[1] <= 0) return
-        Native.dash(Dashboard.render(this, settings, size[0], size[1], dashVoice, Session.listening).packed)
+        val hover = if (Session.pointer) barHits.getOrNull(pointerBar)?.action else null
+        val f = Dashboard.render(this, settings, size[0], size[1], dashVoice, Session.listening, hover)
+        barHits = f.hits
+        barWidth = size[0]
+        if (pointerBar >= barHits.size) pointerBar = barHits.size - 1 // a tab closed under it
+        Native.dash(f.packed)
     }
 
     // ------------------------------------------------ voice

@@ -19,7 +19,13 @@ import java.util.Locale
 // the newest notification (or, while voice is in use, what is being heard); a ring gauge for each arm's
 // battery; corner brackets and a ticked rule under it all.
 object Dashboard {
-    class Frame(val packed: ByteArray, val preview: Bitmap)
+    // hits: where the tab bar's tabs and its + are (left to right), for the pointer.
+    class Frame(val packed: ByteArray, val preview: Bitmap, val hits: List<Hit> = emptyList())
+
+    // A place on the tab bar the pointer can click: its pixels across, and its action ("select:N", "new").
+    class Hit(val left: Float, val right: Float, val action: String) {
+        val center get() = (left + right) / 2
+    }
 
     private fun grey(level: Int) = Color.rgb(level * 17, level * 17, level * 17)
 
@@ -36,8 +42,10 @@ object Dashboard {
     private val MEDIUM: Typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
     private val CONDENSED: Typeface = Typeface.create("sans-serif-condensed", Typeface.NORMAL)
 
-    // voice: what the voice band says (null: none); listening: the microphone is on.
-    fun render(context: Context, settings: Settings, w: Int, h: Int, voice: String?, listening: Boolean): Frame {
+    // voice: what the voice band says (null: none); listening: the microphone is on; hover: the action of the
+    // tab bar's place the pointer is on (outlined and marked), or null.
+    fun render(context: Context, settings: Settings, w: Int, h: Int, voice: String?, listening: Boolean,
+               hover: String? = null): Frame {
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
         c.drawColor(Color.BLACK)
@@ -71,6 +79,20 @@ object Dashboard {
         val dark = paint(barH * 0.66f, 0, MEDIUM)
         val room = w - pad - 6f - (barH + 6f) // the + at the end
         var shown = 0
+        val hits = mutableListOf<Hit>()
+        val mark = Paint().apply { isAntiAlias = true; style = Paint.Style.STROKE; strokeWidth = 1.5f; color = grey(15) }
+        // The pointer on a place: a bright ring just outside it and a notch under it.
+        fun hovered(box: RectF) {
+            c.drawRoundRect(RectF(box.left - 2f, box.top - 1.5f, box.right + 2f, box.bottom + 1.5f), 5f, 5f, mark)
+            fill.color = grey(15)
+            val notch = Path().apply {
+                moveTo(box.centerX() - 3f, box.bottom + 4f)
+                lineTo(box.centerX() + 3f, box.bottom + 4f)
+                lineTo(box.centerX(), box.bottom + 1.5f)
+                close()
+            }
+            c.drawPath(notch, fill)
+        }
         for (t in tabs) {
             val text = "${t.index} " + TextUtils.ellipsize(t.name, tabText, barH * 6f, TextUtils.TruncateAt.END)
             val tw = tabText.measureText(text) + 12f
@@ -89,6 +111,9 @@ object Dashboard {
                 c.drawRoundRect(box, 4f, 4f, line)
                 c.drawText(text, x + 6f, textY, tabText)
             }
+            val action = "select:${t.index}"
+            hits += Hit(box.left, box.right, action)
+            if (hover == action) hovered(box)
             x += tw + 5f
             shown++
         }
@@ -96,8 +121,15 @@ object Dashboard {
             val box = RectF(x, barY, x + barH, barY + barH)
             line.color = grey(8)
             c.drawRoundRect(box, 4f, 4f, line)
-            val plus = paint(barH * 0.8f, 13, LIGHT).apply { textAlign = Paint.Align.CENTER }
+            val on = hover == "new"
+            if (on) {
+                fill.color = grey(14)
+                c.drawRoundRect(box, 4f, 4f, fill)
+            }
+            val plus = paint(barH * 0.8f, if (on) 0 else 13, LIGHT).apply { textAlign = Paint.Align.CENTER }
             c.drawText("+", box.centerX(), textY + barH * 0.06f, plus)
+            hits += Hit(box.left, box.right, "new")
+            if (on) hovered(box)
         }
         line.color = grey(3)
         val ruleY = barY + barH + 3.5f
@@ -212,7 +244,7 @@ object Dashboard {
             px[y * w + x] = green[level]
         }
         bmp.setPixels(px, 0, w, 0, 0, w, h)
-        return Frame(packed, bmp)
+        return Frame(packed, bmp, hits)
     }
 
     // Words in lines that fit `room` pixels.

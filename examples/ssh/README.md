@@ -126,6 +126,9 @@ glasses, the saved servers) and **Settings**.
   Alt+[ / ] the tab before / after, Alt+W closes the tab shown (never the first), and Claude's or Cursor's tab
   (switched to where one runs, else opened). tmux's own status line shows them; with *Mouse in tmux* (on by
   default, `tmux set -g mouse on` when the pointer starts) clicking a tab there switches to it.
+- **The dashboard's tab bar**: up from the terminal's top row the pointer goes onto it (the tab or + it is on
+  gets a bright ring and a notch, `Dashboard.Hit`); left and right go a tab at a time, a click shows that tab
+  (the + opens another), the wheel goes to the tab before or after, and down goes back into the terminal under it.
 
 ## Voice
 
