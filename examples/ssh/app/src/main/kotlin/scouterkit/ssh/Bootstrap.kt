@@ -76,6 +76,46 @@ class Bootstrap(private val vault: Vault) {
         return kill + "exec mosh-server new -c 256 -s -l LANG=C.UTF-8$range$cmd"
     }
 
+    // Adds this phone's public key to the server's ~/.ssh/authorized_keys, as ssh-copy-id does, logging in once
+    // with the password (never stored). The server's host key goes through the same trust on first use. Returns
+    // whether mosh-server is installed there.
+    fun installKey(host: String, port: Int, user: String, password: String, publicKey: String): Boolean {
+        val key = publicKey.trim()
+        require(Regex("[A-Za-z0-9-]+ [A-Za-z0-9+/=]+( [A-Za-z0-9._@-]+)?").matches(key)) { "not a public key line" }
+        val ip = InetAddress.getByName(host).hostAddress!!
+        val hosts = Hosts("$host:$port", vault.text(Vault.HOST_KEY))
+        val jsch = JSch()
+        jsch.hostKeyRepository = hosts
+        val session = jsch.getSession(user, ip, port)
+        session.setConfig("StrictHostKeyChecking", "yes")
+        session.setConfig("PreferredAuthentications", "password")
+        val secret = password.toByteArray()
+        session.setPassword(secret)
+        session.userInfo = Quiet
+        try {
+            session.connect(15000)
+        } catch (e: JSchException) {
+            hosts.unknown?.let { throw UnknownHost(it) }
+            throw e
+        } finally {
+            secret.fill(0)
+        }
+        try {
+            val channel = session.openChannel("exec") as ChannelExec
+            channel.setCommand("sh -c 'umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && " +
+                "(grep -qxF \"$key\" ~/.ssh/authorized_keys || printf \"%s\\n\" \"$key\" >> ~/.ssh/authorized_keys) && " +
+                "echo KEY_OK; command -v mosh-server >/dev/null && echo MOSH_OK || echo MOSH_MISSING'")
+            val reader = channel.inputStream.bufferedReader()
+            channel.connect(15000)
+            val out = reader.readText()
+            channel.disconnect()
+            if (!out.contains("KEY_OK")) throw IllegalStateException("the server did not take the key: " + out.take(300))
+            return out.contains("MOSH_OK")
+        } finally {
+            session.disconnect()
+        }
+    }
+
     // Trust on first use: the fingerprint is shown and stored once the user confirms it (UnknownHost).
     private class Hosts(val name: String, val stored: String?) : HostKeyRepository {
         var unknown: String? = null
@@ -106,6 +146,26 @@ class Bootstrap(private val vault: Vault) {
     }
 
     companion object {
+        // A new key made on this phone (ECDSA P-256: JSch cannot write Ed25519 private keys): the private key goes
+        // into the vault, the public key line is returned for the server.
+        fun newKey(vault: Vault): String {
+            val pair = com.jcraft.jsch.KeyPair.genKeyPair(JSch(), com.jcraft.jsch.KeyPair.ECDSA, 256)
+            val private = java.io.ByteArrayOutputStream()
+            val public = java.io.ByteArrayOutputStream()
+            pair.writePrivateKey(private)
+            pair.writePublicKey(public, "scouter-ssh-" + android.os.Build.MODEL.replace(Regex("[^A-Za-z0-9._-]"), ""))
+            pair.dispose()
+            vault.put(Vault.SSH_KEY, private.toByteArray())
+            vault.delete(Vault.SSH_PASSPHRASE)
+            val line = public.toString(Charsets.UTF_8.name()).trim()
+            vault.putText(Vault.SSH_PUBLIC, line)
+            return line
+        }
+
+        // SHA256:... of a public key line, as ssh-keygen -l shows it.
+        fun keyFingerprint(line: String): String? = line.split(" ").getOrNull(1)
+            ?.let { runCatching { fingerprint(Base64.getDecoder().decode(it)) }.getOrNull() }
+
         fun fingerprint(key: ByteArray): String =
             "SHA256:" + Base64.getEncoder().withoutPadding().encodeToString(MessageDigest.getInstance("SHA-256").digest(key))
     }
