@@ -41,7 +41,9 @@ class RemoteScreen(private val context: Context, val server: Settings.Server, pr
         val h = w * 10 / 16
         val fps = settings.screenFps.coerceIn(1, 30)
         val why = try {
-            val s = Bootstrap(Vault(context)).stream(server.host, server.port, server.user, "vox-screen $w $h $fps")
+            // A command over SSH gets no login shell: ~/.local/bin (where a user installs it) is not on its PATH.
+            val s = Bootstrap(Vault(context)).stream(server.host, server.port, server.user,
+                "PATH=\"\$HOME/.local/bin:\$HOME/bin:/usr/local/bin:\$PATH\" vox-screen $w $h $fps")
             stream = s
             if (released) {
                 s.close()

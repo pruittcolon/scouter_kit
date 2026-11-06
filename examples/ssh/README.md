@@ -78,7 +78,7 @@ glasses, the saved servers) and **Settings**.
   `vox://server?name=Laptop&host=HOST&port=22&user=USER&command=...` (e.g. `adb shell am start -d '...'`) adds or
   updates one after the app asks.
 - **A server's screen** (a laptop's): over SSH, with the same key, the app runs `vox-screen WIDTH HEIGHT FPS`
-  there, which must write baseline JPEG images one after another to stdout (each the whole desktop inside
+  there (looked for in `~/.local/bin`, `~/bin` and `/usr/local/bin` too), which must write baseline JPEG images one after another to stdout (each the whole desktop inside
   WIDTH x HEIGHT) until stdout closes. They go through the same pipeline as the phone's screen. The width asked
   for is on the Screen tab (640, 960, 1280).
 
