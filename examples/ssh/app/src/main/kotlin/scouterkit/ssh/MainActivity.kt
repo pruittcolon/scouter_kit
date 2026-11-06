@@ -169,9 +169,10 @@ class MainActivity : Activity() {
         })
         page.addView(quick)
 
-        val keys = card("Shortcuts", "Long-press the Vox icon for these, or add them to your home screen. Glasses: " +
-            "hold the left TouchBar for the next source, double-tap it for the one before, hold the right one for " +
-            "display off (Settings, TouchBar). Quick Settings: add the \"Next source\" tile.")
+        val keys = card("Shortcuts", "Keyboard: Alt+← / → phone or laptop, Alt+↑ / ↓ terminal or screen, Alt+1…9 a " +
+            "source, Alt+0 display off / on (everywhere once turned on in Settings, Keyboard shortcuts). Glasses: hold " +
+            "the left TouchBar for the next source, double-tap it for the one before, hold the right one for display " +
+            "off. Long-press the Vox icon, or add these to your home screen; Quick Settings: the \"Next source\" tile.")
         pinsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         keys.addView(pinsBox)
         page.addView(keys)
@@ -532,6 +533,7 @@ class MainActivity : Activity() {
 
     // Keyboard mode: a paired keyboard's keys go to the terminal; the phone's own buttons stay Android's.
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (Hotkeys.handle(this, event)) return true // Alt shortcuts first (VoxKeys takes them before us when on)
         if (Settings(this).keyboard && Keyboard.physical(event) && Keyboard.send(event)) return true
         return super.dispatchKeyEvent(event)
     }

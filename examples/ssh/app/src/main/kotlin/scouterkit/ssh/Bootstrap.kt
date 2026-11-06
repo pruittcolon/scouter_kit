@@ -67,6 +67,7 @@ class Bootstrap(private val vault: Vault) {
 
     fun start(host: String, port: Int, user: String, command: String, ports: String, previousPid: Int): Mosh {
         val session = connect(host, port, user)
+        val ip = session.host // the address connected to, as resolved
         val watchdog = Thread {
             try {
                 Thread.sleep(30000)

@@ -95,6 +95,19 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
+        <!-- A keyboard's Alt shortcuts in every app (Hotkeys): key events only, no screen content. -->
+        <service
+            android:name=".VoxKeys"
+            android:exported="false"
+            android:label="Vox keyboard shortcuts"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/vox_keys" />
+        </service>
         <!-- Termux's answer to the setup (its RUN_COMMAND pending intent). -->
         <receiver
             android:name=".TermuxResult"

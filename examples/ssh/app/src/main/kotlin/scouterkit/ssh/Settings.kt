@@ -225,6 +225,32 @@ class Settings(context: Context) {
             l.filter { !it.local }.map { "screen:${it.id}" to "${it.name} · screen" }
     }
 
+    // A step from one source to another on a grid: the machines across (this phone, then each other saved
+    // server), terminal above screen. Left and right keep the kind where the other machine has it.
+    fun move(from: String, dir: String): String? {
+        val l = servers()
+        val local = l.firstOrNull { it.local }
+        val machines = listOf(local?.let { "term:${it.id}" } to PHONE) +
+            l.filter { !it.local }.map { "term:${it.id}" to "screen:${it.id}" }
+        var m = machines.indexOfFirst { it.first == from || it.second == from }
+        val screen = from == PHONE || from.startsWith("screen:")
+        if (m < 0) m = 0
+        return when (dir) {
+            "left", "right" -> {
+                val to = machines[Math.floorMod(m + if (dir == "right") 1 else -1, machines.size)]
+                (if (screen) to.second else to.first) ?: to.second
+            }
+            "up" -> machines[m].first ?: from
+            "down" -> machines[m].second
+            else -> null
+        }
+    }
+
+    // A keyboard's Alt shortcuts (Hotkeys).
+    var hotkeys: Boolean
+        get() = prefs.getBoolean("hotkeys", true)
+        set(v) = prefs.edit().putBoolean("hotkeys", v).apply()
+
     // The source the glasses show (or last showed).
     var source: String by Text("source", "")
 

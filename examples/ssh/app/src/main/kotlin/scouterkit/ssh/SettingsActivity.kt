@@ -179,6 +179,22 @@ class SettingsActivity : Activity() {
         }
         page.addView(termux)
 
+        val hot = card("Keyboard shortcuts", "A keyboard paired with the phone: Alt+← / → this phone or the laptop " +
+            "(the same kind), Alt+↑ / ↓ terminal or screen, Alt+1…9 Home's source of that number, Alt+0 the display " +
+            "off / on.")
+        hot.addToggle(toggle("Alt shortcuts", "Off: Alt with these keys reaches the app in front", settings.hotkeys) {
+            settings.hotkeys = it
+        })
+        hotState = text("", 13f, Ui.MUTED)
+        hot.addView(hotState)
+        hot.addView(button("Turn them on in every app (Accessibility)") {
+            runCatching { startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+        })
+        hot.addView(text("In Accessibility, Installed apps (or Downloaded apps), Vox keyboard shortcuts: on. It only " +
+            "filters key presses; it reads nothing on the screen. If Android says the setting is restricted: Apps, " +
+            "Vox, ⋮, Allow restricted settings, then try again.", 12.5f, Ui.FAINT))
+        page.addView(hot)
+
         val keys = card("Keyboard and keyer")
         keys.addToggle(toggle("Use a keyboard paired with this phone", "The terminal runs while this app is open", settings.keyboard) {
             settings.keyboard = it
@@ -251,6 +267,7 @@ class SettingsActivity : Activity() {
             requestPermissions(ScouterService.PERMISSIONS.toTypedArray(), ASK)
         }
         showGlasses()
+        hotState.text = if (Hotkeys.everywhere(this)) "In every app: on" else "In every app: off (only while Vox is in front)"
         connect.isChecked = settings.glassesAllowed
         connect.isEnabled = settings.left.isNotEmpty() && settings.right.isNotEmpty()
     }
@@ -343,6 +360,7 @@ class SettingsActivity : Activity() {
     private lateinit var pasted: EditText
     private lateinit var passphrase: EditText
     private lateinit var serverPassword: EditText
+    private lateinit var hotState: TextView
 
     private fun showKey() {
         val vault = Vault(this)
