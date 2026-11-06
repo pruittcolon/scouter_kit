@@ -37,6 +37,9 @@ public:
     // A TouchBar gesture (TOUCH_GESTURE, VM.md §6.7) reported by an arm (ReportInputs), from the terminal's
     // thread: it must not call Stop.
     std::function<void(int arm, uint32_t gesture)> on_touch;
+    // Pixels of the display left empty above and below the terminal (fewer rows): its top or bottom can be
+    // hard to see through the glasses.
+    int top = 0, bottom = 0;
   };
   // After g1::Init. `font`: a font blob (departure_mono_nerd.skf); `changed` runs when visibility changes.
   bool Start(const Config &, std::vector<uint8_t> font, std::function<void()> changed, std::string *error);

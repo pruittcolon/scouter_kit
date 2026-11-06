@@ -104,6 +104,24 @@ class MainActivity : Activity() {
         })
         quick.addView(text("Depth moves the picture nearer or farther (the eyes' offset); the glasses reconnect " +
             "for a moment when you let go.", 12f, Ui.FAINT))
+        fun margins() {
+            val (top, bottom) = settings.termTop to settings.termBottom
+            Thread { Native.terminalMargins(top, bottom) }.start()
+            if (ScouterService.running) ScouterService.send(this) // the SSH session gets the new number of rows
+        }
+        fun rowsLeft(top: Int, bottom: Int) = Settings.grid(settings.dx, settings.dy, top, bottom).second
+        quick.addView(slider("Terminal: space at the top", 0, 300, settings.termTop,
+            { "$it px · ${rowsLeft(it, settings.termBottom)} rows" }) { v ->
+            settings.termTop = v
+            margins()
+        })
+        quick.addView(slider("Terminal: space at the bottom", 0, 200, settings.termBottom,
+            { "$it px · ${rowsLeft(settings.termTop, it)} rows" }) { v ->
+            settings.termBottom = v
+            margins()
+        })
+        quick.addView(text("Moves the terminal on the glasses down (or up) where the display is easier to see; it " +
+            "gets fewer rows. Your phone's screen stays as it is.", 12f, Ui.FAINT))
         stopSharing = button("Stop sharing the phone's screen") { ScouterService.send(this, ScouterService.ACTION_STOP_SHARING) }
         quick.addView(stopSharing)
         quick.addView(button("Stop everything", DANGER) {

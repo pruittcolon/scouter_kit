@@ -403,6 +403,7 @@ class ScouterService : Service() {
         val l = if (emulated) null else GlassesLink(this, arrayOf(settings.left, settings.right), { armChanged() },
             { why -> work.post { lostGlasses(why) } })
         val font = assets.open("departure_mono_nerd.skf").use { it.readBytes() }
+        Native.terminalMargins(settings.termTop, settings.termBottom)
         val error = Native.glassesStart(l, settings.left, settings.right, settings.dx, settings.dy, settings.brightness,
             settings.angle, font, BuildConfig.DEBUG && settings.ignoreWorn, settings.battery)
         if (error != null || l?.lost != null) {

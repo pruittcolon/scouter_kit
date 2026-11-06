@@ -52,6 +52,7 @@ bool g_screen_wanted = false;
 // beside the terminal, and whether Apply switched the panels off.
 bool g_blank = false;
 bool g_battery = true;
+int g_top = 0, g_bottom = 0; // pixels left empty above and below the terminal (terminalMargins)
 bool g_panels_off = false;
 
 // The JNIEnv of a native thread, attached on first use and detached when the
@@ -140,6 +141,8 @@ std::string StartTerminal() {
   config.angle = g_angle;
   config.ignore_worn = g_ignore_worn;
   config.battery = g_battery;
+  config.top = g_top;
+  config.bottom = g_bottom;
   config.on_touch = [](int arm, uint32_t gesture) { Gesture(arm, gesture); };
   if (!term->Start(config, g_font, Changed, &error)) return error;
   std::shared_ptr<const ssh::Snapshot> s;
@@ -268,7 +271,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *) {
 }
 
 JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_version(JNIEnv *env, jclass) {
-  return env->NewStringUTF("scouter_ssh 0.6, mosh 1.4.0");
+  return env->NewStringUTF("scouter_ssh 0.7, mosh 1.4.0");
 }
 
 // ------------------------------------------------ glasses
@@ -466,6 +469,17 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_setBattery(JNIEnv *, jclass, j
   std::lock_guard<std::mutex> lock(g_glasses_mutex);
   if (g_battery == bool(on)) return;
   g_battery = on;
+  if (!g_glasses || Current() != Show::kTerminal) return;
+  StopTerminal(false);
+  StartTerminal();
+}
+
+// Pixels left empty above and below the terminal on the glasses, at once (a running terminal starts again).
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_terminalMargins(JNIEnv *, jclass, jint top, jint bottom) {
+  std::lock_guard<std::mutex> lock(g_glasses_mutex);
+  if (g_top == top && g_bottom == bottom) return;
+  g_top = top;
+  g_bottom = bottom;
   if (!g_glasses || Current() != Show::kTerminal) return;
   StopTerminal(false);
   StartTerminal();

@@ -75,6 +75,8 @@ object Native {
     @JvmStatic external fun screenCheck(): String
     // Why the mirror keeps the panels off ("in the case", "folded"), or "".
     @JvmStatic external fun screenWhy(): String
+    // Pixels left empty above and below the terminal on the glasses (fewer rows), at once.
+    @JvmStatic external fun terminalMargins(top: Int, bottom: Int)
     // Each eye's battery band beside the terminal, at once.
     @JvmStatic external fun setBattery(on: Boolean)
     // Both arms' brightness (0 ... 42), at once.

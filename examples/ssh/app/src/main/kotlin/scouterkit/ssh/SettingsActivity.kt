@@ -48,7 +48,7 @@ class SettingsActivity : Activity() {
         })
         val grid = text("", 12.5f, Ui.FAINT)
         fun showGrid(dx: Int, dy: Int) {
-            val (cols, rows) = Settings.grid(dx, dy)
+            val (cols, rows) = Settings.grid(dx, dy, settings.termTop, settings.termBottom)
             grid.text = "Terminal size: $cols × $rows characters"
         }
         glasses.addView(slider("Eye overlap (dx)", 0, 320, settings.dx, { "$it px" }, { showGrid(it, settings.dy) }) {

@@ -118,6 +118,10 @@ class Settings(context: Context) {
         prefs.edit().putBoolean("migrated_04", true).apply()
     }
 
+    // Pixels of the glasses' display left empty above and below the terminal (its top can be hard to see).
+    var termTop: Int by Number("term_top", 0)
+    var termBottom: Int by Number("term_bottom", 0)
+
     // Each eye's battery band beside the terminal.
     var battery: Boolean
         get() = prefs.getBoolean("battery", true)
@@ -149,8 +153,8 @@ class Settings(context: Context) {
         else -> "another device"
     }
 
-    val cols get() = grid(dx, dy).first
-    val rows get() = grid(dx, dy).second
+    val cols get() = grid(dx, dy, termTop, termBottom).first
+    val rows get() = grid(dx, dy, termTop, termBottom).second
 
     companion object {
         const val TERMINAL = "terminal"
@@ -168,8 +172,14 @@ class Settings(context: Context) {
         val GESTURES = listOf(Native.GESTURE_HOLD to "hold", Native.GESTURE_DOUBLE to "double tap",
             Native.GESTURE_TRIPLE to "triple tap", Native.GESTURE_TAP to "tap")
 
-        // The terminal's size for dx and dy: the binocular area in 7 x 14 cells (R19).
-        fun grid(dx: Int, dy: Int) = (640 - dx) / 7 to (480 - dy) / 14
+        // The terminal's size for dx and dy: the binocular area in 7 x 14 cells (R19), less the margins above and
+        // below (at least two rows; as the native terminal works it out).
+        fun grid(dx: Int, dy: Int, top: Int = 0, bottom: Int = 0): Pair<Int, Int> {
+            val vh = 480 - kotlin.math.abs(dy)
+            val t = top.coerceIn(0, maxOf(0, vh - 28))
+            val b = bottom.coerceIn(0, maxOf(0, vh - 28 - t))
+            return (640 - kotlin.math.abs(dx)) / 7 to (vh - t - b) / 14
+        }
     }
 
     private inner class Text(val key: String, val default: String) {

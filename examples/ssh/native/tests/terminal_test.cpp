@@ -230,6 +230,30 @@ int main(int argc, char **argv) {
   table.Force(true);
   CHECK(WaitFor([&] { return table.Shown() && PanelProp(0) != 0 && PanelProp(1) != 0; }));
   table.Stop();
+
+  // Space at the top (where the display is hard to see): fewer rows, drawn lower, the same on both eyes.
+  ssh::GlassesTerminal::Config lc{100, 9, 20, true};
+  lc.top = 140;
+  ssh::GlassesTerminal low;
+  CHECK(low.Start(lc, font, [] {}, &error));
+  int lrows = (471 - 140) / 14;
+  CHECK(low.cols() == 77 && low.rows() == lrows);
+  low.Show(Screen(77, lrows, "lower down"));
+  low.Force(true);
+  CHECK(WaitFor([&] { return low.Shown() && PanelProp(0) != 0 && PanelProp(1) != 0; }));
+  int ly = 140 + (471 - 140 - lrows * 14) / 2;
+  CHECK(WaitFor([&] {
+    const uint8_t *p = g1::emulator::Panel(0);
+    int n = 0;
+    for (int yy = ly; yy < ly + 14; yy++)
+      for (int xx = x; xx < x + w; xx++) n += p[yy * 640 + xx] != 0;
+    return n > 50; // the first row's text, at the new top
+  }));
+  CHECK(SameArea(x, ly, x - 100, ly + 9, w, lrows * 14));
+  std::string lcheck = low.Check();
+  if (lcheck.rfind("ok", 0) != 0) std::printf("margins: %s", lcheck.c_str());
+  CHECK(lcheck.rfind("ok", 0) == 0);
+  low.Stop();
   g1::Deinit();
   std::printf("%s (%d failures)\n", failures ? "FAILED" : "all tests passed", failures);
   return failures ? 1 : 0;

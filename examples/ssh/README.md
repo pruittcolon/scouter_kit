@@ -98,6 +98,9 @@ with the app in the back.
   keeps the shape, *Fill* crops to fill, *Stretch* distorts to fill; the layout editor places the picture anywhere
   on the glasses (drag, corner to resize, double-tap to fill); zoom, pan, rotation (90° steps), contrast boost,
   sharpen and invert apply at once. *Depth* (the eyes' offset, dx) moves the picture nearer or farther.
+  *Terminal: space at the top / bottom* (home screen) leaves pixels of the glasses' display empty above or below
+  the terminal, where it is hard to see: the terminal gets fewer rows (the SSH session is resized to match) and
+  starts again at once.
 - **"Phone screen on glasses"**: Android's screen sharing (it asks every time); the screen goes on both eyes in
   the columns both eyes see, as 16 greys (or black and white), inverted by default since black is see-through.
   The whole screen with its shape kept, or a full-width band (Settings, "Phone screen on the glasses"). Turning
