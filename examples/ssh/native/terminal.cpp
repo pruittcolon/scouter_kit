@@ -179,7 +179,10 @@ std::vector<uint8_t> Words(std::initializer_list<uint32_t> words) {
 }
 
 // The battery band's top on the panel: centred vertically.
-int BattY(const GlassesTerminal::Geometry &g) { return (480 - g.bh) / 2; }
+// The panel's middle, kept beside the terminal's rows (moved down or up by its margins).
+int BattY(const GlassesTerminal::Geometry &g) {
+  return std::clamp((480 - g.bh) / 2, g.y, std::max(g.y, g.y + g.rows * g.ch - g.bh));
+}
 
 GlassesTerminal::Layout MakeLayout(uint32_t base, const GlassesTerminal::Geometry &g) {
   GlassesTerminal::Layout l;
@@ -680,6 +683,8 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
   blob_ = std::move(font);
   changed_ = std::move(changed);
   angle_ = config.angle;
+  battery_ = config.battery;
+  on_touch_ = config.on_touch;
   arms_ = {&g1::left, &g1::right};
   for (int i = 0; i < 2; i++) present_[i] = arms_[i]->GetState().present;
   has_ = Codepoints(blob_);
@@ -698,9 +703,13 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
   geo_.ch = font_->line_spacing;
   geo_.ascent = font_->ascent;
   geo_.cols = std::min(255, (vw - 2 * std::abs(config.dx)) / geo_.cw);
-  geo_.rows = std::min(255, vh / geo_.ch);
+  // The margins leave at least two rows.
+  int top = std::clamp(config.top, 0, std::max(0, vh - 2 * geo_.ch));
+  int bottom = std::clamp(config.bottom, 0, std::max(0, vh - 2 * geo_.ch - top));
+  int avail = vh - top - bottom;
+  geo_.rows = std::min(255, avail / geo_.ch);
   geo_.x = (vw - geo_.W()) / 2;
-  geo_.y = (vh - geo_.rows * geo_.ch) / 2;
+  geo_.y = top + (avail - geo_.rows * geo_.ch) / 2;
   // The battery band's font: the digits (glyphs 0 ... 9, VM.md §4.1) and % at 2x.
   sk::Font &batt = sk::LoadFont(std::span<const uint8_t>(blob_), "0123456789%", nullptr, 2);
   auto percent = batt.pimpl ? g1::GlyphIndices(batt, "%") : std::vector<uint32_t>{};
@@ -849,6 +858,10 @@ void GlassesTerminal::Restart(int arm) {
 
 void GlassesTerminal::Handle(const ArmEvent &ae) {
   const g1::Event &e = ae.e;
+  if (e.type == g1::EVENT_INPUT) {
+    if (e.trigger == g1::TRIGGER_TOUCH && on_touch_) on_touch_(ae.arm, e.a);
+    return;
+  }
   if (e.type != g1::EVENT_NOTIFY) LOG("terminal: arm %d event %d trigger %d code %d", ae.arm, e.type, e.trigger, e.code);
   if (e.type == g1::EVENT_RESET || e.type == g1::EVENT_HALT) return Restart(ae.arm);
   if (e.type != g1::EVENT_NOTIFY) return;
@@ -889,7 +902,8 @@ void GlassesTerminal::Send() {
   }
   lead += int64_t(bytes / 200 + 1) * 10000 + int64_t(f.recs.size()) * 2000;
   uint32_t cur = f.cur_slot >= 0 ? uint32_t(f.cur_slot) : kNoCursor;
-  uint32_t font = g1::AddressOf(*font_), batt_font = batt_font_ ? g1::AddressOf(*batt_font_) : 0;
+  // No battery band: the program draws none while wBattFont is 0.
+  uint32_t font = g1::AddressOf(*font_), batt_font = battery_ && batt_font_ ? g1::AddressOf(*batt_font_) : 0;
   for (int i = 0; i < 2; i++) {
     done_[i] = !present_[i];
     if (!present_[i]) continue;

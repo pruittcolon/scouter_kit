@@ -1,4 +1,4 @@
-Scouter SSH — a mosh terminal for the Even Realities G1 under the ScouterKit firmware.
+Vox (Scouter SSH) — a mosh terminal for the Even Realities G1 under the ScouterKit firmware.
 Copyright the ScouterKit authors. GPL-3.0-or-later (LICENSE), because it includes mosh.
 
 It includes:
@@ -9,6 +9,13 @@ It includes:
 - Bouncy Castle (https://www.bouncycastle.org): MIT (licenses/bouncycastle.txt).
 - Departure Mono Nerd Font Mono (Nerd Fonts v3.5.1): SIL Open Font License 1.1, its icons under their own
   licences (licenses/departure_mono_nerd.txt, scouter_kit/third_party/departure_mono_nerd).
+- sherpa-onnx 1.13.8 (https://github.com/k2-fsa/sherpa-onnx; its Android JNI library and part of its Kotlin API,
+  scouter_kit/third_party/sherpa_onnx_kotlin): Apache-2.0 (licenses/sherpa-onnx.txt), with ONNX Runtime
+  (https://onnxruntime.ai) linked into it: MIT (licenses/onnxruntime.txt). Voice commands only. The speech
+  models are not in the app: it downloads NVIDIA's Parakeet TDT 0.6B v2 (CC-BY-4.0, as converted for
+  sherpa-onnx) and Silero VAD (MIT) when asked, checked by SHA-256.
+- liblc3 1.1.3 (https://github.com/google/liblc3): Apache-2.0 (licenses/liblc3.txt, scouter_kit/third_party/liblc3),
+  for the glasses' microphone.
 - ScouterKit's C++ library (scouter_kit/src): MIT (scouter_kit/LICENSE), with
   - moodycamel ConcurrentQueue 1.0.5 (https://github.com/cameron314/concurrentqueue): Simplified BSD
     (licenses/concurrentqueue.txt, scouter_kit/third_party/concurrentqueue);

@@ -17,7 +17,8 @@ class Bootstrap(private val vault: Vault) {
 
     class UnknownHost(val fingerprint: String) : Exception("unknown host key $fingerprint")
 
-    fun start(host: String, port: Int, user: String, command: String, ports: String, previousPid: Int): Mosh {
+    // An SSH session with the vault's key, the server's host key checked (UnknownHost: not trusted yet).
+    private fun connect(host: String, port: Int, user: String): com.jcraft.jsch.Session {
         val identity = vault.get(Vault.SSH_KEY) ?: throw IllegalStateException("no SSH key: import one in Settings")
         val ip = InetAddress.getByName(host).hostAddress!!
         val jsch = JSch()
@@ -33,6 +34,40 @@ class Bootstrap(private val vault: Vault) {
             hosts.unknown?.let { throw UnknownHost(it) }
             throw e
         }
+        return session
+    }
+
+    // A command's output as it comes (a server's screen, RemoteScreen); close() ends the command and the session.
+    class Stream(private val session: com.jcraft.jsch.Session, private val channel: ChannelExec,
+                 val input: java.io.InputStream, private val err: java.io.ByteArrayOutputStream) : java.io.Closeable {
+        val errors get() = err.toString(Charsets.UTF_8.name()).trim()
+        val exitStatus get() = channel.exitStatus
+        override fun close() {
+            runCatching { channel.disconnect() }
+            runCatching { session.disconnect() }
+        }
+    }
+
+    fun stream(host: String, port: Int, user: String, command: String): Stream {
+        val session = connect(host, port, user)
+        session.setServerAliveInterval(10000)
+        val channel = session.openChannel("exec") as ChannelExec
+        channel.setCommand(command)
+        val err = java.io.ByteArrayOutputStream()
+        channel.setErrStream(err)
+        val input = channel.inputStream
+        try {
+            channel.connect(15000)
+        } catch (e: Exception) {
+            session.disconnect()
+            throw e
+        }
+        return Stream(session, channel, input, err)
+    }
+
+    fun start(host: String, port: Int, user: String, command: String, ports: String, previousPid: Int): Mosh {
+        val session = connect(host, port, user)
+        val ip = session.host // the address connected to, as resolved
         val watchdog = Thread {
             try {
                 Thread.sleep(30000)
@@ -117,13 +152,15 @@ class Bootstrap(private val vault: Vault) {
     }
 
     // Trust on first use: the fingerprint is shown and stored once the user confirms it (UnknownHost).
-    private class Hosts(val name: String, val stored: String?) : HostKeyRepository {
+    // Vault.HOST_KEY holds a "host:port fingerprint" line per trusted server (remember).
+    private class Hosts(val name: String, stored: String?) : HostKeyRepository {
+        private val mine = stored?.lines()?.firstOrNull { it.startsWith("$name ") }
         var unknown: String? = null
 
         override fun check(host: String?, key: ByteArray): Int {
             val fingerprint = fingerprint(key)
-            if (stored == "$name $fingerprint") return HostKeyRepository.OK
-            if (stored != null && stored.startsWith("$name ")) return HostKeyRepository.CHANGED
+            if (mine == "$name $fingerprint") return HostKeyRepository.OK
+            if (mine != null) return HostKeyRepository.CHANGED
             unknown = fingerprint
             return HostKeyRepository.NOT_INCLUDED
         }
@@ -161,6 +198,36 @@ class Bootstrap(private val vault: Vault) {
             vault.putText(Vault.SSH_PUBLIC, line)
             return line
         }
+
+        // The public key line of the key in the vault (an imported one too), or null without a key.
+        fun publicKey(vault: Vault): String? {
+            val private = vault.get(Vault.SSH_KEY) ?: return null
+            val pair = com.jcraft.jsch.KeyPair.load(JSch(), private, null)
+            try {
+                if (pair.isEncrypted && !pair.decrypt(vault.get(Vault.SSH_PASSPHRASE)))
+                    throw IllegalStateException("the key's passphrase does not open it")
+                val out = java.io.ByteArrayOutputStream()
+                pair.writePublicKey(out, "scouter-ssh")
+                return out.toString(Charsets.UTF_8.name()).trim()
+            } finally {
+                pair.dispose()
+            }
+        }
+
+        // A server's host key trusted from now on ("host:port"), beside the other servers' (Vault.HOST_KEY).
+        fun remember(vault: Vault, name: String, fingerprint: String) {
+            val kept = (vault.text(Vault.HOST_KEY) ?: "").lines().filter { it.isNotBlank() && !it.startsWith("$name ") }
+            vault.putText(Vault.HOST_KEY, (kept + "$name $fingerprint").joinToString("\n"))
+        }
+
+        fun forget(vault: Vault, name: String) {
+            val kept = (vault.text(Vault.HOST_KEY) ?: "").lines().filter { it.isNotBlank() && !it.startsWith("$name ") }
+            if (kept.isEmpty()) vault.delete(Vault.HOST_KEY) else vault.putText(Vault.HOST_KEY, kept.joinToString("\n"))
+        }
+
+        // The trusted fingerprint of "host:port", or null.
+        fun trusted(vault: Vault, name: String): String? =
+            (vault.text(Vault.HOST_KEY) ?: "").lines().firstOrNull { it.startsWith("$name ") }?.substringAfter(" ")
 
         // SHA256:... of a public key line, as ssh-keygen -l shows it.
         fun keyFingerprint(line: String): String? = line.split(" ").getOrNull(1)

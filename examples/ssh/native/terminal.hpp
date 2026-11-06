@@ -33,6 +33,13 @@ public:
   struct Config {
     int dx = 100, dy = 9, angle = 20;
     bool ignore_worn = false; // debug: without PanelPolicy, to show with the glasses folded on the table
+    bool battery = true;      // each eye's battery band beside the terminal
+    // A TouchBar gesture (TOUCH_GESTURE, VM.md §6.7) reported by an arm (ReportInputs), from the terminal's
+    // thread: it must not call Stop.
+    std::function<void(int arm, uint32_t gesture)> on_touch;
+    // Pixels of the display left empty above and below the terminal (fewer rows): its top or bottom can be
+    // hard to see through the glasses.
+    int top = 0, bottom = 0;
   };
   // After g1::Init. `font`: a font blob (departure_mono_nerd.skf); `changed` runs when visibility changes.
   bool Start(const Config &, std::vector<uint8_t> font, std::function<void()> changed, std::string *error);
@@ -96,6 +103,8 @@ private:
   Geometry geo_{};
   Layout l_{};
   int angle_ = 20;
+  bool battery_ = true;
+  std::function<void(int, uint32_t)> on_touch_;
   std::array<std::array<int, 2>, 2> pos_{};
   std::array<scouter_kit::g1::Arm *, 2> arms_{};
   std::array<bool, 2> present_{};
