@@ -10,13 +10,51 @@ import android.view.accessibility.AccessibilityEvent
 // A keyboard's shortcuts (a Bluetooth keyboard paired with the phone): Alt with an arrow moves around the
 // sources as a grid (left and right: this phone, then each other server; up and down: terminal, screen),
 // Alt+1 ... Alt+9 picks Home's source of that number, Alt+0 turns the display off or on, Alt+Space (or Alt+V)
-// listens for a voice command. MainActivity takes them
+// listens for a voice command, Alt+M the pointer (then arrows, Enter, Escape), Alt+T / [ / ] / W the tabs.
+// MainActivity takes them
 // while Vox is in front; VoxKeys (an accessibility service the user turns on) everywhere.
 object Hotkeys {
     // The event was a shortcut (both its press and its release are ours then).
     fun handle(context: Context, e: KeyEvent): Boolean {
         val settings = Settings(context)
-        if (!settings.hotkeys || !e.isAltPressed || e.isCtrlPressed || e.isMetaPressed) return false
+        if (!settings.hotkeys) return false
+        // The pointer's keys while it is on (no Alt): arrows move it (Shift: by 5), Enter or Space clicks (Shift+Enter:
+        // right click), Page Up / Down scroll, Escape ends it.
+        if (Session.pointer && !e.isAltPressed && !e.isCtrlPressed && !e.isMetaPressed) {
+            val step = if (e.isShiftPressed) 5 else 1
+            val cmd = when (e.keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> "move:${-step}:0"
+                KeyEvent.KEYCODE_DPAD_RIGHT -> "move:$step:0"
+                KeyEvent.KEYCODE_DPAD_UP -> "move:0:${-step}"
+                KeyEvent.KEYCODE_DPAD_DOWN -> "move:0:$step"
+                KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> if (e.isShiftPressed) "right" else "click"
+                KeyEvent.KEYCODE_SPACE -> "click"
+                KeyEvent.KEYCODE_PAGE_UP -> "up"
+                KeyEvent.KEYCODE_PAGE_DOWN -> "down"
+                KeyEvent.KEYCODE_ESCAPE -> "off"
+                else -> return false
+            }
+            val repeatable = cmd.startsWith("move") || cmd == "up" || cmd == "down"
+            if (e.action == KeyEvent.ACTION_DOWN && (e.repeatCount == 0 || repeatable))
+                ScouterService.send(context, ScouterService.ACTION_POINTER, "cmd" to cmd)
+            return true
+        }
+        if (!e.isAltPressed || e.isCtrlPressed || e.isMetaPressed) return false
+        // Alt+M the pointer; Alt+T a new tab, Alt+[ / ] the tab before / after, Alt+W closes the tab shown.
+        val tab = when (e.keyCode) {
+            KeyEvent.KEYCODE_T -> "new"
+            KeyEvent.KEYCODE_LEFT_BRACKET -> "prev"
+            KeyEvent.KEYCODE_RIGHT_BRACKET -> "next"
+            KeyEvent.KEYCODE_W -> "close"
+            else -> null
+        }
+        if (tab != null || e.keyCode == KeyEvent.KEYCODE_M) {
+            if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0) {
+                if (tab != null) ScouterService.send(context, ScouterService.ACTION_TABS, "tab" to tab)
+                else ScouterService.send(context, ScouterService.ACTION_POINTER, "cmd" to "toggle")
+            }
+            return true
+        }
         val target = when (e.keyCode) {
             KeyEvent.KEYCODE_DPAD_LEFT -> "left"
             KeyEvent.KEYCODE_DPAD_RIGHT -> "right"

@@ -65,6 +65,24 @@ class Bootstrap(private val vault: Vault) {
         return Stream(session, channel, input, err)
     }
 
+    // A short command's output (tmux for the tabs), on a connection of its own; at most 15 s.
+    fun run(host: String, port: Int, user: String, command: String): String {
+        val session = connect(host, port, user)
+        session.timeout = 15000
+        try {
+            val channel = session.openChannel("exec") as ChannelExec
+            channel.setCommand(command)
+            channel.setErrStream(java.io.ByteArrayOutputStream())
+            val input = channel.inputStream
+            channel.connect(15000)
+            val out = input.readBytes().toString(Charsets.UTF_8)
+            channel.disconnect()
+            return out
+        } finally {
+            session.disconnect()
+        }
+    }
+
     fun start(host: String, port: Int, user: String, command: String, ports: String, previousPid: Int): Mosh {
         val session = connect(host, port, user)
         val ip = session.host // the address connected to, as resolved

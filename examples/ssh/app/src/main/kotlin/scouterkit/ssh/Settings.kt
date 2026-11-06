@@ -291,6 +291,11 @@ class Settings(context: Context) {
         prefs.edit().putString("voice_commands", a.toString()).apply()
     }
 
+    // The pointer turns tmux's mouse on (so clicks reach tmux: tabs, panes, scrolling).
+    var tmuxMouse: Boolean
+        get() = prefs.getBoolean("tmux_mouse", true)
+        set(v) = prefs.edit().putBoolean("tmux_mouse", v).apply()
+
     // A keyboard's Alt shortcuts (Hotkeys).
     var hotkeys: Boolean
         get() = prefs.getBoolean("hotkeys", true)

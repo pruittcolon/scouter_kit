@@ -51,6 +51,8 @@ object Session {
     @Volatile var voice = "" // voice: what the band says (or last said)
     @Volatile var listening = false
     @Volatile var dictating = false // what is said is typed into the terminal
+    @Volatile var pointer = false // the pointer is on (its keys move and click it)
+    @Volatile var tabs = "" // the last tab action's problem, if any
     @Volatile var heard = listOf<String>() // the last phrases, newest first
     // The devices Android reports near (ScouterCompanionService: keyer); null: unknown (none reported since the
     // process started, Bluetooth was off since, or keyer's link did not come after the last report).
@@ -252,6 +254,9 @@ class ScouterService : Service() {
                 display(on, "app")
             }
             ACTION_TRUST -> work.post { trust(intent.getStringExtra("fingerprint")) }
+            // The pointer (extra "cmd": toggle, off, move:DX:DY, click, right, up, down) and tabs (extra "tab").
+            ACTION_POINTER -> work.post { pointer(intent.getStringExtra("cmd").orEmpty()) }
+            ACTION_TABS -> work.post { tabs(intent.getStringExtra("tab").orEmpty()) }
             // The look-up view's settings changed: the header and the fade again.
             ACTION_LOOK_UP -> work.post {
                 Native.terminalFade(settings.fadeMs)
@@ -784,6 +789,73 @@ class ScouterService : Service() {
         update(screen = why)
     }
 
+    // ------------------------------------------------ the pointer and tabs
+
+    private var pointerRow = 0
+    private var pointerCol = 0
+    private val pointerIdle = Runnable { Native.pointer(-1, -1) } // hidden after a while; its keys still work
+
+    private fun pointer(cmd: String) {
+        val parts = cmd.split(":")
+        when (parts[0]) {
+            "toggle" -> if (Session.pointer) pointerOff() else pointerOn()
+            "off" -> pointerOff()
+            "move" -> {
+                if (!Session.pointer) pointerOn()
+                pointerRow = (pointerRow + (parts.getOrNull(2)?.toIntOrNull() ?: 0)).coerceIn(0, settings.rows - 1)
+                pointerCol = (pointerCol + (parts.getOrNull(1)?.toIntOrNull() ?: 0)).coerceIn(0, settings.cols - 1)
+                showPointer()
+            }
+            "click", "right", "up", "down" -> {
+                if (!Session.pointer) pointerOn()
+                val button = when (parts[0]) { "right" -> 2; "up" -> 64; "down" -> 65; else -> 0 }
+                if (!Native.mouse(button, pointerRow, pointerCol))
+                    Session.tabs = "the terminal's program takes no mouse (in tmux: Mouse in tmux, Terminal tab)"
+                else Session.tabs = ""
+                showPointer()
+            }
+        }
+        Session.changed()
+    }
+
+    private fun pointerOn() {
+        Session.pointer = true
+        if (settings.tmuxMouse) tabs("mouse")
+        pointerRow = settings.rows / 2
+        pointerCol = settings.cols / 2
+        showPointer()
+    }
+
+    private fun pointerOff() {
+        Session.pointer = false
+        work.removeCallbacks(pointerIdle)
+        Native.pointer(-1, -1)
+    }
+
+    private fun showPointer() {
+        Native.pointer(pointerRow, pointerCol)
+        work.removeCallbacks(pointerIdle)
+        work.postDelayed(pointerIdle, 10000)
+    }
+
+    // A tab action (Tabs.command) in the server in use, over SSH beside mosh, off the work thread.
+    private fun tabs(action: String) {
+        val s = settings.active() ?: return
+        val session = Tabs.session(s)
+        if (session == null) {
+            Session.tabs = "tabs need tmux on ${s.name}: its command like tmux new -A -s main"
+            return Session.changed()
+        }
+        val cmd = Tabs.command(action, session) ?: return
+        Thread {
+            val r = runCatching { Bootstrap(vault).run(s.host, s.port, s.user, cmd) }
+            work.post {
+                Session.tabs = r.exceptionOrNull()?.let { "tabs: ${it.message}" } ?: ""
+                Session.changed()
+            }
+        }.start()
+    }
+
     // ------------------------------------------------ the look-up header
 
     // The header's lines again: at each minute, when notifications or the batteries change, and on request.
@@ -959,6 +1031,8 @@ class ScouterService : Service() {
                 Session.dictating = false
                 stopListening()
             }
+            VoiceCommands.TAB -> tabs(m.arg)
+            VoiceCommands.POINTER -> pointer(m.arg)
         }
         Session.changed()
     }
@@ -1107,6 +1181,8 @@ class ScouterService : Service() {
         const val ACTION_SERVER = "scouterkit.ssh.SERVER" // a saved server's terminal (extra "id"; none: the next)
         const val ACTION_VOICE = "scouterkit.ssh.VOICE" // voice (extra "mode": listen, stop, always)
         const val ACTION_LOOK_UP = "scouterkit.ssh.LOOK_UP" // the look-up view's settings changed
+        const val ACTION_POINTER = "scouterkit.ssh.POINTER" // the pointer (extra "cmd")
+        const val ACTION_TABS = "scouterkit.ssh.TABS" // a tab action (extra "tab", Tabs.command)
         const val MIC = "\uF130" // the terminal font's microphone (Nerd Fonts)
         const val EXTRA_ON = "on"
         const val EXTRA_CODE = "code"

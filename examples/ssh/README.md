@@ -100,6 +100,19 @@ glasses, the saved servers) and **Settings**.
   then a rule. The SSH session gets as many rows fewer; the voice band takes the header's rows while voice is in
   use. It is redrawn each minute and when notifications or the batteries change.
 
+## The pointer and tabs
+
+- **The pointer**: a cell of the terminal shown inverted (`Native.pointer`), moved by a keyboard paired with the
+  phone (Alt+M on, then arrows, Shift for 5 cells, Enter or Space to click, Shift+Enter a right click, Page Up /
+  Down to scroll, Escape off), by the Terminal tab's touchpad (drag, tap, hold, two fingers) or by voice. Clicks
+  and the wheel go to the session's program as xterm mouse reports in the encoding it asked for (SGR, urxvt or
+  X10; `Native.mouse`), and only while it asked for them (mosh's mouse mode): otherwise they would be typed.
+- **Tabs** are the windows of the tmux session the terminal shows (its command's `-s NAME`, or `claude` for the
+  phone's Claude preset), driven over a second SSH connection (`Bootstrap.run`, `Tabs.kt`): Alt+T a new shell,
+  Alt+[ / ] the tab before / after, Alt+W closes the tab shown (never the first), and Claude's or Cursor's tab
+  (switched to where one runs, else opened). tmux's own status line shows them; with *Mouse in tmux* (on by
+  default, `tmux set -g mouse on` when the pointer starts) clicking a tab there switches to it.
+
 ## Voice
 
 Commands by voice through the glasses' microphone (the right arm; liblc3 decodes it, `SCOUTER_G1_MIC`), recognised

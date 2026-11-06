@@ -60,6 +60,8 @@ std::vector<std::string> g_band;
 std::vector<std::string> g_header;
 int g_fade = 400; // the look-up fade, ms (terminalFade)
 int g_dash_h = 0;  // the dashboard's height above the terminal (terminalDash)
+// The pointer (pointer): a cell of the SSH session's screen shown inverted; -1: none. Guarded by g_band_mutex.
+int g_pointer_row = -1, g_pointer_col = -1;
 std::vector<uint8_t> g_dash; // its last picture (dash), for a terminal that starts again; guarded by g_term_mutex
 int g_top = 0, g_bottom = 0; // pixels left empty above and below the terminal (terminalMargins)
 bool g_panels_off = false;
@@ -169,12 +171,23 @@ void PutRow(ssh::Snapshot *out, int r, const std::string &text, bool bold, bool 
 // lines, then a rule) over the terminal's top rows, hiding them (and the cursor there) while it shows.
 std::shared_ptr<const ssh::Snapshot> WithBand(std::shared_ptr<const ssh::Snapshot> s) {
   std::vector<std::string> band, header;
+  int prow, pcol;
   {
     std::lock_guard<std::mutex> lock(g_band_mutex);
     band = g_band;
     header = g_header;
+    prow = g_pointer_row;
+    pcol = g_pointer_col;
   }
   if (!s || s->cols < 8) return s;
+  // The pointer: its cell inverted (a block), on a copy.
+  if (prow >= 0 && pcol >= 0 && prow < s->rows && pcol < s->cols) {
+    auto p = std::make_shared<ssh::Snapshot>(*s);
+    ssh::Cell &cell = p->cells[size_t(prow) * p->cols + pcol];
+    cell.inverse = !cell.inverse;
+    cell.bold = true;
+    s = p;
+  }
   if (!header.empty()) {
     int h = int(header.size()) + 1;
     auto out = std::make_shared<ssh::Snapshot>(*s);
@@ -358,7 +371,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *) {
 }
 
 JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_version(JNIEnv *env, jclass) {
-  return env->NewStringUTF("scouter_ssh 0.11, mosh 1.4.0");
+  return env->NewStringUTF("scouter_ssh 0.12, mosh 1.4.0");
 }
 
 // ------------------------------------------------ glasses
@@ -713,6 +726,49 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_terminalFade(JNIEnv *, jclass,
   if (!g_glasses || Current() != Show::kTerminal) return;
   StopTerminal(false);
   StartTerminal();
+}
+
+// The pointer at a cell of the SSH session's screen (row, col from 0; -1: none), shown at once.
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_pointer(JNIEnv *, jclass, jint row, jint col) {
+  std::shared_ptr<const ssh::Snapshot> s;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_mosh) s = g_mosh->Latest();
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_band_mutex);
+    if (g_pointer_row == row && g_pointer_col == col) return;
+    g_pointer_row = row;
+    g_pointer_col = col;
+  }
+  std::lock_guard<std::mutex> lock(g_term_mutex);
+  if (g_term && s) g_term->Show(WithBand(s));
+}
+
+// A mouse event at a cell (row, col from 0) for the program in the SSH session, in the encoding it asked for:
+// button 0 left, 1 middle, 2 right (a press and a release), 64 / 65 the wheel up / down. False (nothing sent)
+// while the program has not asked for mouse reports: the bytes would be typed into it.
+JNIEXPORT jboolean JNICALL Java_scouterkit_ssh_Native_mouse(JNIEnv *, jclass, jint button, jint row, jint col) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (!g_mosh) return JNI_FALSE;
+  auto s = g_mosh->Latest();
+  if (!s || s->mouse == 0 || row < 0 || col < 0) return JNI_FALSE;
+  int x = col + 1, y = row + 1;
+  bool wheel = button >= 64;
+  std::string out;
+  if (s->mouse_encoding == 1006) { // SGR
+    out = "\x1b[<" + std::to_string(button) + ";" + std::to_string(x) + ";" + std::to_string(y) + "M";
+    if (!wheel) out += "\x1b[<" + std::to_string(button) + ";" + std::to_string(x) + ";" + std::to_string(y) + "m";
+  } else if (s->mouse_encoding == 1015) { // urxvt
+    out = "\x1b[" + std::to_string(32 + button) + ";" + std::to_string(x) + ";" + std::to_string(y) + "M";
+    if (!wheel) out += "\x1b[" + std::to_string(32 + 3) + ";" + std::to_string(x) + ";" + std::to_string(y) + "M";
+  } else { // X10 bytes (the default and UTF-8 encodings agree below 95)
+    if (x > 94 || y > 94) return JNI_FALSE;
+    out = std::string("\x1b[M") + char(32 + button) + char(32 + x) + char(32 + y);
+    if (!wheel) out += std::string("\x1b[M") + char(32 + 3) + char(32 + x) + char(32 + y);
+  }
+  g_mosh->Keys(out);
+  return JNI_TRUE;
 }
 
 // The glasses' microphone on (the arm that has one): false without glasses, such an arm, or if it refused.

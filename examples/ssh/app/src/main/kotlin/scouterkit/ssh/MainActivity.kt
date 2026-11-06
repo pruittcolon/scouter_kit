@@ -39,6 +39,7 @@ class MainActivity : Activity() {
     private lateinit var forceSwitch: Switch
     private lateinit var homeForce: Switch
     private lateinit var notesState: TextView
+    private lateinit var tabsState: TextView
     private lateinit var dashPreview: android.widget.ImageView
     private lateinit var voiceState: TextView
     private lateinit var voiceModel: TextView
@@ -353,6 +354,28 @@ class MainActivity : Activity() {
         terminal = TerminalView(this)
         got.addView(clipFrame(terminal, 260))
         page.addView(got)
+
+        val point = card("Pointer and tabs", "A pointer on the glasses' terminal, like a mouse, and tabs (tmux windows). " +
+            "Keyboard: Alt+M the pointer, then arrows (Shift: faster), Enter or Space to click, Shift+Enter a right " +
+            "click, Page Up / Down to scroll, Escape to end it; Alt+T a new tab, Alt+[ / ] the tab before / after, " +
+            "Alt+W closes the tab shown. Voice: \"pointer\", \"click\", \"new tab\", \"next tab\", \"tab 2\", " +
+            "\"Claude tab\", \"Cursor tab\".")
+        point.addView(Touchpad(this), lp().apply { topMargin = dp(4); bottomMargin = dp(8) })
+        fun pointerCmd(cmd: String) = ScouterService.send(this, ScouterService.ACTION_POINTER, "cmd" to cmd)
+        fun tab(action: String) = ScouterService.send(this, ScouterService.ACTION_TABS, "tab" to action)
+        point.addView(chipRow(chip("Pointer on / off", false) { pointerCmd("toggle") }, chip("Click", false) { pointerCmd("click") },
+            chip("Right click", false) { pointerCmd("right") }, chip("Scroll up", false) { pointerCmd("up") },
+            chip("Scroll down", false) { pointerCmd("down") }))
+        point.addView(chipRow(chip("+ Tab", false) { tab("new") }, chip("Claude", false) { tab("claude") },
+            chip("Cursor", false) { tab("cursor") }, chip("◀ Tab", false) { tab("prev") }, chip("Tab ▶", false) { tab("next") },
+            chip("Close tab", false) { tab("close") }))
+        tabsState = text("", 12.5f, Ui.FAINT)
+        point.addView(tabsState)
+        point.addToggle(toggle("Mouse in tmux", "The pointer's clicks and scrolling reach tmux (tabs, panes, history)", settings.tmuxMouse) {
+            settings.tmuxMouse = it
+            tab(if (it) "mouse" else "mouse_off")
+        })
+        page.addView(point)
 
         val servers = card("Servers", "Saved once and kept with the app's updates. The terminal comes from the one in " +
             "use; Home switches between them.")
@@ -1055,6 +1078,7 @@ class MainActivity : Activity() {
         if (forceSwitch.isChecked != settings.phoneForce) forceSwitch.isChecked = settings.phoneForce
         if (homeForce.isChecked != settings.phoneForce) homeForce.isChecked = settings.phoneForce
         showDash()
+        tabsState.text = (if (Session.pointer) "Pointer: on. " else "Pointer: off. ") + Session.tabs
         notesState.text = if (LookUp.allowed(this)) "Notification access: allowed (${LookUp.notes.size} now)." else
             "Notification access: not allowed yet. If Android says it is restricted: Apps, Vox, ⋮, Allow restricted " +
                 "settings, then try again."

@@ -290,6 +290,8 @@ object VoiceCommands {
     const val DICTATE_ON = "dictate_on"
     const val DICTATE_OFF = "dictate_off"
     const val STOP = "stop" // stop listening
+    const val TAB = "tab" // arg: a tab action (Tabs.command)
+    const val POINTER = "pointer" // arg: a pointer command (toggle, click, right, up, down)
 
     // For the custom commands' editor: what a command can do (SOURCE is picked from the sources).
     val CHOICES = linkedMapOf(NEXT to "Next source", PREV to "Previous source", UP to "Terminal (this machine)",
@@ -297,13 +299,17 @@ object VoiceCommands {
         DIMMER to "Dimmer", VISIBLE_ON to "Always visible on", VISIBLE_OFF to "Only when looking up", TYPE to "Type text",
         RUN to "Type text and Enter", "key:enter" to "Press Enter", "key:escape" to "Press Escape", "key:tab" to "Press Tab",
         "key:ctrl-c" to "Press Ctrl-C", "key:up" to "Press Up", "key:down" to "Press Down", DICTATE_ON to "Start dictating",
-        DICTATE_OFF to "Stop dictating", STOP to "Stop listening")
+        DICTATE_OFF to "Stop dictating", STOP to "Stop listening", "tab:new" to "New tab", "tab:next" to "Next tab",
+        "tab:prev" to "Previous tab", "tab:close" to "Close the tab", "tab:claude" to "Claude's tab", "tab:cursor" to "Cursor's tab",
+        "pointer:toggle" to "Pointer on / off", "pointer:click" to "Click")
 
     // What the built-in commands are, for the Voice tab.
     const val HELP = "Next · Back · Phone terminal · Laptop terminal · Phone screen · Laptop screen (any saved server's " +
         "name) · Terminal · Screen · Display off / on · Brighter · Dimmer · Always visible · Only when I look up · " +
         "Type … · Run … (types it and Enter) · Claude … (types it and Enter) · Enter · Escape · Tab · Control C · Up · " +
-        "Down · Dictate (everything you say is typed; \"send\" presses Enter, \"stop dictating\" ends it) · Stop listening"
+        "Down · Dictate (everything you say is typed; \"send\" presses Enter, \"stop dictating\" ends it) · Stop listening · " +
+        "New tab · Next tab · Previous tab · Tab 2 · Close tab · Claude tab · Cursor tab · Pointer · Click · Right click · " +
+        "Scroll up / down"
 
     fun normalize(s: String) = s.lowercase(Locale.US).replace(Regex("[^a-z0-9 ]"), " ").replace(Regex("\\s+"), " ").trim()
 
@@ -317,6 +323,8 @@ object VoiceCommands {
     fun label(settings: Settings, action: String, arg: String): String = when (action) {
         SOURCE -> settings.sourceName(arg)
         TYPE -> "type \"$arg\""
+        TAB -> CHOICES["tab:$arg"] ?: "tab $arg"
+        POINTER -> CHOICES["pointer:$arg"] ?: "pointer $arg"
         RUN -> "run \"$arg\""
         KEY -> arg
         else -> CHOICES[action] ?: action
@@ -326,7 +334,12 @@ object VoiceCommands {
         val t = normalize(heard)
         if (t.isEmpty()) return null
         for (c in settings.voiceCommands()) if (normalize(c.phrase) == t) {
-            val (action, arg) = if (c.action.startsWith("key:")) KEY to c.action.removePrefix("key:") else c.action to c.arg
+            val (action, arg) = when {
+                c.action.startsWith("key:") -> KEY to c.action.removePrefix("key:")
+                c.action.startsWith("tab:") -> TAB to c.action.removePrefix("tab:")
+                c.action.startsWith("pointer:") -> POINTER to c.action.removePrefix("pointer:")
+                else -> c.action to c.arg
+            }
             return Match(action, arg, label(settings, action, arg))
         }
         fun m(action: String, arg: String = "") = Match(action, arg, label(settings, action, arg))
@@ -354,6 +367,19 @@ object VoiceCommands {
             "tab|press tab" to "tab", "control c|interrupt|stop that|cancel that" to "ctrl-c", "up|arrow up|press up" to "up",
             "down|arrow down|press down" to "down", "backspace|delete that" to "backspace")
         for ((words, key) in keys) if (t in words.split("|")) return m(KEY, key)
+        val tabs = listOf("new tab|open a tab|open tab|new shell" to "new", "next tab|tab right" to "next",
+            "previous tab|last tab|tab left" to "prev", "close tab|close the tab|close this tab" to "close",
+            "claude tab|claude's tab|show claude|open claude" to "claude", "cursor tab|cursor's tab|show cursor|open cursor" to "cursor")
+        for ((words, tab) in tabs) if (t in words.split("|")) return m(TAB, tab)
+        val numbers = listOf("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+        Regex("^tab (\\w+)$").find(t)?.let { r ->
+            val w = r.groupValues[1]
+            val n = w.toIntOrNull() ?: numbers.indexOf(w).takeIf { it >= 0 }
+            if (n != null) return m(TAB, "select:$n")
+        }
+        val pointer = listOf("pointer|show the pointer|mouse|cursor on|pointer off|hide the pointer" to "toggle",
+            "click|click it|tap" to "click", "right click" to "right", "scroll up" to "up", "scroll down" to "down")
+        for ((words, cmd) in pointer) if (t in words.split("|")) return m(POINTER, cmd)
         // "<name> terminal" / "<name> screen" (show / open / go to / switch to the …).
         Regex("^(?:show |open |go to |switch to )?(?:the |my )?(.+?) (terminal|screen)$").find(t)?.let { r ->
             val name = r.groupValues[1]
