@@ -132,8 +132,11 @@ class SettingsActivity : Activity() {
         page.addView(phone)
 
         val server = card("Terminal server", "Where the terminal comes from: SSH, then mosh.")
+        server.addView(text("Termux on this phone: run examples/ssh/termux/scouter.sh in Termux once, then tap its preset.",
+            12.5f, Ui.FAINT))
         server.addView(chipRow(
-            chip("Claude on this phone", false) { preset(Termux.HOST, Termux.PORT.toString(), "root", "bash -ic claude") },
+            chip("Termux on this phone", false) { preset(Termux.HOST, Termux.PORT.toString(), Termux.USER, "tmux new -A -s main") },
+            chip("Claude in Ubuntu", false) { preset(Termux.HOST, Termux.PORT.toString(), "root", "bash -ic claude") },
             chip("Ubuntu shell", false) { preset(Termux.HOST, Termux.PORT.toString(), "root", "") },
             chip("tmux main", false) { commandField.setText("tmux new -A -s main") },
         ))
@@ -165,6 +168,15 @@ class SettingsActivity : Activity() {
         server.addView(button("Install the key on the server") {
             install(hostField.text.toString().trim(), portField.text.toString().toIntOrNull() ?: settings.port,
                 userField.text.toString().trim())
+        })
+        server.addView(button("Copy the public key") {
+            val line = Vault(this).text(Vault.SSH_PUBLIC) ?: Vault(this).let { v -> runCatching { Bootstrap.publicKey(v) }.getOrNull() }
+            if (line == null) keyState.text = "No key yet: Create a key on this phone first."
+            else {
+                getSystemService(android.content.ClipboardManager::class.java)
+                    .setPrimaryClip(android.content.ClipData.newPlainText("SSH Scouter public key", line))
+                keyState.text = "Public key copied: paste it into Termux (scouter key)."
+            }
         })
         server.addView(button("Share the public key") {
             val line = Vault(this).text(Vault.SSH_PUBLIC)
@@ -286,8 +298,8 @@ class SettingsActivity : Activity() {
     private fun showTermux() {
         termuxState.text = when {
             !Termux.installed(this) -> "Termux is not installed"
-            !Termux.hasRunCommand(this) -> "This Termux (from Google Play) cannot run commands for other apps, so the " +
-                "server runs in Ubuntu: start it there with /usr/sbin/sshd, then use the \"Claude on this phone\" preset."
+            !Termux.hasRunCommand(this) -> "This Termux (from Google Play) cannot take commands from other apps: run " +
+                "scouter.sh in Termux yourself (bash scouter.sh), then tap the \"Termux on this phone\" preset."
             !Termux.permitted(this) -> "Needed: \"Run commands in Termux\" (the button below). If Android no longer asks: " +
                 "Android's Settings, Apps, SSH Scouter, Permissions, Additional permissions."
             Session.termux.isNotEmpty() -> "Termux: ${Session.termux}"

@@ -67,7 +67,15 @@ the old one), so run tmux on the server (command `tmux new -A -s main`) to keep 
 No keyer needed: the main screen's buttons start a session that runs until Stop (also in the notification),
 with the app in the back.
 
-- **Termux on this phone as the server.** Settings, "Termux on this phone": allow "Run commands in Termux"
+- **Termux on this phone, the easy way: `termux/scouter.sh`.** In Termux:
+  `curl -fsSLO https://raw.githubusercontent.com/OWNER/REPO/BRANCH/examples/ssh/termux/scouter.sh && bash scouter.sh`
+  (or copy the file over). It installs `openssh`, `mosh` and `tmux`, asks for the app's public key (Settings,
+  Terminal server, "Copy the public key", then paste), starts `sshd` on 127.0.0.1:8022 (keys only) and prints what
+  to enter in the app (or tap the "Termux on this phone" preset: tmux session `main`; `tmux attach -t main` in
+  Termux is the same session). It installs itself as `scouter`: `scouter` starts the server again (after a reboot),
+  `scouter key` lets another key in, `scouter status`, `scouter stop`, `scouter autostart on|off` (start it when
+  Termux opens). Works with every Termux build, the Google Play one included.
+- **Termux on this phone, from the app.** Settings, "Termux": allow "Run commands in Termux"
   (Termux needs `allow-external-apps = true` in `~/.termux/termux.properties`), then "Set up". It installs
   `openssh` and `mosh` in Termux if missing, adds this phone's public key to Termux's `authorized_keys`, starts
   `sshd` on 127.0.0.1:8022 only and fills in the server (127.0.0.1, 8022). Termux's host key fingerprints come

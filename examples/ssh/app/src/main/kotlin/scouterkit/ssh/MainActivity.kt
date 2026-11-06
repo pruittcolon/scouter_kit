@@ -230,7 +230,7 @@ class MainActivity : Activity() {
     private fun startTerminal() {
         ready()?.let { note = it; return show() }
         val settings = Settings(this)
-        note = if (settings.host.isEmpty()) "No server yet: Settings, Terminal server, \"Claude on this phone\"." else null
+        note = if (settings.host.isEmpty()) "No server yet: run scouter.sh in Termux, then Settings, Terminal server, \"Termux on this phone\"." else null
         settings.glassesAllowed = true
         ScouterService.send(this, ScouterService.ACTION_TERMINAL)
         show()

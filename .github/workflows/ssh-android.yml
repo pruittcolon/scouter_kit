@@ -154,6 +154,9 @@ jobs:
             "" \
             "- \`scouter-phone.apk\`: install this one on the phone." \
             "- \`scouter-phone-emulated-debug.apk\`: two emulated arms inside the app, no glasses needed (separate app)." \
+            "- \`scouter.sh\`: the server in Termux. In Termux run:" \
+            "  \`curl -fsSLO https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/examples/ssh/termux/scouter.sh && bash scouter.sh\`" \
+            "  then in the app: Settings, Terminal server, \"Termux on this phone\"." \
             "" \
             "APK SHA-256: \`$SHA\`" \
             "Signer certificate SHA-256: \`$CERT\`" \
@@ -162,4 +165,5 @@ jobs:
           gh release delete scouter-phone-latest --yes --cleanup-tag 2>/dev/null || true
           gh release create scouter-phone-latest --prerelease --target "$GITHUB_SHA" \
             --title "SSH Scouter 0.2 for the phone (latest test build)" --notes "$notes" \
-            "$RUNNER_TEMP/out/scouter-phone.apk" "$RUNNER_TEMP/out/scouter-phone-emulated-debug.apk"
+            "$RUNNER_TEMP/out/scouter-phone.apk" "$RUNNER_TEMP/out/scouter-phone-emulated-debug.apk" \
+            examples/ssh/termux/scouter.sh
