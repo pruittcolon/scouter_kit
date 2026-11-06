@@ -129,14 +129,59 @@ class MainActivity : Activity() {
         phone.addView(slider("Pan down", 0, 100, settings.screenPanY, { "$it%" }, { settings.screenPanY = it }) { settings.screenPanY = it })
         phone.addView(segmented(listOf("0" to "Upright", "90" to "↻ 90°", "180" to "180°", "270" to "↺ 90°"),
             settings.screenRotate.toString()) { settings.screenRotate = it.toInt() })
-        phone.addView(slider("Contrast boost", 0, 100, settings.screenContrast, { "$it%" }, { settings.screenContrast = it }) {
-            settings.screenContrast = it
-        })
-        phone.addToggle(toggle("Sharpen", "Crisper text", settings.screenSharpen) { settings.screenSharpen = it })
-        phone.addToggle(toggle("Invert colours", "Light backgrounds go dark: black is see-through", settings.screenInvert) {
-            settings.screenInvert = it
-        })
         page.addView(phone)
+
+        val look = card("Look", "How the picture's light and dark come out. Black is see-through on the glasses.")
+        lateinit var invertBar: android.widget.SeekBar
+        lateinit var gammaBar: android.widget.SeekBar
+        lateinit var contrastBar: android.widget.SeekBar
+        lateinit var thresholdBar: android.widget.SeekBar
+        fun bar(v: View): android.widget.SeekBar = (v as LinearLayout).getChildAt(1) as android.widget.SeekBar
+        fun lookPreset(invert: Int, gamma: Int, contrast: Int, threshold: Int) {
+            settings.screenInvertPct = invert
+            settings.screenGamma = gamma
+            settings.screenContrast = contrast
+            settings.screenThreshold = threshold
+            invertBar.progress = invert
+            gammaBar.progress = gamma
+            contrastBar.progress = contrast
+            thresholdBar.progress = threshold
+        }
+        look.addView(chipRow(
+            chip("Dark mode", false) { lookPreset(100, 100, 60, 128) },
+            chip("Soft", false) { lookPreset(70, 110, 40, 128) },
+            chip("As on the phone", false) { lookPreset(0, 100, 0, 128) },
+            chip("High contrast", false) { lookPreset(100, 140, 100, 150) },
+            chip("Bright text", false) { lookPreset(100, 70, 80, 100) },
+        ))
+        val invertRow = slider("Invert", 0, 100, settings.screenInvertPct, { "$it%" }, { settings.screenInvertPct = it }) {
+            settings.screenInvertPct = it
+        }
+        invertBar = bar(invertRow)
+        look.addView(invertRow)
+        val gammaRow = slider("Midtones", 40, 250, settings.screenGamma, {
+            when {
+                it < 95 -> "brighter " + String.format(java.util.Locale.US, "%.2f", it / 100f)
+                it > 105 -> "darker " + String.format(java.util.Locale.US, "%.2f", it / 100f)
+                else -> "as is"
+            }
+        }, { settings.screenGamma = it }) { settings.screenGamma = it }
+        gammaBar = bar(gammaRow)
+        look.addView(gammaRow)
+        val contrastRow = slider("Contrast boost", 0, 100, settings.screenContrast, { "$it%" }, { settings.screenContrast = it }) {
+            settings.screenContrast = it
+        }
+        contrastBar = bar(contrastRow)
+        look.addView(contrastRow)
+        val thresholdRow = slider("Black & white cut-off", 10, 245, settings.screenThreshold, { "$it" },
+            { settings.screenThreshold = it }) { settings.screenThreshold = it }
+        thresholdBar = bar(thresholdRow)
+        look.addView(thresholdRow)
+        look.addToggle(toggle("Sharpen", "Crisper text", settings.screenSharpen) { settings.screenSharpen = it })
+        look.addToggle(toggle("Steady", "16 greys: ignore one-step flicker (smoother, less to send)", settings.screenSteady) {
+            settings.screenSteady = it
+        })
+        page.addView(look)
 
         val preview = card("Terminal", "What the glasses get in terminal view")
         terminal = TerminalView(this)

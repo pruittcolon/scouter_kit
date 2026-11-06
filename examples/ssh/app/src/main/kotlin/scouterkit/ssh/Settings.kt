@@ -45,7 +45,17 @@ class Settings(context: Context) {
     var screenInvert: Boolean
         get() = prefs.getBoolean("screen_invert", true)
         set(v) = prefs.edit().putBoolean("screen_invert", v).apply()
-    var screenLevels: Int by Number("screen_levels", 16)
+    var screenLevels: Int by Number("screen_levels", 2) // 2: the fast path (VIDEO records)
+    // The look: percent toward the inverse (0 as on the phone, 100 light backgrounds dark), midtones (gamma
+    // x100), the black-and-white threshold, and steady (16 greys: one-level flicker ignored).
+    var screenInvertPct: Int
+        get() = prefs.getInt("screen_invert_pct", if (screenInvert) 100 else 0)
+        set(v) = prefs.edit().putInt("screen_invert_pct", v).apply()
+    var screenGamma: Int by Number("screen_gamma", 100)
+    var screenThreshold: Int by Number("screen_threshold", 128)
+    var screenSteady: Boolean
+        get() = prefs.getBoolean("screen_steady", true)
+        set(v) = prefs.edit().putBoolean("screen_steady", v).apply()
     // How the phone's screen fills its place: FIT (its shape kept), FILL (cropped to fill), STRETCH (distorted).
     var screenFit: String
         get() = prefs.getString("screen_fit", null) ?: if (screenBand) FILL else FIT
@@ -83,8 +93,9 @@ class Settings(context: Context) {
         set(v) = prefs.edit().putBoolean("off_when_locked", v).apply()
     // For Native.screenFrame.
     fun screenOptions() = intArrayOf(listOf(FIT, FILL, STRETCH).indexOf(screenFit).coerceAtLeast(0), screenPanX, screenPanY,
-        screenZoom, screenRotate, screenOutX, screenOutY, screenOutW, screenOutH, if (screenInvert) 1 else 0, screenLevels,
-        screenContrast, if (screenSharpen) 1 else 0, if (screenHideCase) 1 else 0, if (screenHideFolded) 1 else 0)
+        screenZoom, screenRotate, screenOutX, screenOutY, screenOutW, screenOutH, screenInvertPct, screenLevels,
+        screenContrast, if (screenSharpen) 1 else 0, if (screenHideCase) 1 else 0, if (screenHideFolded) 1 else 0,
+        screenGamma, screenThreshold, if (screenSteady) 1 else 0)
 
     // Each eye's battery band beside the terminal.
     var battery: Boolean

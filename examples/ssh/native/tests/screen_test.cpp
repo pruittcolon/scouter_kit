@@ -51,11 +51,17 @@ static std::vector<uint8_t> Phone(int w, int h, int rx, int ry, int rw, int rh, 
 int main() {
   // Tone: inverted, 16 levels as multiples of 17; 2 levels.
   std::vector<uint8_t> t = {0, 255, 128, 17};
-  ssh::Tone(&t, true, 16);
+  ssh::Tone(&t, 4, {0, 0, 4, 1}, 100, 100, 128, 16);
   CHECK(t[0] == 255 && t[1] == 0 && t[2] % 17 == 0 && t[3] == 238);
   t = {0, 200, 100};
-  ssh::Tone(&t, false, 2);
+  ssh::Tone(&t, 3, {0, 0, 3, 1}, 0, 100, 128, 2);
   CHECK(t[0] == 0 && t[1] == 255 && t[2] == 0);
+  t = {0, 255};
+  ssh::Tone(&t, 2, {0, 0, 2, 1}, 70, 100, 128, 16); // 70 % inverted: dark goes light grey, light goes dark grey
+  CHECK(t[0] == 170 && t[1] == 85);
+  t = {9, 9, 9};
+  ssh::Tone(&t, 3, {1, 0, 1, 1}, 100, 100, 128, 16); // outside the content: untouched
+  CHECK(t[0] == 9 && t[1] == 238 && t[2] == 9);
 
   // Source: the whole screen, or a full-width band in the picture's shape at its place.
   ssh::ScreenOptions o;
@@ -74,10 +80,11 @@ int main() {
   // Fit: averages, keeps the shape centred with the background around it.
   std::vector<uint8_t> src = {0, 255, 0, 255, 0, 255, 0, 255};
   std::vector<uint8_t> dst;
-  ssh::Fit(&dst, 2, 1, src, 4, {0, 0, 4, 2}, {0, 0, 2, 1}, false, 0);
+  ssh::Fit(&dst, 2, 1, src, 4, {0, 0, 4, 2}, {0, 0, 2, 1}, false);
   CHECK(dst.size() == 2 && dst[0] == 127 && dst[1] == 127);
-  ssh::Fit(&dst, 4, 1, src, 4, {0, 0, 4, 2}, {0, 0, 4, 1}, true, 9); // 2:1 into 4:1: 2 x 1 in the middle
-  CHECK(dst[0] == 9 && dst[3] == 9 && dst[1] == 127);
+  ssh::Rect drawn = ssh::Fit(&dst, 4, 1, src, 4, {0, 0, 4, 2}, {0, 0, 4, 1}, true); // 2:1 into 4:1: 2 x 1 in the middle
+  CHECK(dst[0] == 0 && dst[3] == 0 && dst[1] == 127);
+  CHECK(drawn.x == 1 && drawn.y == 0 && drawn.w == 2 && drawn.h == 1);
   // Place: the picture's place in percent of the area; Stretch mode fills it (distorted).
   ssh::ScreenOptions placed;
   placed.out_x = 50;
@@ -86,8 +93,8 @@ int main() {
   placed.out_h = 100;
   ssh::Rect pl = ssh::Place(540, 471, placed);
   CHECK(pl.x == 270 && pl.y == 0 && pl.w == 270 && pl.h == 471);
-  ssh::Fit(&dst, 4, 1, src, 4, {0, 0, 4, 2}, {2, 0, 2, 1}, false, 9);
-  CHECK(dst[0] == 9 && dst[1] == 9 && dst[2] == 127 && dst[3] == 127);
+  ssh::Fit(&dst, 4, 1, src, 4, {0, 0, 4, 2}, {2, 0, 2, 1}, false);
+  CHECK(dst[0] == 0 && dst[1] == 0 && dst[2] == 127 && dst[3] == 127);
 
   // Rotate: a 3 x 2 image turned clockwise, upside down and counter-clockwise.
   std::vector<uint8_t> six = {1, 2, 3, 4, 5, 6}, turned;
@@ -104,10 +111,10 @@ int main() {
   CHECK(r.x == 25 && r.y == 12 && r.w == 50 && r.h == 25);
   std::vector<uint8_t> ramp(100);
   for (int i = 0; i < 100; i++) ramp[i] = uint8_t(100 + i);
-  ssh::Stretch(&ramp, 100);
+  ssh::Stretch(&ramp, 100, {0, 0, 100, 1}, 100);
   CHECK(ramp[0] < 10 && ramp[99] > 245);
   std::vector<uint8_t> edge = {100, 100, 200, 200, 100, 100, 200, 200, 100, 100, 200, 200};
-  ssh::Sharpen(&edge, 4, 3);
+  ssh::Sharpen(&edge, 4, {0, 0, 4, 3});
   CHECK(edge[5] < 100 && edge[6] > 200);
 
   // The emulated arms, worn, head level.

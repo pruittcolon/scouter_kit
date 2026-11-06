@@ -88,10 +88,9 @@ Rect Source(int sw, int sh, int dw, int dh, const ScreenOptions &o) {
   return {int(int64_t(sw - rw) * px / 100), int(int64_t(sh - rh) * py / 100), rw, rh};
 }
 
-void Fit(std::vector<uint8_t> *dst, int pw, int ph, const std::vector<uint8_t> &src, int sw, Rect r, Rect d, bool keep,
-         uint8_t bg) {
-  dst->assign(size_t(pw) * ph, bg);
-  if (r.w <= 0 || r.h <= 0 || d.w <= 0 || d.h <= 0) return;
+Rect Fit(std::vector<uint8_t> *dst, int pw, int ph, const std::vector<uint8_t> &src, int sw, Rect r, Rect d, bool keep) {
+  dst->assign(size_t(pw) * ph, 0);
+  if (r.w <= 0 || r.h <= 0 || d.w <= 0 || d.h <= 0) return {};
   int ow = d.w, oh = d.h, ox = d.x, oy = d.y;
   if (keep) {
     double k = std::min(double(d.w) / r.w, double(d.h) / r.h);
@@ -120,25 +119,29 @@ void Fit(std::vector<uint8_t> *dst, int pw, int ph, const std::vector<uint8_t> &
       out[x] = uint8_t(sum / ((y1 - y0) * (x1 - x0)));
     }
   }
+  return {ox, oy, ow, oh};
 }
 
-void Stretch(std::vector<uint8_t> *p, int amount) {
-  if (amount <= 0 || p->empty()) return;
+void Stretch(std::vector<uint8_t> *p, int pw, Rect c, int amount) {
+  if (amount <= 0 || c.w <= 0 || c.h <= 0) return;
   size_t hist[256] = {};
-  for (uint8_t v : *p) hist[v]++;
-  size_t n = p->size(), c = 0;
+  for (int y = c.y; y < c.y + c.h; y++) {
+    const uint8_t *row = p->data() + size_t(y) * pw + c.x;
+    for (int x = 0; x < c.w; x++) hist[row[x]]++;
+  }
+  size_t n = size_t(c.w) * c.h, seen = 0;
   int lo = 0, hi = 255;
   for (int v = 0; v < 256; v++) {
-    c += hist[v];
-    if (c > n / 50) {
+    seen += hist[v];
+    if (seen > n / 50) {
       lo = v;
       break;
     }
   }
-  c = 0;
+  seen = 0;
   for (int v = 0; v < 256; v++) {
-    c += hist[v];
-    if (c >= n - n / 50) {
+    seen += hist[v];
+    if (seen >= n - n / 50) {
       hi = v;
       break;
     }
@@ -150,29 +153,38 @@ void Stretch(std::vector<uint8_t> *p, int amount) {
     int s = std::clamp((v - lo) * 255 / (hi - lo), 0, 255);
     lut[v] = uint8_t(v + (s - v) * a / 100);
   }
-  for (uint8_t &v : *p) v = lut[v];
+  for (int y = c.y; y < c.y + c.h; y++) {
+    uint8_t *row = p->data() + size_t(y) * pw + c.x;
+    for (int x = 0; x < c.w; x++) row[x] = lut[row[x]];
+  }
 }
 
-void Sharpen(std::vector<uint8_t> *p, int w, int h) {
-  if (w < 3 || h < 3 || int(p->size()) < w * h) return;
+void Sharpen(std::vector<uint8_t> *p, int pw, Rect c) {
+  if (c.w < 3 || c.h < 3) return;
   std::vector<uint8_t> src(*p);
-  for (int y = 1; y < h - 1; y++) {
-    const uint8_t *up = &src[size_t(y - 1) * w], *mid = &src[size_t(y) * w], *down = &src[size_t(y + 1) * w];
-    uint8_t *out = p->data() + size_t(y) * w;
-    for (int x = 1; x < w - 1; x++) {
+  for (int y = c.y + 1; y < c.y + c.h - 1; y++) {
+    const uint8_t *up = &src[size_t(y - 1) * pw], *mid = &src[size_t(y) * pw], *down = &src[size_t(y + 1) * pw];
+    uint8_t *out = p->data() + size_t(y) * pw;
+    for (int x = c.x + 1; x < c.x + c.w - 1; x++) {
       int sum = up[x - 1] + up[x] + up[x + 1] + mid[x - 1] + mid[x] + mid[x + 1] + down[x - 1] + down[x] + down[x + 1];
       out[x] = uint8_t(std::clamp(2 * mid[x] - sum / 9, 0, 255));
     }
   }
 }
 
-void Tone(std::vector<uint8_t> *p, bool invert, int levels) {
+void Tone(std::vector<uint8_t> *p, int pw, Rect c, int invert, int gamma, int threshold, int levels) {
+  int a = std::clamp(invert, 0, 100);
+  double g = std::clamp(gamma, 20, 500) / 100.0;
   uint8_t lut[256];
   for (int v = 0; v < 256; v++) {
-    int f = invert ? 255 - v : v;
-    lut[v] = levels == 2 ? (f >= 128 ? 255 : 0) : uint8_t((f * 15 + 127) / 255 * 17);
+    int f = v + (255 - 2 * v) * a / 100; // a blend toward the inverse
+    int q = g == 1.0 ? f : int(std::pow(f / 255.0, g) * 255.0 + 0.5);
+    lut[v] = levels == 2 ? (q >= threshold ? 255 : 0) : uint8_t((q * 15 + 127) / 255 * 17);
   }
-  for (uint8_t &v : *p) v = lut[v];
+  for (int y = c.y; y < c.y + c.h; y++) {
+    uint8_t *row = p->data() + size_t(y) * pw + c.x;
+    for (int x = 0; x < c.w; x++) row[x] = lut[row[x]];
+  }
 }
 
 ScreenMirror::~ScreenMirror() { Stop(); }
@@ -419,10 +431,13 @@ int ScreenMirror::Frame(const uint8_t *rgba, int w, int h, int stride, const Scr
     src = &rot_;
   }
   Rect d = Place(w_, h_, o);
-  Fit(&frame_, w_, h_, *src, sw, Source(sw, sh, d.w, d.h, o), d, o.fit == ScreenOptions::kFit, o.invert ? 255 : 0);
-  Stretch(&frame_, o.contrast);
-  if (o.sharpen) Sharpen(&frame_, w_, h_);
-  Tone(&frame_, o.invert, levels_);
+  Rect c = Fit(&frame_, w_, h_, *src, sw, Source(sw, sh, d.w, d.h, o), d, o.fit == ScreenOptions::kFit);
+  Stretch(&frame_, w_, c, o.contrast);
+  if (o.sharpen) Sharpen(&frame_, w_, c);
+  Tone(&frame_, w_, c, o.invert, o.gamma, o.threshold, levels_);
+  if (o.steady && levels_ == 16 && prev_.size() == frame_.size())
+    for (size_t i = 0; i < frame_.size(); i++)
+      if (std::abs(int(frame_[i]) - int(prev_[i])) <= 17) frame_[i] = prev_[i];
   if (frame_ == prev_ && !(levels_ == 2 && video_.redraw)) return kSame;
   if (levels_ == 2) {
     int r = SendVideo();

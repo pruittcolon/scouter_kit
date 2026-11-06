@@ -23,7 +23,12 @@ struct ScreenOptions {
   int rotate = 0;            // the phone's picture turned clockwise first: 0, 90, 180 or 270 degrees
   // The picture's place in the glasses' area, in percent of it: left, top, width, height.
   int out_x = 0, out_y = 0, out_w = 100, out_h = 100;
-  bool invert = true;       // light backgrounds go dark: black is see-through on the glasses
+  int invert = 100;         // percent toward the inverse: 0 as on the phone, 100 light backgrounds dark (black is
+                            // see-through on the glasses)
+  int gamma = 100;          // the midtones: 100 as is, above darker, below brighter (x100)
+  int threshold = 128;      // black and white: brighter than this lights
+  bool steady = true;       // 16 greys: a pixel changed by one level only keeps its old level (less flicker and
+                            // fewer pixels to send)
   int levels = 16;          // 16 greys, or 2 (black and white: sent as VIDEO records, much faster)
   int contrast = 0;         // 0 ... 100: how far the levels stretch toward the picture's darkest and brightest
   bool sharpen = false;     // an unsharp mask after scaling: crisper text
@@ -48,20 +53,21 @@ Rect Place(int pw, int ph, const ScreenOptions &);
 // shape; zoom narrows it, pan places it.
 Rect Source(int sw, int sh, int dw, int dh, const ScreenOptions &);
 
-// Scales the src rectangle r of a (stride sw) luma image into the place d of dst (pw x ph, filled with bg
-// first), averaging the source pixels under each picture pixel. keep: the shape is kept, centred in d.
-void Fit(std::vector<uint8_t> *dst, int pw, int ph, const std::vector<uint8_t> &src, int sw, Rect r, Rect d, bool keep,
-         uint8_t bg);
+// Scales the src rectangle r of a (stride sw) luma image into the place d of dst (pw x ph, black around it),
+// averaging the source pixels under each picture pixel. keep: the shape is kept, centred in d. Returns where
+// the picture went (the content: what Stretch, Sharpen and Tone change).
+Rect Fit(std::vector<uint8_t> *dst, int pw, int ph, const std::vector<uint8_t> &src, int sw, Rect r, Rect d, bool keep);
 
-// Stretches the levels toward the 2nd and 98th percentiles; amount 0 (none) ... 100 (all the way).
-void Stretch(std::vector<uint8_t> *p, int amount);
+// Stretches the levels inside c (of a pw-wide image) toward its 2nd and 98th percentiles; amount 0 ... 100.
+void Stretch(std::vector<uint8_t> *p, int pw, Rect c, int amount);
 
-// An unsharp mask (3 x 3 box, strength 1): edges, such as text, come out crisper.
-void Sharpen(std::vector<uint8_t> *p, int w, int h);
+// An unsharp mask (3 x 3 box, strength 1) inside c: edges, such as text, come out crisper.
+void Sharpen(std::vector<uint8_t> *p, int pw, Rect c);
 
-// Inverts (if asked) and quantizes to the glasses' levels: multiples of 17, which the library writes as they
-// are (no dithering noise to send); 2 levels: 0 or 255.
-void Tone(std::vector<uint8_t> *p, bool invert, int levels);
+// Inside c: toward the inverse by `invert` percent, the midtones by gamma (x100), then the glasses' levels:
+// multiples of 17, which the library writes as they are (no dithering noise to send); 2 levels: 255 from
+// threshold up, else 0. Outside c stays black (see-through).
+void Tone(std::vector<uint8_t> *p, int pw, Rect c, int invert, int gamma, int threshold, int levels);
 
 // The phone's screen on both eyes, in the columns both eyes see (the display's x from dx), all rows. 16 greys
 // go through the library's gray display (a bitmap, changed pixels uploaded); 2 levels as VIDEO records (VM.md
