@@ -18,12 +18,15 @@ import android.widget.ScrollView
 import android.widget.TextView
 
 // R11: the user scans for the scouter service with the glasses in the open case (only there are the arms
-// bondable), picks a pair by its pair ID, and the app stores both addresses and may connect from then on.
-// Android pairs at the first connection (the arm asks for security); the phone takes one of each arm's 3 bond
-// slots, the oldest is replaced. Nothing here runs without the user's tap.
+// bondable), picks a pair by its pair ID, and the app stores both addresses and pairs (bonds) with each arm in
+// turn: Android 17's own Bluetooth settings refuse these arms ("needs an app to pair"). The phone takes one of
+// each arm's 3 bond slots, the oldest is replaced. Nothing here runs without the user's tap.
 @SuppressLint("MissingPermission")
 class PairingActivity : Activity() {
-    private class Arm(val address: String, val left: Boolean)
+    // The device as the scan found it: it carries the address type, which a bond needs.
+    private class Arm(val device: android.bluetooth.BluetoothDevice, val left: Boolean) {
+        val address: String get() = device.address
+    }
 
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var list: LinearLayout
@@ -66,7 +69,7 @@ class PairingActivity : Activity() {
                 if (record.size < 3 || record[0].toInt() != 1 || record[1].toInt() and 2 != 0) return // format 1, has a panel
                 val id = String(record, 2, record.size - 2, Charsets.UTF_8)
                 pairs.getOrPut(id) { mutableMapOf() }[record[1].toInt() and 1 != 0] =
-                    Arm(result.device.address, record[1].toInt() and 1 != 0)
+                    Arm(result.device, record[1].toInt() and 1 != 0)
             }
         }
         val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(GlassesLink.SERVICE)).build()
@@ -90,9 +93,48 @@ class PairingActivity : Activity() {
                     settings.left = left!!.address
                     settings.right = right!!.address
                     settings.glassesAllowed = true
-                    finish()
+                    isEnabled = false
+                    bond(listOf(left, right))
                 }
             })
+        }
+    }
+
+    // Bonds the arms one after the other (left first), each while the case is open; Android may ask to confirm.
+    // Done: back to Settings.
+    private fun bond(arms: List<Arm>) {
+        val next = arms.firstOrNull { it.device.bondState != android.bluetooth.BluetoothDevice.BOND_BONDED }
+        if (next == null) {
+            state.text = "both arms paired: the app connects to them now"
+            ScouterService.send(this)
+            handler.postDelayed({ finish() }, 1500)
+            return
+        }
+        val side = if (next.left) "left" else "right"
+        state.text = "pairing the $side arm… (if Android asks, tap Pair)"
+        var started = false
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: android.content.Context, i: android.content.Intent) {
+                @Suppress("DEPRECATION")
+                val d = i.getParcelableExtra<android.bluetooth.BluetoothDevice>(android.bluetooth.BluetoothDevice.EXTRA_DEVICE)
+                if (d?.address != next.address) return
+                when (i.getIntExtra(android.bluetooth.BluetoothDevice.EXTRA_BOND_STATE, 0)) {
+                    android.bluetooth.BluetoothDevice.BOND_BONDING -> started = true
+                    android.bluetooth.BluetoothDevice.BOND_BONDED -> {
+                        unregisterReceiver(this)
+                        bond(arms)
+                    }
+                    android.bluetooth.BluetoothDevice.BOND_NONE -> if (started) {
+                        unregisterReceiver(this)
+                        state.text = "the $side arm did not pair: keep the glasses in the open case (on USB) and scan again"
+                    }
+                }
+            }
+        }
+        registerReceiver(receiver, android.content.IntentFilter(android.bluetooth.BluetoothDevice.ACTION_BOND_STATE_CHANGED))
+        if (next.device.bondState != android.bluetooth.BluetoothDevice.BOND_BONDING && !next.device.createBond()) {
+            unregisterReceiver(receiver)
+            state.text = "Android refused to pair the $side arm: is Bluetooth on?"
         }
     }
 }

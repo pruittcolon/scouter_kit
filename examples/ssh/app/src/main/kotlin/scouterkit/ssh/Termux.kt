@@ -31,9 +31,14 @@ object Termux {
 
     fun permitted(c: Context) = c.checkSelfPermission(PERMISSION) == PackageManager.PERMISSION_GRANTED
 
+    // Termux defines RUN_COMMAND (the F-Droid and GitHub builds; the Google Play build does not).
+    fun hasRunCommand(c: Context) = runCatching { c.packageManager.getPermissionInfo(PERMISSION, 0) }.isSuccess
+
     // What stands in the way, or null.
     fun problem(c: Context): String? = when {
         !installed(c) -> "Termux is not installed"
+        !hasRunCommand(c) -> "this Termux (the Google Play build) cannot run commands for other apps: start the " +
+            "server yourself (in Ubuntu: /usr/sbin/sshd, or in Termux: sshd)"
         !permitted(c) -> "allow \"Run commands in Termux\" first"
         else -> null
     }
@@ -96,7 +101,7 @@ object Termux {
             Thread.sleep(300)
             if (listening()) return null
         }
-        return "Termux's sshd did not start: Settings, Termux on this phone, Set up"
+        return "the SSH server on 127.0.0.1:8022 is not running: start it (in Ubuntu: /usr/sbin/sshd)"
     }
 
     private fun listening() = runCatching { Socket().use { it.connect(InetSocketAddress(HOST, PORT), 300) } }.isSuccess
