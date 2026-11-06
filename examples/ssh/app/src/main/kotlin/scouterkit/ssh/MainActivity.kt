@@ -389,7 +389,9 @@ class MainActivity : Activity() {
                 line.addView(tile, lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { if (i > 0) leftMargin = dp(10) })
                 if (key == OFF) offTile = tile else sourceTiles += key to tile
             }
-            if (row.size == 1) line.addView(View(this), lp(0, weight = 1f).apply { leftMargin = dp(10) })
+            // The filler as tall as the button: a wrap-content child would make LinearLayout measure the row
+            // without its match-parent button (height 0).
+            if (row.size == 1) line.addView(View(this), lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { leftMargin = dp(10) })
             sourcesBox.addView(line, lp().apply { bottomMargin = dp(10) })
         }
         if (settings.servers().isEmpty()) sourcesBox.addView(chipRow(chip("Add a server for the terminal", false) { selectTab(2) }))
