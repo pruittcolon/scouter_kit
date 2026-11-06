@@ -35,16 +35,15 @@ class PairingActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 32, 32, 32) }
-        list.addView(TextView(this).apply {
-            text = "Put the glasses in the charging case and open it: the arms pair only there. The phone takes " +
-                "one of each arm's 3 bond slots (the oldest is replaced), and while it holds the arms, other " +
-                "hosts cannot connect."
-        })
-        state = TextView(this)
+        val page = page()
+        page.addView(header("Pair glasses", "Glasses in the open case, case on USB"))
+        list = card()
+        list.addView(text("The arms pair only in the open case. The phone takes one of each arm's 3 bond slots (the " +
+            "oldest is replaced); while it holds the arms, other hosts cannot connect.", 13.5f, Ui.MUTED))
+        state = text("", 14.5f, Ui.ACCENT, Ui.BOLD).apply { setPadding(0, dp(10), 0, dp(4)) }
         list.addView(state)
-        list.addView(Button(this).apply { text = "Scan for 15 s"; setOnClickListener { scan() } })
-        setContentView(ScrollView(this).apply { addView(list) })
+        list.addView(button("Scan for 15 s", PRIMARY) { scan() })
+        page.addView(list)
         requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT), 1)
     }
 
@@ -85,18 +84,19 @@ class PairingActivity : Activity() {
         for ((id, arms) in pairs) {
             val left = arms[true]
             val right = arms[false]
-            list.addView(Button(this).apply {
-                text = "Glasses $id: ${if (left != null) "left" else "no left"}, ${if (right != null) "right" else "no right"}"
-                isEnabled = left != null && right != null
-                setOnClickListener {
-                    val settings = Settings(this@PairingActivity)
-                    settings.left = left!!.address
-                    settings.right = right!!.address
-                    settings.glassesAllowed = true
-                    isEnabled = false
-                    bond(listOf(left, right))
-                }
-            })
+            val ok = left != null && right != null
+            val pick = button("Glasses $id: ${if (left != null) "left" else "no left"}, ${if (right != null) "right" else "no right"}",
+                if (ok) PRIMARY else PLAIN) {}
+            pick.isEnabled = ok
+            pick.setOnClickListener {
+                val settings = Settings(this@PairingActivity)
+                settings.left = left!!.address
+                settings.right = right!!.address
+                settings.glassesAllowed = true
+                pick.isEnabled = false
+                bond(listOf(left, right))
+            }
+            list.addView(pick)
         }
     }
 

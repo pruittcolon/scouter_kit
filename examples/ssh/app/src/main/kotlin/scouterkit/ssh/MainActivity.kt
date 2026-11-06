@@ -1,24 +1,33 @@
 package scouterkit.ssh
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
 import android.view.KeyEvent
+import android.view.View
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.Switch
 import android.widget.TextView
 import java.io.File
 
 private const val SCREEN_REQUEST = 7 // the screen-sharing consent
 
-// The mirror while the app is in the foreground (no keys from the phone: they come from keyer), the session's
-// state, Settings, and the phone's own controls: the terminal (Termux on this phone, or any server) or this
-// phone's screen on the glasses until Stop, with no keyer needed.
+// The home screen: what the glasses show and why, the three modes (the terminal, the phone's screen, the display
+// off), quick controls, and the terminal as the glasses get it. Settings holds the rest. The session runs
+// until Stop, with no keyer needed (keyer and keyboard mode still work as before).
 class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var terminal: TerminalView
+    private lateinit var headline: TextView
+    private lateinit var detail: TextView
+    private lateinit var pills: LinearLayout
+    private lateinit var termTile: Tile
+    private lateinit var screenTile: Tile
+    private lateinit var offTile: Tile
+    private lateinit var stopSharing: View
+    private lateinit var batterySwitch: Switch
+    private lateinit var forceSwitch: Switch
     private val listener: () -> Unit = { show() }
     private var asked: String? = null
     private val associating = mutableSetOf<String>() // devices asked for while this screen lives
@@ -26,28 +35,65 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        status = TextView(this).apply { setPadding(16, 8, 16, 8) }
-        terminal = TerminalView(this)
-        list.addView(status)
-        list.addView(terminal, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        if (BuildConfig.FLAVOR == "emulated") list.addView(PanelView(this))
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        fun control(label: String, action: () -> Unit) = row.addView(Button(this).apply {
-            text = label
-            isAllCaps = false
-            setOnClickListener { action() }
-        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        control("Terminal on glasses") { startTerminal() }
-        control("Phone screen on glasses") { shareScreen() }
-        control("Stop") { ScouterService.send(this, ScouterService.ACTION_STOP) }
-        list.addView(row)
-        list.addView(Button(this).apply {
-            text = "Settings"
-            isAllCaps = false
-            setOnClickListener { startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) }
+        val settings = Settings(this)
+        val page = page()
+        page.addView(header("Scouter", "G1 glasses · runs on this phone", "Settings") {
+            startActivity(Intent(this, SettingsActivity::class.java))
         })
-        setContentView(list)
+
+        val hero = card()
+        headline = text("", 23f, Ui.TEXT, Ui.BLACK).apply { letterSpacing = -0.01f }
+        detail = text("", 13.5f, Ui.MUTED).apply { setPadding(0, dp(4), 0, dp(10)) }
+        pills = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        hero.addView(headline)
+        hero.addView(detail)
+        hero.addView(android.widget.HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(pills)
+        })
+        page.addView(hero)
+
+        val tiles = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        termTile = Tile(this, "Terminal", "Claude on the glasses") { startTerminal() }
+        screenTile = Tile(this, "Phone screen", "Share the entire screen") { phoneScreen() }
+        offTile = Tile(this, "Display off", "Dark, link kept") { toggleDisplay() }
+        for ((i, t) in listOf(termTile, screenTile, offTile).withIndex())
+            tiles.addView(t, lp(0, weight = 1f).apply { if (i > 0) leftMargin = dp(10) })
+        page.addView(tiles, lp().apply { bottomMargin = dp(14) })
+
+        val quick = card("Quick controls")
+        quick.addView(slider("Brightness", 0, 42, settings.brightness, { "${it * 100 / 42}%" }) { v ->
+            settings.brightness = v
+            Thread { Native.brightness(v) }.start()
+        })
+        batterySwitch = toggle("Battery icons", "Each eye's battery level beside the terminal", settings.battery) {
+            settings.battery = it
+            Thread { Native.setBattery(it) }.start()
+        }
+        quick.addToggle(batterySwitch)
+        forceSwitch = toggle("Always visible", "Off: the terminal shows only when you look up", settings.phoneForce) {
+            settings.phoneForce = it
+            if (ScouterService.running) ScouterService.send(this)
+        }
+        quick.addToggle(forceSwitch)
+        quick.addToggle(toggle("Dark while the phone is locked", "With the phone's screen on the glasses", settings.offWhenLocked) {
+            settings.offWhenLocked = it
+        })
+        stopSharing = button("Stop sharing the phone's screen") { ScouterService.send(this, ScouterService.ACTION_STOP_SHARING) }
+        quick.addView(stopSharing)
+        quick.addView(button("Stop everything", DANGER) {
+            note = null
+            ScouterService.send(this, ScouterService.ACTION_STOP)
+        })
+        page.addView(quick)
+
+        val preview = card("Terminal", "What the glasses get in terminal view")
+        terminal = TerminalView(this)
+        preview.addView(clipFrame(terminal, 320))
+        page.addView(preview)
+        if (BuildConfig.FLAVOR == "emulated") page.addView(PanelView(this))
+        status = text("", 11.5f, Ui.FAINT, Ui.MONO).apply { setPadding(dp(4), dp(4), dp(4), 0) }
+        page.addView(status)
         handle(intent)
     }
 
@@ -184,20 +230,41 @@ class MainActivity : Activity() {
     private fun startTerminal() {
         ready()?.let { note = it; return show() }
         val settings = Settings(this)
-        note = if (settings.host.isEmpty()) "no server yet: Settings, Termux on this phone, Set up" else null
+        note = if (settings.host.isEmpty()) "No server yet: Settings, Terminal server, \"Claude on this phone\"." else null
         settings.glassesAllowed = true
         ScouterService.send(this, ScouterService.ACTION_TERMINAL)
         show()
     }
 
-    // Android asks which screen to share; the service gets the answer.
+    // Android asks to share the entire screen (Android 14+: no single-app choice); the service gets the answer.
     @Suppress("DEPRECATION")
     private fun shareScreen() {
         ready()?.let { note = it; return show() }
         Settings(this).glassesAllowed = true
         note = null
-        startActivityForResult(getSystemService(android.media.projection.MediaProjectionManager::class.java)
-            .createScreenCaptureIntent(), SCREEN_REQUEST)
+        val projection = getSystemService(android.media.projection.MediaProjectionManager::class.java)
+        val ask = if (android.os.Build.VERSION.SDK_INT >= 34)
+            projection.createScreenCaptureIntent(android.media.projection.MediaProjectionConfig.createConfigForDefaultDisplay())
+        else projection.createScreenCaptureIntent()
+        startActivityForResult(ask, SCREEN_REQUEST)
+    }
+
+    // The phone's screen: at once while it is shared, else Android asks first.
+    private fun phoneScreen() {
+        if (Session.capturing && ScouterService.running) {
+            note = null
+            ScouterService.send(this, ScouterService.ACTION_VIEW_SCREEN)
+        } else shareScreen()
+    }
+
+    // The display off / on, while a session runs.
+    private fun toggleDisplay() {
+        if (!ScouterService.running || Session.showing.isEmpty()) {
+            note = "start Terminal or Phone screen first"
+            return show()
+        }
+        note = null
+        ScouterService.send(this, ScouterService.ACTION_DISPLAY)
     }
 
     private var note: String? = null // the last control's problem
@@ -207,25 +274,77 @@ class MainActivity : Activity() {
     private fun exempt() = getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
 
     private fun show() {
+        val settings = Settings(this)
+        val running = ScouterService.running && Session.showing.isNotEmpty()
+        headline.text = when {
+            !running -> "Ready when you are"
+            Session.blank -> "Display off"
+            Session.showing == Settings.SCREEN -> "Phone screen on the glasses"
+            else -> "Terminal on the glasses"
+        }
         val permitted = ScouterService.missing(this).isEmpty()
-        status.text = (if (permitted) "" else "allow Bluetooth and notifications in Settings · ") +
-            (if (!permitted || ScouterService.bluetoothOn(this)) "" else "Bluetooth is off: the app waits for it · ") +
-            (if (exempt()) "" else "battery optimised: in Doze, keys wait for its windows · ") +
+        val lines = mutableListOf<String>()
+        if (!permitted) lines += "Allow Bluetooth and notifications in Settings."
+        else if (!ScouterService.bluetoothOn(this)) lines += "Bluetooth is off: the app waits for it."
+        if (settings.left.isEmpty() || settings.right.isEmpty()) lines += "Pair the glasses in Settings, Glasses."
+        else if (running) lines += when (Session.glasses) {
+            "ready" -> "Glasses connected" + (if (Session.left && Session.right) "" else " (one arm down)")
+            "connecting" -> "Connecting to the glasses…"
+            else -> "Glasses: ${Session.glasses}"
+        }
+        if (running && Session.showing == Settings.TERMINAL) lines += "Terminal: " + Session.mosh.replaceFirstChar { it.uppercase() }
+        if (Session.capturing || Session.screen.startsWith("stopped") || Session.screen.startsWith("error"))
+            lines += "Phone screen: ${Session.screen}"
+        if (Session.blank) lines += "Turn it back on here, in the notification, or with your TouchBar gesture."
+        if (Session.gesture.isNotEmpty()) lines += "Last gesture: ${Session.gesture}"
+        note?.let { lines += it }
+        detail.text = lines.joinToString("\n").ifEmpty { "Pick Terminal or Phone screen to start." }
+
+        pills.removeAllViews()
+        fun pill(label: String, dot: Int) = pills.addView(statusPill(label, dot), lp(android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
+            .apply { rightMargin = dp(8) })
+        val b = Session.battery
+        for (arm in 0..1) {
+            val name = if (arm == 0) "Left" else "Right"
+            val up = if (arm == 0) Session.left else Session.right
+            val pct = b.getOrElse(arm) { -1 }
+            val label = if (pct >= 0) "$name $pct%" + (if (b.getOrElse(arm + 2) { 0 } == 1) " ⚡" else "") else name
+            pill(label, when {
+                !running || !up -> Ui.FAINT
+                pct in 0..15 -> Ui.BAD
+                pct in 16..35 -> Ui.WARN
+                else -> Ui.GOOD
+            })
+        }
+        pill("SSH", when {
+            Session.mosh == "connected" -> Ui.GOOD
+            Session.mosh.startsWith("error") || Session.mosh.startsWith("no contact") -> Ui.BAD
+            Session.mosh == "off" -> Ui.FAINT
+            else -> Ui.WARN
+        })
+        pill(if (Session.capturing) "Sharing" else "Not sharing", if (Session.capturing) Ui.ACCENT else Ui.FAINT)
+
+        termTile.select(running && !Session.blank && Session.showing == Settings.TERMINAL)
+        screenTile.select(running && !Session.blank && Session.showing == Settings.SCREEN,
+            if (Session.capturing) "Shared · tap to show" else "Share the entire screen")
+        offTile.select(Session.blank, if (Session.blank) "Tap to turn on" else "Dark, link kept")
+        stopSharing.visibility = if (Session.capturing) View.VISIBLE else View.GONE
+        if (batterySwitch.isChecked != settings.battery) batterySwitch.isChecked = settings.battery
+        if (forceSwitch.isChecked != settings.phoneForce) forceSwitch.isChecked = settings.phoneForce
+
+        status.text = (if (exempt()) "" else "battery optimised · ") +
             "glasses ${Session.glasses} (L ${Session.left} R ${Session.right}" + (if (Session.shown) ", shown" else "") +
-            ") · " + (if (Session.screen != "off") "screen ${Session.screen} (${Session.screenFrames} frames) · " else "") +
-            "mosh ${Session.mosh} · keyer ${Session.keyer}" + (companion?.let { " · companion: $it" } ?: "") +
-            (if (Session.termux.isNotEmpty()) " · Termux ${Session.termux}" else "") +
-            (if (Settings(this).phone) " · started from the phone (Stop ends it)" else "") +
-            (note?.let { "\n$it" } ?: "")
+            ") · screen ${Session.screen} (${Session.screenFrames} frames) · mosh ${Session.mosh} · keyer ${Session.keyer}" +
+            (companion?.let { " · companion: $it" } ?: "") + (if (Session.termux.isNotEmpty()) " · Termux ${Session.termux}" else "")
         Native.snapshot()?.let { terminal.screen = TerminalView.parse(it) }
         title = terminal.screen?.title?.ifEmpty { null } ?: getString(R.string.app_name)
         val fingerprint = Session.unknownHost
         if (fingerprint != null && fingerprint != asked) {
             asked = fingerprint
-            AlertDialog.Builder(this)
+            dialog()
                 .setTitle("Trust this server?")
                 .setCancelable(false) // Trust or Cancel, not a stray touch
-                .setMessage("${Settings(this).host}\n$fingerprint")
+                .setMessage("${settings.host}\n$fingerprint")
                 .setPositiveButton("Trust") { _, _ -> ScouterService.send(this, ScouterService.ACTION_TRUST, "fingerprint" to fingerprint) }
                 .setNegativeButton("Cancel", null)
                 .show()

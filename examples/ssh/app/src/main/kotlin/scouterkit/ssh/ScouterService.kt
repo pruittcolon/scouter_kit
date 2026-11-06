@@ -39,6 +39,11 @@ object Session {
     @Volatile var termux = "" // Termux's setup, as its last run reported it
     @Volatile var screen = "off" // the phone's screen on the glasses: off, starting, on, hidden, or why it stopped
     @Volatile var screenFrames = 0
+    @Volatile var capturing = false // Android's screen sharing runs (the phone's screen can show without asking)
+    @Volatile var showing = "" // what the glasses show now: Settings.TERMINAL or SCREEN ("" no session)
+    @Volatile var blank = false // the display is off (nothing shows; the TouchBar still works)
+    @Volatile var battery: IntArray = intArrayOf(-1, -1, -1, -1) // left %, right %, left charging, right charging
+    @Volatile var gesture = "" // the last TouchBar gesture and what it did
     // The devices Android reports near (ScouterCompanionService: keyer); null: unknown (none reported since the
     // process started, Bluetooth was off since, or keyer's link did not come after the last report).
     @Volatile var near: Set<String>? = null
@@ -77,10 +82,41 @@ class ScouterService : Service() {
     private val screenTicker = object : Runnable {
         override fun run() {
             val s = screen ?: return
-            val state = if (s.state == Native.SCREEN_HIDDEN) "hidden (in the case or folded)" else "on"
+            val state = when {
+                settings.show != Settings.SCREEN -> "shared (the glasses show the terminal)"
+                s.state == Native.SCREEN_HIDDEN -> "off: ${Native.screenWhy().ifEmpty { "hidden" }}"
+                else -> "on"
+            }
             Session.screenFrames = Native.status().getOrElse(7) { 0 }
             if (state != Session.screen) update(screen = state) else Session.changed()
             work.postDelayed(this, 2000)
+        }
+    }
+    private var blankByLock = false // the display went off because the phone locked
+    // Each arm's battery, every 30 s while the glasses are up.
+    private val batteryTicker = object : Runnable {
+        override fun run() {
+            if (Session.glasses == "ready") {
+                Session.battery = Native.battery()
+                Session.changed()
+            }
+            work.postDelayed(this, 30000)
+        }
+    }
+    // The phone locked (its screen off): with the phone's screen on the glasses there is nothing new to show.
+    private val lock = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, intent: Intent) {
+            when (intent.action) {
+                Intent.ACTION_SCREEN_OFF -> work.post {
+                    if (settings.offWhenLocked && settings.show == Settings.SCREEN && !Session.blank) {
+                        blankByLock = true
+                        display(false, "phone locked")
+                    }
+                }
+                Intent.ACTION_SCREEN_ON -> work.post {
+                    if (blankByLock) display(true, "phone on")
+                }
+            }
         }
     }
     private val retryGlasses = Runnable { refresh() }
@@ -134,7 +170,10 @@ class ScouterService : Service() {
         settings = Settings(this)
         vault = Vault(this)
         Native.onChanged = { work.post { poll() } }
+        Native.onGesture = { a, g -> work.post { gesture(a, g) } }
         work.postDelayed(watchdog, 60000)
+        work.postDelayed(batteryTicker, 5000)
+        registerReceiver(lock, IntentFilter(Intent.ACTION_SCREEN_OFF).apply { addAction(Intent.ACTION_SCREEN_ON) })
         getSystemService(android.net.ConnectivityManager::class.java).registerDefaultNetworkCallback(network)
         registerReceiver(bonds, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
         registerReceiver(adapterState, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
@@ -165,13 +204,23 @@ class ScouterService : Service() {
             }
             // From the phone: the glasses show this phone's screen (Android's consent in the intent)...
             ACTION_SCREEN -> startScreen(intent)
-            // ... or the terminal.
+            // ... or the terminal (screen sharing goes on, so the phone's screen can come back without asking)...
             ACTION_TERMINAL -> work.post {
                 settings.phone = true
-                if (screen != null) screenEnded("off") else {
-                    settings.show = Settings.TERMINAL
-                    refresh()
-                }
+                view(Settings.TERMINAL)
+            }
+            // ... or the phone's screen again, while it is shared.
+            ACTION_VIEW_SCREEN -> work.post {
+                settings.phone = true
+                view(Settings.SCREEN)
+            }
+            ACTION_STOP_SHARING -> work.post { screenEnded("off") }
+            // The display off / on (the notification, the Quick Settings tile, the app): extra "on" true/false,
+            // absent: the other way.
+            ACTION_DISPLAY -> work.post {
+                val on = if (intent.hasExtra(EXTRA_ON)) intent.getBooleanExtra(EXTRA_ON, true) else Session.blank
+                blankByLock = false
+                display(on, "app")
             }
             ACTION_TRUST -> work.post { trust(intent.getStringExtra("fingerprint")) }
             // Android reported keyer near (or gone): a report of near gets keyer's link 30 s to come.
@@ -205,6 +254,11 @@ class ScouterService : Service() {
         ended = true
         screen?.release()
         screen = null
+        Session.capturing = false
+        Session.showing = ""
+        Native.onGesture = null
+        work.removeCallbacks(batteryTicker)
+        runCatching { unregisterReceiver(lock) }
         runCatching { unregisterReceiver(bonds) }
         runCatching { unregisterReceiver(adapterState) }
         work.removeCallbacks(watchdog)
@@ -307,6 +361,11 @@ class ScouterService : Service() {
             Native.screenStop()
             Session.screen = "off"
         }
+        Session.capturing = false
+        Session.showing = ""
+        if (Session.blank) Native.blank(false)
+        Session.blank = false
+        blankByLock = false
         pauseMosh()
         stopGlasses(true, stopped?.let { "stopped: $it (pair again in the case)" } ?: "off")
         if (stopped == null) stopForeground(STOP_FOREGROUND_REMOVE)
@@ -318,7 +377,7 @@ class ScouterService : Service() {
     }
 
     private fun glassesSettings() = listOf(settings.glassesAllowed, settings.left, settings.right, settings.dx,
-        settings.dy, settings.angle, settings.brightness, settings.ignoreWorn).joinToString(" ")
+        settings.dy, settings.angle, settings.ignoreWorn).joinToString(" ") // brightness, battery: live
 
     private fun moshSettings() = listOf(settings.host, settings.port, settings.user, settings.command, settings.moshPorts).joinToString(" ")
 
@@ -339,7 +398,7 @@ class ScouterService : Service() {
             { why -> work.post { lostGlasses(why) } })
         val font = assets.open("departure_mono_nerd.skf").use { it.readBytes() }
         val error = Native.glassesStart(l, settings.left, settings.right, settings.dx, settings.dy, settings.brightness,
-            settings.angle, font, BuildConfig.DEBUG && settings.ignoreWorn)
+            settings.angle, font, BuildConfig.DEBUG && settings.ignoreWorn, settings.battery)
         if (error != null || l?.lost != null) {
             Native.glassesStop(false)
             l?.quit()
@@ -352,6 +411,8 @@ class ScouterService : Service() {
         glassesWith = glassesSettings()
         if (emulated) Session.left = true.also { Session.right = true }
         update(glasses = "ready")
+        work.removeCallbacks(batteryTicker)
+        work.postDelayed(batteryTicker, 3000)
     }
 
     // An arm's bond is gone, or its encryption failed: no reconnect and no pairing (Android would pair again by
@@ -505,6 +566,9 @@ class ScouterService : Service() {
         mosh?.let { Session.mosh = it }
         keyer?.let { Session.keyer = it }
         screen?.let { Session.screen = it }
+        Session.capturing = this.screen != null
+        Session.showing = if (ended || !active()) "" else settings.show
+        GlassesTile.refresh(this)
         // R4: awake only while the terminal is live, shown on an eye or typed into with keyer, or started from
         // the phone (Claude's output reaches the glasses with the phone's screen off).
         val live = Session.mosh == "connected" && Session.glasses == "ready" &&
@@ -578,6 +642,45 @@ class ScouterService : Service() {
         }
     }
 
+    // What the glasses show: the terminal, or the phone's screen (only while it is shared).
+    private fun view(show: String) {
+        if (show == Settings.SCREEN && screen == null) return update(screen = "not shared: tap Phone screen in the app")
+        settings.show = show
+        if (show == Settings.SCREEN) Native.screenStart()?.let { update(screen = "error: $it") } else Native.screenStop()
+        if (blankByLock) blankByLock = false
+        update()
+        refresh()
+    }
+
+    // The display on or off; why: for the status line.
+    private fun display(on: Boolean, why: String) {
+        if (!on == Session.blank) return
+        Session.blank = !on
+        if (on) blankByLock = false
+        Native.blank(!on)
+        Log.i(TAG, "display ${if (on) "on" else "off"} ($why)")
+        update()
+    }
+
+    // A TouchBar gesture: what Settings says it does.
+    private fun gesture(arm: Int, gesture: Int) {
+        val action = settings.gestureAction(arm, gesture)
+        val name = (if (arm == 0) "left " else "right ") + (Settings.GESTURES.firstOrNull { it.first == gesture }?.second ?: "gesture $gesture")
+        Session.gesture = "$name: ${Settings.ACTIONS[action] ?: action}"
+        when (action) {
+            Settings.ACTION_DISPLAY -> {
+                blankByLock = false
+                display(Session.blank, name)
+            }
+            Settings.ACTION_VIEW -> if (screen != null) view(if (settings.show == Settings.SCREEN) Settings.TERMINAL else Settings.SCREEN)
+            Settings.ACTION_STOP -> {
+                settings.phone = false
+                end()
+            }
+        }
+        Session.changed()
+    }
+
     // Screen sharing over (Stop, the user in Android's status bar, or an error): back to the terminal.
     private fun screenEnded(why: String) {
         val capture = screen ?: return
@@ -608,8 +711,15 @@ class ScouterService : Service() {
             .setContentIntent(open)
             .setOngoing(ongoing)
             .apply {
-                if (ongoing) addAction(Notification.Action.Builder(null, "Stop", PendingIntent.getForegroundService(this@ScouterService,
-                    1, Intent(this@ScouterService, ScouterService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE)).build())
+                if (!ongoing) return@apply
+                fun action(code: Int, label: String, intent: Intent) = addAction(Notification.Action.Builder(null, label,
+                    PendingIntent.getForegroundService(this@ScouterService, code, intent,
+                        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)).build())
+                fun to(action: String) = Intent(this@ScouterService, ScouterService::class.java).setAction(action)
+                action(2, if (Session.blank) "Display on" else "Display off", to(ACTION_DISPLAY))
+                if (screen != null) action(3, if (settings.show == Settings.SCREEN) "Terminal" else "Phone screen",
+                    to(if (settings.show == Settings.SCREEN) ACTION_TERMINAL else ACTION_VIEW_SCREEN))
+                action(1, "Stop", to(ACTION_STOP))
             }
             .build()
     }
@@ -623,6 +733,10 @@ class ScouterService : Service() {
         const val ACTION_NEAR = "scouterkit.ssh.NEAR" // keyer came or went (Session.near)
         const val ACTION_SCREEN = "scouterkit.ssh.SCREEN" // the phone's screen on the glasses (EXTRA_CODE, EXTRA_DATA)
         const val ACTION_TERMINAL = "scouterkit.ssh.TERMINAL" // the terminal on the glasses, started from the phone
+        const val ACTION_VIEW_SCREEN = "scouterkit.ssh.VIEW_SCREEN" // the phone's screen again, while it is shared
+        const val ACTION_STOP_SHARING = "scouterkit.ssh.STOP_SHARING" // screen sharing ends
+        const val ACTION_DISPLAY = "scouterkit.ssh.DISPLAY" // the display on / off (EXTRA_ON, else the other way)
+        const val EXTRA_ON = "on"
         const val EXTRA_CODE = "code"
         const val EXTRA_DATA = "data"
         const val PROBE_MS = 30000L // how long keyer's link is tried without it coming up

@@ -124,7 +124,12 @@ int ScreenMirror::frames() {
   return frames_;
 }
 
-bool ScreenMirror::Hidden(bool ignore_worn) {
+std::string ScreenMirror::why() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return hidden_ ? why_ : std::string();
+}
+
+bool ScreenMirror::Hidden(const ScreenOptions &o) {
   int64_t now = g1::NowUs();
   if (props_us_ && now - props_us_ < 1000000) return props_hidden_;
   props_us_ = now;
@@ -143,7 +148,9 @@ bool ScreenMirror::Hidden(bool ignore_worn) {
     }
   }
   // In the case a lit panel disturbs charging; folded nobody looks.
-  props_hidden_ = in_case || (!ignore_worn && known && folded);
+  bool by_case = o.hide_case && in_case, by_fold = o.hide_folded && known && folded;
+  why_ = by_case ? "in the case" : by_fold ? "folded" : "";
+  props_hidden_ = by_case || by_fold;
   return props_hidden_;
 }
 
@@ -151,7 +158,7 @@ int ScreenMirror::Frame(const uint8_t *rgba, int w, int h, int stride, const Scr
   std::lock_guard<std::mutex> lock(mutex_);
   if (!started_ || !pic_) return kStopped;
   if (w <= 0 || h <= 0 || stride < w * 4) return kSame;
-  bool hide = Hidden(o.ignore_worn);
+  bool hide = Hidden(o);
   if (hide != hidden_) {
     hidden_ = hide;
     if (hide) {

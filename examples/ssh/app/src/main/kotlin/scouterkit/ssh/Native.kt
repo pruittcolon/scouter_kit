@@ -8,6 +8,8 @@ object Native {
     const val ERROR_FIRMWARE = 4
 
     @Volatile var onChanged: (() -> Unit)? = null
+    // A TouchBar gesture: arm 0 left, 1 right; GESTURE_*.
+    @Volatile var onGesture: ((Int, Int) -> Unit)? = null
 
     init {
         System.loadLibrary("scouter_ssh")
@@ -17,9 +19,10 @@ object Native {
 
     // Blocks until both arms are ready (at most 30 s), then starts the terminal on them; null link: the
     // emulated arms. `font`: departure_mono_nerd.skf. Returns an error or null.
-    // ignoreWorn (debug): the terminal also shows with the glasses folded.
+    // ignoreWorn (debug): the terminal also shows with the glasses folded. battery: each eye's battery band.
     @JvmStatic external fun glassesStart(link: GlassesLink?, left: String, right: String, dx: Int, dy: Int,
-                                         brightness: Int, angle: Int, font: ByteArray, ignoreWorn: Boolean): String?
+                                         brightness: Int, angle: Int, font: ByteArray, ignoreWorn: Boolean,
+                                         battery: Boolean): String?
     // keep: the terminal's program and its last screen stay on the arms, which show them when the head looks
     // up (keyer off); otherwise the programs stop.
     @JvmStatic external fun glassesStop(keep: Boolean)
@@ -58,14 +61,35 @@ object Native {
     // One captured frame: a direct buffer of RGBA_8888 rows `stride` bytes apart. Blocks while the previous
     // frame is not on the display yet. One of SCREEN_*.
     @JvmStatic external fun screenFrame(buffer: java.nio.ByteBuffer, width: Int, height: Int, stride: Int, band: Boolean,
-                                        bandPos: Int, invert: Boolean, levels: Int): Int
+                                        bandPos: Int, invert: Boolean, levels: Int, hideCase: Boolean,
+                                        hideFolded: Boolean): Int
+    // Why the mirror keeps the panels off ("in the case", "folded"), or "".
+    @JvmStatic external fun screenWhy(): String
+    // Each eye's battery band beside the terminal, at once.
+    @JvmStatic external fun setBattery(on: Boolean)
+    // Both arms' brightness (0 ... 42), at once.
+    @JvmStatic external fun brightness(level: Int)
+    // The display off (nothing shows; the TouchBar still reports) or on again.
+    @JvmStatic external fun blank(on: Boolean)
+    // Left %, right %, left charging, right charging (-1 unknown); blocks while the arms answer.
+    @JvmStatic external fun battery(): IntArray
     const val SCREEN_SHOWN = 0
     const val SCREEN_SAME = 1
     const val SCREEN_HIDDEN = 2 // in the case or folded: the panels are off
     const val SCREEN_STOPPED = 3
+    // TOUCH_GESTURE (VM.md §6.7).
+    const val GESTURE_TAP = 1
+    const val GESTURE_DOUBLE = 2
+    const val GESTURE_TRIPLE = 3
+    const val GESTURE_HOLD = 4 // a press held 458 ms
 
     // From the native threads: a new screen or status.
     @JvmStatic fun changed() {
         onChanged?.invoke()
+    }
+
+    // From the native threads: a TouchBar gesture.
+    @JvmStatic fun gesture(arm: Int, gesture: Int) {
+        onGesture?.invoke(arm, gesture)
     }
 }

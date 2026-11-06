@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <thread>
 #include <clocale>
 #include <cstdint>
 #include <cstring>
@@ -22,6 +24,7 @@ namespace {
 JavaVM *g_vm = nullptr;
 jclass g_native = nullptr; // scouterkit.ssh.Native
 jmethodID g_changed = nullptr;
+jmethodID g_gesture = nullptr; // Native.gesture(arm, gesture)
 // Lock order: g_glasses_mutex, g_mutex, g_term_mutex, g_screen_mutex.
 std::mutex g_glasses_mutex; // guards the glasses' objects (Init holds it up to 30 s)
 std::mutex g_link_mutex; // guards g_transport for the link callbacks
@@ -41,6 +44,11 @@ bool g_force = false;
 std::mutex g_screen_mutex; // guards g_screen and g_screen_wanted
 std::shared_ptr<ssh::ScreenMirror> g_screen;
 bool g_screen_wanted = false;
+// Guarded by g_glasses_mutex: the display off (nothing shows, the panels are off), each eye's battery band
+// beside the terminal, and whether Apply switched the panels off.
+bool g_blank = false;
+bool g_battery = true;
+bool g_panels_off = false;
 
 // The JNIEnv of a native thread, attached on first use and detached when the
 // thread ends.
@@ -70,6 +78,44 @@ template <typename T> void Put(std::string &out, T v) { out.append(reinterpret_c
 
 void Changed() { Env()->CallStaticVoidMethod(g_native, g_changed); }
 
+// A TouchBar gesture to the app (Native.gesture), from any native thread.
+void Gesture(int arm, uint32_t gesture) { Env()->CallStaticVoidMethod(g_native, g_gesture, jint(arm), jint(gesture)); }
+
+// The arms' events while the terminal does not run (the phone's screen, the display off), for the TouchBar's
+// gestures; while it runs, its own threads read them (one reader at a time).
+class InputPump {
+public:
+  void Start() {
+    if (thread_.joinable()) return;
+    stop_ = false;
+    thread_ = std::thread([this] { Run(); });
+  }
+  void Stop() {
+    stop_ = true;
+    if (thread_.joinable()) thread_.join();
+  }
+
+private:
+  void Run() {
+    while (!stop_) {
+      bool any = false;
+      for (int arm = 0; arm < 2; arm++) {
+        scouter_kit::g1::Arm &a = arm == 0 ? scouter_kit::g1::left : scouter_kit::g1::right;
+        if (!a.GetState().present) continue;
+        scouter_kit::g1::Event e;
+        while (!stop_ && a.NextEvent(&e, 0)) {
+          any = true;
+          if (e.type == scouter_kit::g1::EVENT_INPUT && e.trigger == scouter_kit::g1::TRIGGER_TOUCH) Gesture(arm, e.a);
+        }
+      }
+      if (!any) std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    }
+  }
+  std::atomic<bool> stop_{false};
+  std::thread thread_;
+};
+InputPump g_pump;
+
 std::shared_ptr<ssh::AndroidTransport> Link() {
   std::lock_guard<std::mutex> lock(g_link_mutex);
   return g_transport;
@@ -84,7 +130,14 @@ void SetLink(std::shared_ptr<ssh::AndroidTransport> t) {
 std::string StartTerminal() {
   auto term = std::make_shared<ssh::GlassesTerminal>();
   std::string error;
-  if (!term->Start({g_config.dx, g_config.dy, g_angle, g_ignore_worn}, g_font, Changed, &error)) return error;
+  ssh::GlassesTerminal::Config config;
+  config.dx = g_config.dx;
+  config.dy = g_config.dy;
+  config.angle = g_angle;
+  config.ignore_worn = g_ignore_worn;
+  config.battery = g_battery;
+  config.on_touch = [](int arm, uint32_t gesture) { Gesture(arm, gesture); };
+  if (!term->Start(config, g_font, Changed, &error)) return error;
   std::shared_ptr<const ssh::Snapshot> s;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -111,20 +164,16 @@ bool ScreenWanted() {
   return g_screen_wanted;
 }
 
-// The phone's screen instead of the terminal (g_glasses_mutex held, the glasses started). On an error the
-// terminal comes back.
+void Panels(bool on) {
+  for (scouter_kit::g1::Arm *a : {&scouter_kit::g1::left, &scouter_kit::g1::right})
+    if (a->GetState().connected) a->SetPanel(on);
+}
+
+// The mirror's object on the arms (g_glasses_mutex held, nothing else drawing).
 std::string StartScreen() {
-  {
-    std::lock_guard<std::mutex> lock(g_screen_mutex);
-    if (g_screen) return {};
-  }
-  StopTerminal(false);
   auto screen = std::make_shared<ssh::ScreenMirror>();
   std::string error;
-  if (!screen->Start(g_config.dx, &error)) {
-    StartTerminal();
-    return error;
-  }
+  if (!screen->Start(g_config.dx, &error)) return error;
   std::lock_guard<std::mutex> lock(g_screen_mutex);
   g_screen = screen;
   return {};
@@ -141,6 +190,59 @@ bool StopScreen() {
   return screen != nullptr;
 }
 
+enum class Show { kNone, kTerminal, kScreen };
+
+Show Current() {
+  {
+    std::lock_guard<std::mutex> lock(g_term_mutex);
+    if (g_term) return Show::kTerminal;
+  }
+  std::lock_guard<std::mutex> lock(g_screen_mutex);
+  return g_screen ? Show::kScreen : Show::kNone;
+}
+
+// What the glasses show, from the wishes (g_glasses_mutex held): nothing while the display is off, else the
+// phone's screen while wanted, else the terminal. A mirror that cannot start gives the terminal (and the
+// error). The input pump runs while the terminal does not.
+std::string Apply() {
+  if (!g_glasses) return {};
+  Show want = g_blank ? Show::kNone : ScreenWanted() ? Show::kScreen : Show::kTerminal;
+  Show now = Current();
+  std::string error;
+  if (now != want) {
+    if (now == Show::kTerminal) StopTerminal(false);
+    if (now == Show::kScreen) StopScreen();
+    if (want == Show::kNone) {
+      scouter_kit::gray::Clear();
+      scouter_kit::Flush();
+      Panels(false);
+      g_panels_off = true;
+    } else {
+      g_pump.Stop();
+      if (g_panels_off) Panels(true);
+      g_panels_off = false;
+      if (want == Show::kScreen) {
+        error = StartScreen();
+        if (!error.empty()) {
+          std::lock_guard<std::mutex> lock(g_screen_mutex);
+          g_screen_wanted = false;
+          want = Show::kTerminal;
+        }
+      }
+      if (want == Show::kTerminal) {
+        std::string e = StartTerminal();
+        if (error.empty()) error = e;
+      }
+    }
+  } else if (want == Show::kNone && !g_panels_off) {
+    Panels(false);
+    g_panels_off = true;
+  }
+  if (Current() == Show::kTerminal) g_pump.Stop();
+  else g_pump.Start();
+  return error;
+}
+
 } // namespace
 
 extern "C" {
@@ -153,11 +255,12 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *) {
   jclass c = env->FindClass("scouterkit/ssh/Native");
   g_native = static_cast<jclass>(env->NewGlobalRef(c));
   g_changed = env->GetStaticMethodID(c, "changed", "()V");
+  g_gesture = env->GetStaticMethodID(c, "gesture", "(II)V");
   return JNI_VERSION_1_6;
 }
 
 JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_version(JNIEnv *env, jclass) {
-  return env->NewStringUTF("scouter_ssh 0.2, mosh 1.4.0");
+  return env->NewStringUTF("scouter_ssh 0.3, mosh 1.4.0");
 }
 
 // ------------------------------------------------ glasses
@@ -165,12 +268,15 @@ JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_version(JNIEnv *env, jclass
 // Init through the link (null: the emulated arms), then the terminal. Blocks up to 30 s; an error or null.
 JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_glassesStart(JNIEnv *env, jclass, jobject link, jstring left,
                                                                    jstring right, jint dx, jint dy, jint brightness,
-                                                                   jint angle, jbyteArray font, jboolean ignore_worn) {
+                                                                   jint angle, jbyteArray font, jboolean ignore_worn,
+                                                                   jboolean battery) {
   std::lock_guard<std::mutex> lock(g_glasses_mutex);
   if (g_glasses) return env->NewStringUTF("already started");
   g_config = {Text(env, left), Text(env, right), dx, dy, brightness};
   g_angle = angle;
   g_ignore_worn = ignore_worn;
+  g_battery = battery;
+  g_panels_off = false;
   g_font.resize(size_t(env->GetArrayLength(font)));
   env->GetByteArrayRegion(font, 0, jsize(g_font.size()), reinterpret_cast<jbyte *>(g_font.data()));
   if (link) SetLink(std::make_shared<ssh::AndroidTransport>(g_vm, env->NewGlobalRef(link)));
@@ -179,12 +285,16 @@ JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_glassesStart(JNIEnv *env, j
     SetLink(nullptr);
     return env->NewStringUTF(error.c_str());
   }
+  // The TouchBar's gestures come as INPUT events (to the terminal's threads or the input pump).
+  for (scouter_kit::g1::Arm *a : {&scouter_kit::g1::left, &scouter_kit::g1::right})
+    if (a->GetState().present) a->ReportInputs(uint16_t(1u << scouter_kit::g1::TRIGGER_TOUCH));
   g_glasses = true;
-  error = ScreenWanted() ? StartScreen() : StartTerminal();
+  error = Apply();
   return error.empty() ? nullptr : env->NewStringUTF(error.c_str());
 }
 
 JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_glassesStop(JNIEnv *, jclass, jboolean keep) {
+  g_pump.Stop();
   StopScreen();
   StopTerminal(keep);
   std::lock_guard<std::mutex> lock(g_glasses_mutex);
@@ -322,12 +432,7 @@ JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_screenStart(JNIEnv *env, jc
     std::lock_guard<std::mutex> l(g_screen_mutex);
     g_screen_wanted = true;
   }
-  if (!g_glasses) return nullptr;
-  std::string error = StartScreen();
-  if (!error.empty()) {
-    std::lock_guard<std::mutex> l(g_screen_mutex);
-    g_screen_wanted = false;
-  }
+  std::string error = Apply();
   return error.empty() ? nullptr : env->NewStringUTF(error.c_str());
 }
 
@@ -338,14 +443,73 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_screenStop(JNIEnv *, jclass) {
     std::lock_guard<std::mutex> l(g_screen_mutex);
     g_screen_wanted = false;
   }
-  if (StopScreen() && g_glasses) StartTerminal();
+  Apply();
+}
+
+// The display off (nothing shows, the panels off; the TouchBar still reports) or on again.
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_blank(JNIEnv *, jclass, jboolean on) {
+  std::lock_guard<std::mutex> lock(g_glasses_mutex);
+  g_blank = on;
+  Apply();
+}
+
+// Each eye's battery band beside the terminal, at once (a running terminal starts again).
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_setBattery(JNIEnv *, jclass, jboolean on) {
+  std::lock_guard<std::mutex> lock(g_glasses_mutex);
+  if (g_battery == bool(on)) return;
+  g_battery = on;
+  if (!g_glasses || Current() != Show::kTerminal) return;
+  StopTerminal(false);
+  StartTerminal();
+}
+
+// Both arms' brightness (0 ... 42), at once.
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_brightness(JNIEnv *, jclass, jint level) {
+  std::lock_guard<std::mutex> lock(g_glasses_mutex);
+  g_config.brightness = level;
+  if (!g_glasses) return;
+  scouter_kit::g1::left.SetBrightness(level);
+  scouter_kit::g1::right.SetBrightness(level);
+}
+
+// Why the mirror keeps the panels off ("in the case", "folded"), or empty.
+JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_screenWhy(JNIEnv *env, jclass) {
+  std::shared_ptr<ssh::ScreenMirror> screen;
+  {
+    std::lock_guard<std::mutex> lock(g_screen_mutex);
+    screen = g_screen;
+  }
+  return env->NewStringUTF(screen ? screen->why().c_str() : "");
+}
+
+// Each arm's battery: left percent, right percent, left charging, right charging (-1: unknown). Blocks while
+// the arms answer.
+JNIEXPORT jintArray JNICALL Java_scouterkit_ssh_Native_battery(JNIEnv *env, jclass) {
+  jint v[4] = {-1, -1, -1, -1};
+  std::lock_guard<std::mutex> lock(g_glasses_mutex);
+  if (g_glasses) {
+    int arm = 0;
+    for (scouter_kit::g1::Arm *a : {&scouter_kit::g1::left, &scouter_kit::g1::right}) {
+      int mv = 0, pct = -1;
+      bool charging = false;
+      if (a->GetState().connected && a->Battery(&mv, &pct, &charging)) {
+        v[arm] = pct;
+        v[arm + 2] = charging ? 1 : 0;
+      }
+      arm++;
+    }
+  }
+  jintArray out = env->NewIntArray(4);
+  env->SetIntArrayRegion(out, 0, 4, v);
+  return out;
 }
 
 // One captured frame: a direct buffer of RGBA_8888 rows `stride` bytes apart (an ImageReader plane). Blocks
 // while the previous frame is not on the display yet. ScreenMirror's kShown, kSame, kHidden or kStopped.
 JNIEXPORT jint JNICALL Java_scouterkit_ssh_Native_screenFrame(JNIEnv *env, jclass, jobject buffer, jint w, jint h,
                                                                jint stride, jboolean band, jint band_pos,
-                                                               jboolean invert, jint levels) {
+                                                               jboolean invert, jint levels, jboolean hide_case,
+                                                               jboolean hide_folded) {
   std::shared_ptr<ssh::ScreenMirror> screen;
   {
     std::lock_guard<std::mutex> lock(g_screen_mutex);
@@ -361,19 +525,21 @@ JNIEXPORT jint JNICALL Java_scouterkit_ssh_Native_screenFrame(JNIEnv *env, jclas
   o.band_pos = band_pos;
   o.invert = invert;
   o.levels = levels == 2 ? 2 : 16;
-  o.ignore_worn = g_ignore_worn;
+  o.hide_case = hide_case;
+  o.hide_folded = hide_folded && !g_ignore_worn;
   return screen->Frame(p, w, h, stride, o);
 }
 
 // heard, ended, silent ms, then the arms: connected left, right, the terminal shown on an eye, and the phone's
-// screen: mirrored (1), frames shown.
+// screen: mirrored (1), frames shown; the display off (1).
 JNIEXPORT jintArray JNICALL Java_scouterkit_ssh_Native_status(JNIEnv *env, jclass) {
-  jint v[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  jint v[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
   {
     std::unique_lock<std::mutex> glasses(g_glasses_mutex, std::try_to_lock); // not while Init runs
     if (glasses.owns_lock() && g_glasses) {
       v[3] = scouter_kit::g1::left.GetState().connected;
       v[4] = scouter_kit::g1::right.GetState().connected;
+      v[8] = g_blank;
     }
   }
   {
@@ -398,8 +564,8 @@ JNIEXPORT jintArray JNICALL Java_scouterkit_ssh_Native_status(JNIEnv *env, jclas
     v[6] = 1;
     v[7] = screen->frames();
   }
-  jintArray out = env->NewIntArray(8);
-  env->SetIntArrayRegion(out, 0, 8, v);
+  jintArray out = env->NewIntArray(9);
+  env->SetIntArrayRegion(out, 0, 9, v);
   return out;
 }
 

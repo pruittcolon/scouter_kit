@@ -18,7 +18,8 @@ struct ScreenOptions {
   int band_pos = 0;     // the band's place: 0 the top of the screen ... 100 the bottom
   bool invert = true;   // light backgrounds go dark: black is see-through on the glasses
   int levels = 16;      // 16 greys, or 2 (sharper, lighter on the link)
-  bool ignore_worn = false; // debug: also shows with the glasses folded
+  bool hide_case = true;    // panels off while an arm is in the case (a lit panel disturbs charging)
+  bool hide_folded = false; // panels off while both arms say "not worn" (WORN is a guess from the arms' radio)
 };
 
 // RGBA_8888 rows (stride bytes apart) to 0..255 luma, w x h bytes.
@@ -51,11 +52,13 @@ public:
   // Returns kShown, kSame (nothing changed), kHidden (in the case or folded: the panels are off) or kStopped.
   int Frame(const uint8_t *rgba, int w, int h, int stride, const ScreenOptions &);
   int frames();
+  // Why the panels are off, or empty: "in the case" or "folded".
+  std::string why();
 
   static constexpr int kShown = 0, kSame = 1, kHidden = 2, kStopped = 3;
 
 private:
-  bool Hidden(bool ignore_worn); // reads the arms' sensors at most once a second (mutex_ held)
+  bool Hidden(const ScreenOptions &); // reads the arms' sensors at most once a second (mutex_ held)
   void Panels(bool on);
 
   std::mutex mutex_;
@@ -66,6 +69,7 @@ private:
   bool hidden_ = false;
   int64_t props_us_ = 0;
   bool props_hidden_ = false;
+  std::string why_;
   int frames_ = 0;
 };
 

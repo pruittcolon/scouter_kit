@@ -33,7 +33,7 @@
         android:allowBackup="false"
         android:icon="@drawable/icon"
         android:label="@string/app_name"
-        android:theme="@android:style/Theme.DeviceDefault">
+        android:theme="@android:style/Theme.Material.NoActionBar">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -58,6 +58,17 @@
             android:name=".ScouterService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice|mediaProjection" />
+        <!-- Quick Settings: the glasses' display off / on. -->
+        <service
+            android:name=".GlassesTile"
+            android:exported="true"
+            android:icon="@android:drawable/stat_sys_data_bluetooth"
+            android:label="Glasses"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
         <!-- Termux's answer to the setup (its RUN_COMMAND pending intent). -->
         <receiver
             android:name=".TermuxResult"

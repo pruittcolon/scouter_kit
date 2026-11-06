@@ -47,6 +47,30 @@ class Settings(context: Context) {
         set(v) = prefs.edit().putBoolean("screen_invert", v).apply()
     var screenLevels: Int by Number("screen_levels", 16)
     var screenFps: Int by Number("screen_fps", 5)
+    // The phone's screen keeps the panels off while an arm is in the case (charging), or while both arms say
+    // "not worn" (a guess from the arms' radio, so off by default).
+    var screenHideCase: Boolean
+        get() = prefs.getBoolean("screen_hide_case", true)
+        set(v) = prefs.edit().putBoolean("screen_hide_case", v).apply()
+    var screenHideFolded: Boolean
+        get() = prefs.getBoolean("screen_hide_folded", false)
+        set(v) = prefs.edit().putBoolean("screen_hide_folded", v).apply()
+    // The display goes off while the phone is locked (the phone's screen view: nothing new to show).
+    var offWhenLocked: Boolean
+        get() = prefs.getBoolean("off_when_locked", true)
+        set(v) = prefs.edit().putBoolean("off_when_locked", v).apply()
+    // Each eye's battery band beside the terminal.
+    var battery: Boolean
+        get() = prefs.getBoolean("battery", true)
+        set(v) = prefs.edit().putBoolean("battery", v).apply()
+
+    // What a TouchBar gesture does (ACTIONS): arm 0 left, 1 right; Native.GESTURE_*. Holding the right arm turns
+    // the display off and on by default.
+    fun gestureAction(arm: Int, gesture: Int): String =
+        prefs.getString("gesture_${arm}_$gesture", if (arm == 1 && gesture == Native.GESTURE_HOLD) ACTION_DISPLAY else ACTION_NONE)
+            ?: ACTION_NONE
+
+    fun setGestureAction(arm: Int, gesture: Int, action: String) = prefs.edit().putString("gesture_${arm}_$gesture", action).apply()
     // Termux's sshd host keys (SHA256:... fingerprints, space separated), as Termux itself reported them: trusted
     // without asking.
     var termuxKeys: String by Text("termux_keys", "")
@@ -72,6 +96,15 @@ class Settings(context: Context) {
     companion object {
         const val TERMINAL = "terminal"
         const val SCREEN = "screen"
+        // TouchBar actions.
+        const val ACTION_NONE = "none"
+        const val ACTION_DISPLAY = "display" // the display off / on
+        const val ACTION_VIEW = "view" // the terminal / the phone's screen (while it is shared)
+        const val ACTION_STOP = "stop" // the session ends
+        val ACTIONS = linkedMapOf(ACTION_NONE to "Nothing", ACTION_DISPLAY to "Display off / on",
+            ACTION_VIEW to "Switch terminal / phone screen", ACTION_STOP to "Stop everything")
+        val GESTURES = listOf(Native.GESTURE_HOLD to "hold", Native.GESTURE_DOUBLE to "double tap",
+            Native.GESTURE_TRIPLE to "triple tap", Native.GESTURE_TAP to "tap")
 
         // The terminal's size for dx and dy: the binocular area in 7 x 14 cells (R19).
         fun grid(dx: Int, dy: Int) = (640 - dx) / 7 to (480 - dy) / 14

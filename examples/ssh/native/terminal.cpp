@@ -680,6 +680,8 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
   blob_ = std::move(font);
   changed_ = std::move(changed);
   angle_ = config.angle;
+  battery_ = config.battery;
+  on_touch_ = config.on_touch;
   arms_ = {&g1::left, &g1::right};
   for (int i = 0; i < 2; i++) present_[i] = arms_[i]->GetState().present;
   has_ = Codepoints(blob_);
@@ -849,6 +851,10 @@ void GlassesTerminal::Restart(int arm) {
 
 void GlassesTerminal::Handle(const ArmEvent &ae) {
   const g1::Event &e = ae.e;
+  if (e.type == g1::EVENT_INPUT) {
+    if (e.trigger == g1::TRIGGER_TOUCH && on_touch_) on_touch_(ae.arm, e.a);
+    return;
+  }
   if (e.type != g1::EVENT_NOTIFY) LOG("terminal: arm %d event %d trigger %d code %d", ae.arm, e.type, e.trigger, e.code);
   if (e.type == g1::EVENT_RESET || e.type == g1::EVENT_HALT) return Restart(ae.arm);
   if (e.type != g1::EVENT_NOTIFY) return;
@@ -889,7 +895,8 @@ void GlassesTerminal::Send() {
   }
   lead += int64_t(bytes / 200 + 1) * 10000 + int64_t(f.recs.size()) * 2000;
   uint32_t cur = f.cur_slot >= 0 ? uint32_t(f.cur_slot) : kNoCursor;
-  uint32_t font = g1::AddressOf(*font_), batt_font = batt_font_ ? g1::AddressOf(*batt_font_) : 0;
+  // No battery band: the program draws none while wBattFont is 0.
+  uint32_t font = g1::AddressOf(*font_), batt_font = battery_ && batt_font_ ? g1::AddressOf(*batt_font_) : 0;
   for (int i = 0; i < 2; i++) {
     done_[i] = !present_[i];
     if (!present_[i]) continue;

@@ -97,7 +97,8 @@ class PhoneScreen(
         try {
             val plane = image.planes[0]
             state = Native.screenFrame(plane.buffer, image.width, image.height, plane.rowStride, settings.screenBand,
-                settings.screenBandPos, settings.screenInvert, settings.screenLevels)
+                settings.screenBandPos, settings.screenInvert, settings.screenLevels, settings.screenHideCase,
+                settings.screenHideFolded)
         } finally {
             image.close()
         }
