@@ -39,6 +39,11 @@ class GlassesLink(
         var mtu = 23
         var up = false
         var wanted = false
+        var writeAt = 0L      // when the write in flight went out (its callback may never come)
+        var stalls = 0        // writes without a callback in a row
+        var discoveryFails = 0 // service discoveries that failed in a row
+        var setup: Runnable? = null // the setup watchdog while connected but not up
+        var stallCheck: Runnable? = null // the write watchdog while a write is in flight
     }
 
     private val arms = arrayOf(Arm(0), Arm(1))
@@ -124,9 +129,23 @@ class GlassesLink(
 
     private fun close(a: Arm, reconnect: Boolean) {
         a.wanted = reconnect
+        a.setup?.let { handler.removeCallbacks(it) }
+        a.setup = null
+        a.stallCheck?.let { handler.removeCallbacks(it) }
+        a.stallCheck = null
+        runCatching { a.gatt?.disconnect() } // the arm learns at once (close alone leaves it to time out)
         runCatching { a.gatt?.close() }
         a.gatt = null
         down(a)
+    }
+
+    // A link that got stuck (a setup step or a write whose callback never came, a failed discovery): a fresh one,
+    // the stack waiting for the arm's advertising (autoConnect).
+    private fun reset(a: Arm, why: String) {
+        if (a.gatt == null || lost != null) return
+        Log.w(TAG, "arm ${a.index}: $why, connecting again")
+        close(a, true)
+        handler.postDelayed({ if (a.wanted && a.gatt == null) open(a, true) }, 500)
     }
 
     private fun down(a: Arm) {
@@ -150,16 +169,37 @@ class GlassesLink(
 
     private fun pump(a: Arm) {
         val gatt = a.gatt ?: return
-        if (a.writing) return
+        if (a.writing) {
+            // A write's callback that never came (it happens on some stacks): go on, and after three in a row a
+            // fresh link.
+            if (android.os.SystemClock.uptimeMillis() - a.writeAt < WRITE_STALL_MS) return
+            a.writing = false
+            if (++a.stalls >= 3) return reset(a, "writes without callbacks")
+        }
         val (channel, data) = synchronized(a) { a.queue.removeFirstOrNull() } ?: return
         val c = a.chars[channel] ?: return
         c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
         c.value = data
         a.writing = gatt.writeCharacteristic(c)
-        if (!a.writing) {
+        if (a.writing) {
+            a.writeAt = android.os.SystemClock.uptimeMillis()
+            watchWrites(a)
+        } else {
             synchronized(a) { a.queue.addFirst(channel to data) }
             handler.postDelayed({ pump(a) }, 5)
         }
+    }
+
+    // One check per arm while writes are in flight: pump() notices a write whose callback is overdue.
+    private fun watchWrites(a: Arm) {
+        if (a.stallCheck != null) return
+        val r = Runnable {
+            a.stallCheck = null
+            pump(a)
+            if (a.writing && a.gatt != null) watchWrites(a)
+        }
+        a.stallCheck = r
+        handler.postDelayed(r, WRITE_STALL_MS + 50)
     }
 
     private fun callback(a: Arm) = object : BluetoothGattCallback() {
@@ -167,9 +207,16 @@ class GlassesLink(
             Log.i(TAG, "arm ${a.index}: state $state status $status")
             if (g != a.gatt) return
             if (state == BluetoothProfile.STATE_CONNECTED) {
-                g.requestMtu(247)
+                // Setup (MTU, services, the EVT subscription) must end within SETUP_MS, else a fresh link.
+                val watch = Runnable { if (a.gatt === g && !a.up) reset(a, "setup did not finish") }
+                a.setup?.let { handler.removeCallbacks(it) }
+                a.setup = watch
+                handler.postDelayed(watch, SETUP_MS)
+                if (!g.requestMtu(247)) handler.postDelayed({ if (a.gatt === g && !a.up) g.requestMtu(247) }, 300)
                 return
             }
+            a.setup?.let { handler.removeCallbacks(it) }
+            a.setup = null
             g.close()
             a.gatt = null
             down(a)
@@ -181,17 +228,22 @@ class GlassesLink(
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
             a.mtu = mtu
             g.setPreferredPhy(BluetoothDevice.PHY_LE_2M_MASK, BluetoothDevice.PHY_LE_2M_MASK, BluetoothDevice.PHY_OPTION_NO_PREFERRED)
-            g.discoverServices()
+            if (!g.discoverServices()) handler.postDelayed({ if (a.gatt === g && !a.up) g.discoverServices() }, 300)
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             val service = g.getService(SERVICE)
             val evt = service?.getCharacteristic(EVT)
             if (service == null || evt == null) {
+                // A failed or empty discovery is mostly the stack's (a stale cache, a busy link): a fresh link, twice,
+                // before saying the firmware is wrong.
+                if (status != BluetoothGatt.GATT_SUCCESS || ++a.discoveryFails < 3)
+                    return reset(a, "service discovery failed (status $status)")
                 Log.w(TAG, "arm ${a.index}: no scouter service")
                 Native.linkProblem(Native.ERROR_FIRMWARE, "the arm does not run the scouter firmware")
                 return
             }
+            a.discoveryFails = 0
             a.chars = arrayOf(service.getCharacteristic(CMD), service.getCharacteristic(CTRL))
             g.setCharacteristicNotification(evt, true)
             val cccd = evt.getDescriptor(CCCD)
@@ -205,6 +257,9 @@ class GlassesLink(
                 if (status in SECURITY) giveUp("the ${NAMES[a.index]} arm refused encryption (status $status)")
                 return
             }
+            a.setup?.let { handler.removeCallbacks(it) }
+            a.setup = null
+            a.stalls = 0
             synchronized(a) { a.up = true }
             Native.linkFound(a.index, g.device.address)
             Native.linkUp(a.index, a.mtu)
@@ -213,6 +268,7 @@ class GlassesLink(
 
         override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
             a.writing = false
+            a.stalls = 0
             pump(a)
         }
 
@@ -231,6 +287,8 @@ class GlassesLink(
         // HCI authentication failure (also GATT insufficient authentication), PIN or key missing, MIC failure,
         // GATT insufficient encryption, Android's GATT_AUTH_FAIL.
         val SECURITY = setOf(5, 6, 0x3D, 15, 137)
+        const val SETUP_MS = 12000L // connected to subscribed, at most
+        const val WRITE_STALL_MS = 3000L // a write's callback, at most
         val SERVICE: UUID = UUID.fromString("f3da4d59-277a-4fc9-a1ed-41c9c22d4400")
         val CMD: UUID = UUID.fromString("f3da4d59-277a-4fc9-a1ed-41c9c22d4401")
         val CTRL: UUID = UUID.fromString("f3da4d59-277a-4fc9-a1ed-41c9c22d4402")

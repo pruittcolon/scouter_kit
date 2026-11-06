@@ -203,8 +203,20 @@ class ScouterService : Service() {
         registerReceiver(adapterState, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
     }
 
+    // The terminal's session again after an error: soon at first, then less often; this phone's own server needs
+    // no network.
+    private var moshTries = 0
+    private val moshRetry = Runnable { retryMosh() }
+
     private fun retryMosh() {
-        if (active() && Session.mosh.startsWith("error") && Session.unknownHost == null && online()) startMosh()
+        val local = settings.host == Termux.HOST || settings.host == "localhost"
+        if (active() && Session.mosh.startsWith("error") && Session.unknownHost == null && (local || online())) startMosh()
+    }
+
+    private fun moshFailed() {
+        work.removeCallbacks(moshRetry)
+        work.postDelayed(moshRetry, RETRY_MS[minOf(moshTries, RETRY_MS.size - 1)])
+        moshTries++
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -445,8 +457,13 @@ class ScouterService : Service() {
 
     private fun moshSettings() = listOf(settings.host, settings.port, settings.user, settings.command, settings.moshPorts).joinToString(" ")
 
+    // A start in progress (Native.glassesStart waits up to 30 s for both arms: on its own thread, so taps, voice
+    // and shortcuts never wait for it), and the starts that failed in a row (each retry waits longer).
+    private var glassesStarting = false
+    private var glassesTries = 0
+
     private fun startGlasses() {
-        if (glassesWith != null || stopped != null) return
+        if (glassesWith != null || stopped != null || glassesStarting) return
         val emulated = BuildConfig.FLAVOR == "emulated"
         if (!emulated && !settings.glassesAllowed) return update(glasses = "off in Settings")
         if (!emulated && (settings.left.isEmpty() || settings.right.isEmpty())) return update(glasses = "not paired")
@@ -465,18 +482,43 @@ class ScouterService : Service() {
         Native.terminalFade(settings.fadeMs)
         Native.terminalDash(settings.dashRows)
         Native.lookUpHeader(LookUp.lines(this, settings))
-        val error = Native.glassesStart(l, settings.left, settings.right, settings.dx, settings.dy, settings.brightness,
-            settings.angle, font, BuildConfig.DEBUG && settings.ignoreWorn, settings.battery)
-        if (error != null || l?.lost != null) {
+        val with = glassesSettings()
+        val (left, right, dx, dy) = listOf(settings.left, settings.right, settings.dx.toString(), settings.dy.toString())
+        val (brightness, angle) = settings.brightness to settings.angle
+        val (ignoreWorn, battery) = (BuildConfig.DEBUG && settings.ignoreWorn) to settings.battery
+        glassesStarting = true
+        Thread({
+            val error = runCatching {
+                Native.glassesStart(l, left, right, dx.toInt(), dy.toInt(), brightness, angle, font, ignoreWorn, battery)
+            }.getOrElse { it.message ?: "the glasses did not start" }
+            work.post { glassesStarted(l, with, error) }
+        }, "glasses-start").start()
+    }
+
+    // A start ended: the session goes on with the glasses, or (an error, or Stop / new settings meanwhile) they stop
+    // and another start follows: soon at first, then less often (RETRY_MS).
+    private fun glassesStarted(l: GlassesLink?, with: String, error: String?) {
+        glassesStarting = false
+        val stale = ended || !active() || with != glassesSettings()
+        if (error != null || l?.lost != null || stale) {
             Native.glassesStop(false)
             l?.quit()
             l?.lost?.let { return lostGlasses(it) }
-            update(glasses = error)
-            work.postDelayed(retryGlasses, 10000)
+            if (error == null) return refresh() // stale: a start with what holds now, if anything
+            val wait = RETRY_MS[minOf(glassesTries, RETRY_MS.size - 1)]
+            glassesTries++
+            Log.i(TAG, "glasses: $error; again in ${wait / 1000} s")
+            // Both arms answered: the error is not about finding them, so it shows as it is.
+            val found = Session.left && Session.right
+            update(glasses = if (found) "$error (again in ${wait / 1000} s)"
+                else "looking for the glasses (out of the case, nearby?), again in ${wait / 1000} s")
+            work.postDelayed(retryGlasses, wait)
             return
         }
+        glassesTries = 0
+        val emulated = BuildConfig.FLAVOR == "emulated"
         link = l
-        glassesWith = glassesSettings()
+        glassesWith = with
         if (emulated) Session.left = true.also { Session.right = true }
         update(glasses = "ready")
         work.removeCallbacks(batteryTicker)
@@ -537,6 +579,7 @@ class ScouterService : Service() {
                 moshSize = settings.cols to settings.rows
             }
             update(mosh = if (error == null) "connecting" else "error: $error")
+            if (error == null) moshTries = 0 else moshFailed()
         } catch (e: Bootstrap.UnknownHost) {
             // Termux's own host key, as Termux reported it at setup: trusted without asking.
             if (settings.termux && e.fingerprint in settings.termuxKeys.split(" ")) {
@@ -548,7 +591,10 @@ class ScouterService : Service() {
             update(mosh = "error: confirm the host key")
         } catch (e: Exception) {
             Log.w(TAG, "bootstrap: ${e.message}")
-            update(mosh = "error: ${e.message}")
+            val local = settings.host == Termux.HOST || settings.host == "localhost"
+            val refused = (e.message ?: "").contains("refused", ignoreCase = true)
+            update(mosh = "error: " + if (local && refused) "this phone's SSH server is off (type ssh in Termux)" else e.message)
+            moshFailed()
         }
     }
 
@@ -1183,6 +1229,8 @@ class ScouterService : Service() {
         const val ACTION_VOICE = "scouterkit.ssh.VOICE" // voice (extra "mode": listen, stop, always)
         const val ACTION_LOOK_UP = "scouterkit.ssh.LOOK_UP" // the look-up view's settings changed
         const val ACTION_POINTER = "scouterkit.ssh.POINTER" // the pointer (extra "cmd")
+        // Retries after a failure (the glasses' start, the terminal's session): soon at first, then less often.
+        val RETRY_MS = longArrayOf(3000, 5000, 8000, 12000, 20000, 30000)
         const val ACTION_TABS = "scouterkit.ssh.TABS" // a tab action (extra "tab", Tabs.command)
         const val MIC = "\uF130" // the terminal font's microphone (Nerd Fonts)
         const val EXTRA_ON = "on"

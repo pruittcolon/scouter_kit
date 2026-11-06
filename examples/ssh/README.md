@@ -62,6 +62,20 @@ it until Bluetooth is on again. The mosh session
 continues at the next keyer on while Android keeps the app's process; after that a new one starts (and ends
 the old one), so run tmux on the server (command `tmux new -A -s main`) to keep your work.
 
+## Staying connected
+
+- **Start by itself** (Settings, Glasses; on by default): with the glasses paired, the session starts when the app
+  opens, after the phone starts, after an update and when Bluetooth comes on, and runs until Stop everything.
+- **The glasses' start** (`Native.glassesStart`, up to 30 s for both arms) runs on a thread of its own; a failed
+  one is tried again after 3, 5, 8, 12, 20, then every 30 s, and one that settings or Stop made stale is dropped.
+- **Each arm's link** (`GlassesLink`): a lost link reconnects by itself (autoConnect, as the arm advertises again,
+  e.g. out of the case). Setup (MTU, services, the EVT subscription) must finish within 12 s, else a fresh link;
+  a failed discovery gets a fresh link twice before "not the scouter firmware"; a write whose callback never
+  comes is given up after 3 s (three in a row: a fresh link). A lost bond or refused encryption stops for good
+  (no pairing behind the user's back).
+- **The terminal's session** (mosh) is tried again after an error on the same schedule; this phone's own server
+  needs no network, and when its SSH server is off the app says so (type `ssh` in Termux).
+
 ## Sources and switching
 
 The main screen has tabs: **Home** (one button per source, the display, brightness, shortcuts), **Screen**
