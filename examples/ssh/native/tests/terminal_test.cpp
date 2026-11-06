@@ -101,10 +101,15 @@ int main(int argc, char **argv) {
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
   CHECK(!term.Shown() && Lit(0) == 0 && Lit(1) == 0);
 
+  uint32_t level = 0, base_level = 0;
+  CHECK(g1::left.Prop(g1::PROP_BRIGHTNESS, &base_level));
   Pitch(0, 30); // looking up
   Pitch(1, 30);
   CHECK(WaitFor([&] { return term.Shown(); }));
   CHECK(WaitFor([&] { return Lit(0) > 200 && Lit(1) > 200; }));
+  // The look-up fade (400 ms by default) ends at the panel's level as it was.
+  std::this_thread::sleep_for(std::chrono::milliseconds(700));
+  CHECK(g1::left.Prop(g1::PROP_BRIGHTNESS, &level) && level == base_level);
   // dx 100, dy 9: the 539 x 462 area at (100, 4) on the left panel and at (0, 13) on the right.
   int w = 77 * 7, h = 33 * 14, x = (740 - 540) / 2, y = (471 - h) / 2;
   CHECK(SameArea(x, y, x - 100, y + 9, w, h));
@@ -219,6 +224,8 @@ int main(int argc, char **argv) {
   Pitch(0, 10);
   Pitch(1, 10);
   CHECK(WaitFor([&] { return PanelProp(0) == 0 && PanelProp(1) == 0; }, 3000));
+  // Faded out and off: the level is back for the next power-on.
+  CHECK(WaitFor([&] { return g1::left.Prop(g1::PROP_BRIGHTNESS, &level) && level == base_level; }, 2000));
   g1::left.Stop();
   g1::right.Stop();
 

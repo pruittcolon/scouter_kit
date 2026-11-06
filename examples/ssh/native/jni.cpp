@@ -55,6 +55,10 @@ bool g_battery = true;
 // Voice: lines shown in the terminal's top rows (above a rule) while voice is in use; empty: none.
 std::mutex g_band_mutex;
 std::vector<std::string> g_band;
+// The look-up header (lookUpHeader): lines above the terminal and a rule under them; the app gives the terminal
+// as many rows fewer. Guarded by g_band_mutex.
+std::vector<std::string> g_header;
+int g_fade = 400; // the look-up fade, ms (terminalFade)
 int g_top = 0, g_bottom = 0; // pixels left empty above and below the terminal (terminalMargins)
 bool g_panels_off = false;
 
@@ -146,15 +150,49 @@ std::vector<std::string> Chars(const std::string &s) {
   return out;
 }
 
-// The screen with the voice band over its top rows: the band's lines (bold), then a rule. The rows under it
-// are hidden while it shows; the cursor too, when it is there.
+// A row of text: bold or faint, padded with blanks.
+void PutRow(ssh::Snapshot *out, int r, const std::string &text, bool bold, bool faint) {
+  std::vector<std::string> chars = Chars(text);
+  for (int c = 0; c < out->cols; c++) {
+    ssh::Cell cell;
+    if (size_t(c) < chars.size()) cell.text = chars[size_t(c)];
+    cell.bold = bold;
+    cell.faint = faint;
+    out->cells[size_t(r) * out->cols + c] = cell;
+  }
+}
+
+// The screen the glasses get. With the look-up header: its lines (the first bold) and a rule above the
+// terminal, the voice band in the header's place while voice is in use. Without it, the voice band (bold
+// lines, then a rule) over the terminal's top rows, hiding them (and the cursor there) while it shows.
 std::shared_ptr<const ssh::Snapshot> WithBand(std::shared_ptr<const ssh::Snapshot> s) {
-  std::vector<std::string> band;
+  std::vector<std::string> band, header;
   {
     std::lock_guard<std::mutex> lock(g_band_mutex);
     band = g_band;
+    header = g_header;
   }
-  if (!s || band.empty() || s->rows < 4 || s->cols < 8) return s;
+  if (!s || s->cols < 8) return s;
+  if (!header.empty()) {
+    int h = int(header.size()) + 1;
+    auto out = std::make_shared<ssh::Snapshot>(*s);
+    out->rows = s->rows + h;
+    out->cells.assign(size_t(out->rows) * out->cols, ssh::Cell());
+    std::copy(s->cells.begin(), s->cells.end(), out->cells.begin() + ptrdiff_t(h) * out->cols);
+    out->cursor_row = s->cursor_row + h;
+    bool voice = !band.empty();
+    for (int r = 0; r < h - 1; r++) {
+      // The band's newest lines fill the header's rows from the top.
+      size_t i = voice ? band.size() - std::min(band.size(), size_t(h - 1)) + size_t(r) : size_t(r);
+      std::string line = voice ? (i < band.size() ? band[i] : "") : header[size_t(r)];
+      PutRow(out.get(), r, line, voice || r == 0, false);
+    }
+    std::string rule;
+    for (int c = 0; c < out->cols; c++) rule += "\u2500";
+    PutRow(out.get(), h - 1, rule, false, true);
+    return out;
+  }
+  if (band.empty() || s->rows < 4) return s;
   auto out = std::make_shared<ssh::Snapshot>(*s);
   int lines = std::min<int>(int(band.size()), out->rows / 3);
   for (int r = 0; r <= lines; r++) {
@@ -187,6 +225,7 @@ std::string StartTerminal() {
   config.battery = g_battery;
   config.top = g_top;
   config.bottom = g_bottom;
+  config.fade_ms = g_fade;
   config.on_touch = [](int arm, uint32_t gesture) { Gesture(arm, gesture); };
   if (!term->Start(config, g_font, Changed, &error)) return error;
   std::shared_ptr<const ssh::Snapshot> s;
@@ -315,7 +354,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *) {
 }
 
 JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_version(JNIEnv *env, jclass) {
-  return env->NewStringUTF("scouter_ssh 0.9, mosh 1.4.0");
+  return env->NewStringUTF("scouter_ssh 0.10, mosh 1.4.0");
 }
 
 // ------------------------------------------------ glasses
@@ -597,6 +636,40 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_voiceBand(JNIEnv *env, jclass,
   }
   std::lock_guard<std::mutex> lock(g_term_mutex);
   if (g_term && s) g_term->Show(WithBand(s));
+}
+
+// The look-up header's lines above the terminal (none: no header); the app gives mosh as many rows fewer, plus
+// one for the rule. The terminal shows the change at once.
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_lookUpHeader(JNIEnv *env, jclass, jobjectArray lines) {
+  std::vector<std::string> h;
+  jsize n = lines ? env->GetArrayLength(lines) : 0;
+  for (jsize i = 0; i < n && i < 3; i++) {
+    auto s = static_cast<jstring>(env->GetObjectArrayElement(lines, i));
+    h.push_back(s ? Text(env, s) : std::string());
+    if (s) env->DeleteLocalRef(s);
+  }
+  std::shared_ptr<const ssh::Snapshot> s;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_mosh) s = g_mosh->Latest();
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_band_mutex);
+    if (h == g_header) return;
+    g_header = h;
+  }
+  std::lock_guard<std::mutex> lock(g_term_mutex);
+  if (g_term && s) g_term->Show(WithBand(s));
+}
+
+// The look-up fade in ms (0: none), at once (a running terminal starts again).
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_terminalFade(JNIEnv *, jclass, jint ms) {
+  std::lock_guard<std::mutex> lock(g_glasses_mutex);
+  if (g_fade == ms) return;
+  g_fade = ms;
+  if (!g_glasses || Current() != Show::kTerminal) return;
+  StopTerminal(false);
+  StartTerminal();
 }
 
 // The glasses' microphone on (the arm that has one): false without glasses, such an arm, or if it refused.

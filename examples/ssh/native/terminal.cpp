@@ -38,6 +38,8 @@ constexpr int kPoolWords = 96;
 constexpr uint32_t kNoCursor = 0xFFFFFFFF;
 constexpr int kHysteresis = 5;      // degrees below the angle at which the terminal hides again
 constexpr int kHoldUs = 1000000;    // shown this long after the head went down
+constexpr int kFadeSteps = 8;       // brightness steps of the look-up fade in (Config::fade_ms)
+constexpr int kFadeOutSteps = 5;    // and out
 constexpr uint32_t kByHost = 16;    // NOTIFY a: a visibility change the host asked for (wForce, wPeer)
 constexpr int kForceWatchUs = 5000000; // while forced, how often the arm checks that the host is still linked
 constexpr int kBattPad = 3, kBattPadY = 1; // the battery band: pixels between its frame and the text
@@ -203,7 +205,7 @@ GlassesTerminal::Layout MakeLayout(uint32_t base, const GlassesTerminal::Geometr
 // whether the terminal shows and NOTIFY (shown | kByHost when the host caused it, PITCH). The battery band
 // shows at (bx, by) with the terminal; BATTERY redraws it.
 g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal::Geometry &g, int px, int py,
-                        int bx, int by, int angle, bool ignore_worn) {
+                        int bx, int by, int angle, bool ignore_worn, int fade_us) {
   g1::Program p(l.base, kPoolWords);
   auto c = [&](uint32_t v) { return p.Const(v); };
   auto n = [&](int v) { return p.Const(uint32_t(int32_t(v))); };
@@ -312,6 +314,28 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   // only while the head is up. show / hide: r6 = 0 (the arm's own decision) or kByHost.
   auto up_range = p.NewLabel(), down_range = p.NewLabel(), show = p.NewLabel(), on_panel = p.NewLabel(),
        no_band = p.NewLabel(), hide = p.NewLabel(), band_off = p.NewLabel();
+  // The look-up fade (fade_us > 0): BRIGHTNESS from 0 to r10 (the level it had: the host's, kept while hidden) in
+  // kFadeSteps, or from r10 to 0 in kFadeOutSteps, on a square curve (the eye sees brightness about so). Uses
+  // r10 ... r13.
+  ArenaWord bright = c(g1::PROP_BRIGHTNESS);
+  auto fade = [&](bool in) {
+    int steps = in ? kFadeSteps : kFadeOutSteps;
+    int step_us = (in ? fade_us : fade_us * 5 / 8) / steps;
+    auto loop = p.NewLabel();
+    p.SysRead(R(11), time_us);
+    p.Mov(R(12), c(1));
+    p.Bind(loop);
+    p.Add(R(11), R(11), n(step_us));
+    p.SleepUntil(R(11));
+    if (in) p.Mov(R(13), R(12));
+    else p.Sub(R(13), n(steps), R(12));
+    p.Mul(R(13), R(13), R(13));
+    p.Mul(R(13), R(13), R(10));
+    p.DivU(R(13), R(13), n(steps * steps));
+    p.SysWrite(bright, R(13));
+    p.Add(R(12), R(12), c(1));
+    p.BltU(R(12), n(steps + 1), loop);
+  };
   p.Bind(up_range);
   p.SysWrite(lo, n(angle - kHysteresis));
   p.SysWrite(hi, n(90));
@@ -322,22 +346,32 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.Ret();
   p.Bind(show);
   p.Bne(shown, c(0), on_panel);
+  if (fade_us > 0) { // the panel comes on dark (BRIGHTNESS is applied at power-on)
+    p.SysRead(R(10), bright);
+    p.SysWrite(bright, c(0));
+  }
   p.Call(draw_all);
   p.Mov(shown, c(1));
   p.SysRead(R(7), pitch);
   p.Or(R(8), shown, R(6));
-  p.Notify(R(8), R(7));
+  p.Notify(R(8), R(7)); // first: the other eye shows at once too
+  if (fade_us > 0) fade(true);
   p.Bind(on_panel);
   p.Beq(up, c(0), no_band);
   p.Call(label);
   p.Bind(no_band);
   p.Ret();
   p.Bind(hide);
-  p.SysWrite(panel, c(0));
   p.Mov(shown, c(0));
   p.SysRead(R(7), pitch);
   p.Or(R(8), shown, R(6));
   p.Notify(R(8), R(7));
+  if (fade_us > 0) {
+    p.SysRead(R(10), bright);
+    fade(false);
+  }
+  p.SysWrite(panel, c(0));
+  if (fade_us > 0) p.SysWrite(bright, R(10)); // the level again, for the next power-on
   p.Ret();
   // The band off while the terminal stays (forced): black over it, then the terminal where they overlap.
   p.Bind(band_off);
@@ -737,7 +771,8 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
     // room), centred vertically: the left eye's on the left, the right eye's on the right.
     int right = pos_[i][0] + geo_.W();
     int bx = i == 0 ? std::max(2, (pos_[i][0] - geo_.bw) / 2) : std::min(640 - geo_.bw - 2, right + (640 - right - geo_.bw) / 2);
-    g1::Program p = MakeProgram(l_, geo_, pos_[i][0], pos_[i][1], bx, BattY(geo_), angle_, config.ignore_worn);
+    g1::Program p = MakeProgram(l_, geo_, pos_[i][0], pos_[i][1], bx, BattY(geo_), angle_, config.ignore_worn,
+                                std::clamp(config.fade_ms, 0, 1000) * 1000);
     if (!p.Valid(error)) return false;
     if (p.Here() > l_.state) {
       *error = "the terminal program overlaps its state";

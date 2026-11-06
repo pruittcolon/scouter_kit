@@ -27,6 +27,11 @@
 
     <queries>
         <package android:name="com.termux" />
+        <!-- The look-up header names the apps whose notifications it shows. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
     </queries>
 
     <application
@@ -93,6 +98,16 @@
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <!-- The phone's notifications for the look-up header, once the user allows it (Notification access). -->
+        <service
+            android:name=".VoxNotifications"
+            android:exported="true"
+            android:label="Vox: notifications on the glasses"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
         <!-- A keyboard's Alt shortcuts in every app (Hotkeys): key events only, no screen content. -->

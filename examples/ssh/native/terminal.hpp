@@ -40,6 +40,9 @@ public:
     // Pixels of the display left empty above and below the terminal (fewer rows): its top or bottom can be
     // hard to see through the glasses.
     int top = 0, bottom = 0;
+    // Looking up, the panel comes on dim and brightens to its level in this long (0: at once); looking down it
+    // dims in 5/8 of it, then goes off.
+    int fade_ms = 400;
   };
   // After g1::Init. `font`: a font blob (departure_mono_nerd.skf); `changed` runs when visibility changes.
   bool Start(const Config &, std::vector<uint8_t> font, std::function<void()> changed, std::string *error);

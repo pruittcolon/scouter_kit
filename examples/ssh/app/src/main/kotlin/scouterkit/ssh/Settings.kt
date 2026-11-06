@@ -119,6 +119,16 @@ class Settings(context: Context) {
         prefs.edit().putBoolean("migrated_04", true).apply()
     }
 
+    // The look-up view (LookUp): the fade when the terminal comes and goes (ms, 0: none), and the header above the
+    // terminal with the time, date and batteries, and the newest phone notification.
+    var fadeMs: Int by Number("fade_ms", 400)
+    var lookUpClock: Boolean
+        get() = prefs.getBoolean("look_up_clock", true)
+        set(v) = prefs.edit().putBoolean("look_up_clock", v).apply()
+    var lookUpNotifications: Boolean
+        get() = prefs.getBoolean("look_up_notifications", true)
+        set(v) = prefs.edit().putBoolean("look_up_notifications", v).apply()
+
     // Pixels of the glasses' display left empty above and below the terminal (its top can be hard to see).
     var termTop: Int by Number("term_top", 0)
     var termBottom: Int by Number("term_bottom", 0)
@@ -301,7 +311,8 @@ class Settings(context: Context) {
     }
 
     val cols get() = grid(dx, dy, termTop, termBottom).first
-    val rows get() = grid(dx, dy, termTop, termBottom).second
+    // The terminal's rows for the SSH session: the glasses' rows less the look-up header's.
+    val rows get() = maxOf(2, grid(dx, dy, termTop, termBottom).second - LookUp.rows(this))
 
     companion object {
         const val TERMINAL = "terminal"

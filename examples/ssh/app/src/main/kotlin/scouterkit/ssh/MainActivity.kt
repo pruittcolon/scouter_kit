@@ -38,6 +38,7 @@ class MainActivity : Activity() {
     private lateinit var batterySwitch: Switch
     private lateinit var forceSwitch: Switch
     private lateinit var homeForce: Switch
+    private lateinit var notesState: TextView
     private lateinit var voiceState: TextView
     private lateinit var voiceModel: TextView
     private lateinit var voiceListen: TextView
@@ -394,6 +395,30 @@ class MainActivity : Activity() {
         }
         sits.addToggle(batterySwitch)
         page.addView(sits)
+
+        val view = card("Look-up view", "What you see when you look up: the terminal fades in, under a header with " +
+            "the time, date, the glasses' batteries and your newest notification.")
+        fun lookUpChanged() {
+            if (ScouterService.running) ScouterService.send(this, ScouterService.ACTION_LOOK_UP)
+        }
+        view.addView(slider("Fade in", 0, 800, settings.fadeMs, { if (it == 0) "off" else "$it ms" }) { v ->
+            settings.fadeMs = v
+            lookUpChanged()
+        })
+        view.addToggle(toggle("Time, date and batteries", "The header's first line", settings.lookUpClock) {
+            settings.lookUpClock = it
+            lookUpChanged()
+        })
+        view.addToggle(toggle("Phone notifications", "The newest one, and how many there are", settings.lookUpNotifications) {
+            settings.lookUpNotifications = it
+            lookUpChanged()
+        })
+        notesState = text("", 12.5f, Ui.FAINT)
+        view.addView(notesState)
+        view.addView(button("Allow Vox to read notifications") {
+            runCatching { startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+        })
+        page.addView(view)
         if (BuildConfig.FLAVOR == "emulated") page.addView(PanelView(this))
         return scroll
     }
@@ -996,6 +1021,9 @@ class MainActivity : Activity() {
         if (batterySwitch.isChecked != settings.battery) batterySwitch.isChecked = settings.battery
         if (forceSwitch.isChecked != settings.phoneForce) forceSwitch.isChecked = settings.phoneForce
         if (homeForce.isChecked != settings.phoneForce) homeForce.isChecked = settings.phoneForce
+        notesState.text = if (LookUp.allowed(this)) "Notification access: allowed (${LookUp.notes.size} now)." else
+            "Notification access: not allowed yet. If Android says it is restricted: Apps, Vox, ⋮, Allow restricted " +
+                "settings, then try again."
         showVoice()
 
         status.text = (if (exempt()) "" else "battery optimised · ") +

@@ -82,6 +82,17 @@ glasses, the saved servers) and **Settings**.
   WIDTH x HEIGHT) until stdout closes. They go through the same pipeline as the phone's screen. The width asked
   for is on the Screen tab (640, 960, 1280).
 
+## The look-up view
+
+- **The fade**: looking up, each arm's program powers the panel on dark and raises `BRIGHTNESS` to the level it
+  had in 8 steps on a square curve (*Fade in*, Terminal tab, 0 ... 800 ms; 400 by default); looking down it
+  lowers it in 5 steps over 5/8 of that, switches the panel off and writes the level back for the next power-on.
+  The arm reports the change before fading, so the other eye follows at once.
+- **The header** above the terminal (`Native.lookUpHeader`): the time, the date and the glasses' batteries, and
+  the newest phone notification (a `NotificationListenerService`, once the user allows Notification access),
+  then a rule. The SSH session gets as many rows fewer; the voice band takes the header's rows while voice is in
+  use. It is redrawn each minute and when notifications or the batteries change.
+
 ## Voice
 
 Commands by voice through the glasses' microphone (the right arm; liblc3 decodes it, `SCOUTER_G1_MIC`), recognised

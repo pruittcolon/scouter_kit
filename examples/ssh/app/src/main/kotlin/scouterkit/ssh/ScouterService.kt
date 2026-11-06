@@ -117,6 +117,7 @@ class ScouterService : Service() {
         override fun run() {
             if (Session.glasses == "ready") {
                 Session.battery = Native.battery()
+                header()
                 Session.changed()
             }
             work.postDelayed(this, 30000)
@@ -190,6 +191,8 @@ class ScouterService : Service() {
         vault = Vault(this)
         Native.onChanged = { work.post { poll() } }
         Native.onGesture = { a, g -> work.post { gesture(a, g) } }
+        LookUp.onChange = { work.post { header() } }
+        work.post(headerTick)
         work.postDelayed(watchdog, 60000)
         work.postDelayed(batteryTicker, 5000)
         registerReceiver(lock, IntentFilter(Intent.ACTION_SCREEN_OFF).apply { addAction(Intent.ACTION_SCREEN_ON) })
@@ -249,6 +252,12 @@ class ScouterService : Service() {
                 display(on, "app")
             }
             ACTION_TRUST -> work.post { trust(intent.getStringExtra("fingerprint")) }
+            // The look-up view's settings changed: the header and the fade again.
+            ACTION_LOOK_UP -> work.post {
+                header()
+                Native.terminalFade(settings.fadeMs)
+                refresh()
+            }
             // Voice: "listen" (one command; again: stop), "stop", or "always" (Settings.voiceAlways changed).
             ACTION_VOICE -> work.post {
                 when (intent.getStringExtra("mode")) {
@@ -289,6 +298,8 @@ class ScouterService : Service() {
     override fun onDestroy() {
         running = false
         ended = true
+        LookUp.onChange = null
+        work.removeCallbacks(headerTick)
         screen?.release()
         screen = null
         remote?.release()
@@ -445,6 +456,8 @@ class ScouterService : Service() {
             { why -> work.post { lostGlasses(why) } })
         val font = assets.open("departure_mono_nerd.skf").use { it.readBytes() }
         Native.terminalMargins(settings.termTop, settings.termBottom)
+        Native.terminalFade(settings.fadeMs)
+        Native.lookUpHeader(LookUp.lines(this, settings))
         val error = Native.glassesStart(l, settings.left, settings.right, settings.dx, settings.dy, settings.brightness,
             settings.angle, font, BuildConfig.DEBUG && settings.ignoreWorn, settings.battery)
         if (error != null || l?.lost != null) {
@@ -768,6 +781,22 @@ class ScouterService : Service() {
         update(screen = why)
     }
 
+    // ------------------------------------------------ the look-up header
+
+    // The header's lines again: at each minute, when notifications or the batteries change, and on request.
+    private val headerTick = object : Runnable {
+        override fun run() {
+            header()
+            val now = System.currentTimeMillis()
+            work.postDelayed(this, 60000 - now % 60000 + 50)
+        }
+    }
+
+    private fun header() {
+        if (ended) return
+        Native.lookUpHeader(LookUp.lines(this, settings))
+    }
+
     // ------------------------------------------------ voice
 
     // Parakeet, loaded on first use; the listener while the microphone is on.
@@ -1058,6 +1087,7 @@ class ScouterService : Service() {
         const val ACTION_SOURCE = "scouterkit.ssh.SOURCE" // a source on the glasses (Shortcuts.EXTRA: a key, next, prev)
         const val ACTION_SERVER = "scouterkit.ssh.SERVER" // a saved server's terminal (extra "id"; none: the next)
         const val ACTION_VOICE = "scouterkit.ssh.VOICE" // voice (extra "mode": listen, stop, always)
+        const val ACTION_LOOK_UP = "scouterkit.ssh.LOOK_UP" // the look-up view's settings changed
         const val MIC = "\uF130" // the terminal font's microphone (Nerd Fonts)
         const val EXTRA_ON = "on"
         const val EXTRA_CODE = "code"

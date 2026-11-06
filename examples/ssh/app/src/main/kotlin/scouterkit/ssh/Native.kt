@@ -80,6 +80,9 @@ object Native {
     // Voice: the band over the terminal's top rows (wrapped into at most `lines` lines; empty: gone), and the
     // glasses' microphone (micRead: 16 kHz mono since the last call, no waiting; -1 when it is off).
     @JvmStatic external fun voiceBand(text: String, lines: Int)
+    // The look-up view: the header's lines above the terminal (none: no header), and the fade in ms (0: none).
+    @JvmStatic external fun lookUpHeader(lines: Array<String>)
+    @JvmStatic external fun terminalFade(ms: Int)
     @JvmStatic external fun micStart(): Boolean
     @JvmStatic external fun micStop()
     @JvmStatic external fun micRead(out: FloatArray): Int
