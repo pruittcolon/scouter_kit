@@ -14,8 +14,10 @@ import android.view.WindowManager
 
 // This phone's screen (Android's screen sharing, MediaProjection) captured at a reduced size and handed to the
 // glasses (Native.screenFrame) at most `Settings.screenFps` times a second; the native side skips unchanged
-// frames and waits while the glasses are busy, so a slow link only lowers the rate. A turn of the phone
-// resizes the capture. The capture runs on its own thread.
+// frames and waits while the glasses are busy, so a slow link only lowers the rate. The newest image stays:
+// it goes again while the link is busy, the glasses are not showing the screen yet, a coarse version of it
+// went (auto detail) or the settings changed; and it feeds the preview (Preview). A turn of the phone resizes
+// the capture. The capture runs on its own thread.
 class PhoneScreen(
     private val context: Context,
     private val projection: MediaProjection,
@@ -38,9 +40,16 @@ class PhoneScreen(
         }
     }
 
-    // The newest image not on the glasses yet: kept while the link is busy, so the last change of a burst still
-    // goes when the screen stops changing.
-    private var pending: android.media.Image? = null
+    // The newest image; due: it (or its settings) has not reached the glasses yet.
+    private var held: android.media.Image? = null
+    private var due = false
+    private var options = IntArray(0)
+    // The preview: its buffers, when it went last, whether a newer picture waits.
+    private val previewPixels = ByteArray(640 * 480)
+    private val previewInfo = IntArray(3)
+    private var previewAt = 0L
+    private var previewDirty = true
+    private var previewWanted = false
 
     private val tick = object : Runnable {
         override fun run() {
@@ -54,7 +63,7 @@ class PhoneScreen(
             }
             // Busy: try again soon (the link frees up between frames); otherwise the next frame's turn.
             val spent = android.os.SystemClock.uptimeMillis() - t0
-            handler.postDelayed(this, if (state == Native.SCREEN_BUSY) 12L else (period - spent).coerceAtLeast(1L))
+            handler.postDelayed(this, if (due && state == Native.SCREEN_BUSY) 12L else (period - spent).coerceAtLeast(1L))
         }
     }
 
@@ -93,8 +102,9 @@ class PhoneScreen(
         if (next == size) return
         size = next
         val old = reader
-        pending?.close()
-        pending = null
+        held?.close()
+        held = null
+        due = false
         val r = ImageReader.newInstance(size.first, size.second, PixelFormat.RGBA_8888, 3)
         reader = r
         display?.resize(size.first, size.second, context.resources.displayMetrics.densityDpi)
@@ -105,16 +115,42 @@ class PhoneScreen(
     private fun grab() {
         val fresh = runCatching { reader?.acquireLatestImage() }.getOrNull()
         if (fresh != null) {
-            pending?.close()
-            pending = fresh
+            held?.close()
+            held = fresh
+            due = true
         }
-        val image = pending ?: return
+        val image = held ?: return
         val plane = image.planes[0]
-        state = Native.screenFrame(plane.buffer, image.width, image.height, plane.rowStride, settings.screenOptions())
-        if (state != Native.SCREEN_BUSY) {
-            image.close()
-            pending = null
+        val now = settings.screenOptions()
+        if (!now.contentEquals(options)) {
+            options = now
+            due = true
+            previewDirty = true
         }
+        if (due) {
+            state = Native.screenFrame(plane.buffer, image.width, image.height, plane.rowStride, options)
+            // Again later: the link was busy, a coarser version went, the panels are off (in the case), or the
+            // glasses show something else now.
+            due = state == Native.SCREEN_BUSY || state == Native.SCREEN_LATER || state == Native.SCREEN_STOPPED ||
+                state == Native.SCREEN_HIDDEN
+            if (fresh != null || state == Native.SCREEN_SHOWN || state == Native.SCREEN_LATER) previewDirty = true
+        }
+        preview(image, plane)
+    }
+
+    // At most four times a second, and every 2 s for the numbers, while the home screen shows it.
+    private fun preview(image: android.media.Image, plane: android.media.Image.Plane) {
+        val wanted = Preview.wanted
+        if (wanted && !previewWanted) previewDirty = true
+        previewWanted = wanted
+        if (!wanted) return
+        val t = android.os.SystemClock.uptimeMillis()
+        if (t - previewAt < 250 || (!previewDirty && t - previewAt < 2000)) return
+        previewAt = t
+        previewDirty = false
+        if (Native.screenPreview(plane.buffer, image.width, image.height, plane.rowStride, options, settings.dx,
+                settings.dy, previewPixels, previewInfo))
+            Preview.publish(previewPixels, previewInfo[0], previewInfo[1], previewInfo[2] == 1, Native.screenStats())
     }
 
     // From any thread: the capture's own thread lets go once a frame in progress is done.
@@ -126,8 +162,9 @@ class PhoneScreen(
 
     private fun close() {
         handler.removeCallbacks(tick)
-        runCatching { pending?.close() }
-        pending = null
+        runCatching { held?.close() }
+        held = null
+        Preview.clear()
         runCatching { context.getSystemService(DisplayManager::class.java).unregisterDisplayListener(turns) }
         runCatching { display?.release() }
         runCatching { reader?.close() }

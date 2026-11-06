@@ -30,7 +30,16 @@ class MainActivity : Activity() {
     private lateinit var stopSharing: View
     private lateinit var batterySwitch: Switch
     private lateinit var forceSwitch: Switch
+    private lateinit var previewView: PreviewView
+    private lateinit var previewText: TextView
+    private var checked: String? = null // the last "Check the glasses"
     private val listener: () -> Unit = { show() }
+    private val previewListener: () -> Unit = {
+        runOnUiThread {
+            previewView.refresh()
+            previewLine()
+        }
+    }
     private var asked: String? = null
     private val associating = mutableSetOf<String>() // devices asked for while this screen lives
     private var companion: String? = null // the last association's outcome
@@ -103,10 +112,41 @@ class MainActivity : Activity() {
         })
         page.addView(quick)
 
-        val phone = card("Phone screen", "Changes show on the glasses at once while your screen is shared.")
-        phone.addView(segmented(listOf("2" to "Fast · black & white", "16" to "Detailed · 16 greys"), settings.screenLevels.toString()) {
-            settings.screenLevels = it.toInt()
-        })
+        val phone = card("Phone screen", "Changes show on the glasses at once while your screen is shared. The preview " +
+            "is what they get (it stays out of the sharing itself).")
+        previewView = PreviewView(this).apply {
+            white = settings.previewWhite
+            visibility = if (settings.screenPreview) View.VISIBLE else View.GONE
+        }
+        phone.addView(previewView, lp().apply { topMargin = dp(6) })
+        previewText = text("", 12.5f, Ui.MUTED).apply { setPadding(0, dp(8), 0, dp(4)) }
+        phone.addView(previewText)
+        lateinit var colour: TextView
+        colour = chip(if (settings.previewWhite) "Panel green" else "White", false) {
+            settings.previewWhite = !settings.previewWhite
+            previewView.white = settings.previewWhite
+            colour.text = if (settings.previewWhite) "Panel green" else "White"
+        }
+        lateinit var hide: TextView
+        hide = chip(if (settings.screenPreview) "Hide preview" else "Show preview", false) {
+            settings.screenPreview = !settings.screenPreview
+            Preview.wanted = settings.screenPreview
+            previewView.visibility = if (settings.screenPreview) View.VISIBLE else View.GONE
+            hide.text = if (settings.screenPreview) "Hide preview" else "Show preview"
+        }
+        phone.addView(chipRow(chip("Check the glasses", false) { checkGlasses() }, colour, hide))
+        phone.addView(text("Greys", 13f, Ui.MUTED, Ui.BOLD).apply { setPadding(0, dp(12), 0, 0) })
+        phone.addView(segmented(listOf("2" to "B&W · fast", "4" to "4", "8" to "8", "16" to "16"),
+            settings.screenLevels.toString()) { settings.screenLevels = it.toInt() })
+        phone.addView(text("Detail", 13f, Ui.MUTED, Ui.BOLD).apply { setPadding(0, dp(8), 0, 0) })
+        phone.addView(segmented(listOf("0" to "Auto", "1" to "Full", "2" to "½", "3" to "⅓", "4" to "¼"),
+            settings.screenDetail.toString()) { settings.screenDetail = it.toInt() })
+        phone.addView(slider("Auto: a moving frame at most", 1, 32, settings.screenBudget, { "$it KB" },
+            { settings.screenBudget = it }) { settings.screenBudget = it })
+        phone.addView(slider("Frames a second at most", 1, 30, settings.screenFps, { "$it" }) { settings.screenFps = it })
+        phone.addView(text("Auto sends every pixel when a frame fits, bigger blocks while things move, and sharpens " +
+            "when the screen stops (black & white). Fewer greys, coarser detail and fewer frames send less: faster " +
+            "on the glasses and lighter on both batteries.", 12f, Ui.FAINT).apply { setPadding(0, 0, 0, dp(8)) })
         phone.addView(segmented(listOf(Settings.FIT to "Fit", Settings.FILL to "Fill", Settings.STRETCH to "Stretch"), settings.screenFit) {
             settings.screenFit = it
         })
@@ -202,6 +242,9 @@ class MainActivity : Activity() {
         if (BuildConfig.DEBUG) importTestKey()
         Session.listeners += listener
         Session.foreground = true
+        Preview.listener = previewListener
+        Preview.wanted = Settings(this).screenPreview
+        previewView.refresh()
         val keyboard = Settings(this).keyboard
         // Keyboard mode: the keys come only while this screen is in front, so it stays on (dimmed by Android).
         if (keyboard) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -216,6 +259,8 @@ class MainActivity : Activity() {
     override fun onPause() {
         Session.listeners -= listener
         Session.foreground = false
+        Preview.wanted = false
+        Preview.listener = null
         if (ScouterService.running) ScouterService.send(this) // keyboard mode: the session lets go after its grace
         super.onPause()
     }
@@ -379,6 +424,39 @@ class MainActivity : Activity() {
         settings.screenOutH = h
     }
 
+    // Under the preview: whether it is what the glasses show, how much each frame takes, the last check.
+    private fun previewLine() {
+        val (has, sent, st) = Preview.read { _, w, _, sent, stats -> Triple(w > 0, sent, stats.copyOf()) }
+        fun size(b: Int) = if (b < 1024) "$b B" else String.format(java.util.Locale.US, "%.1f KB", b / 1024f)
+        val approx = if (st.getOrElse(9) { 0 } == 16) "≈" else ""
+        val detail = when (st.getOrElse(3) { 1 }) {
+            1 -> "every pixel"
+            2 -> "½ detail"
+            3 -> "⅓ detail"
+            else -> "¼ detail"
+        }
+        val line = when {
+            !Session.capturing -> "Not shared yet: tap Phone screen."
+            !has -> "Waiting for the first picture…"
+            sent -> "On the glasses now · $approx${size(st[1])} a frame · $approx${size(st[2])}/s · $detail"
+            else -> "Not on the glasses (${Session.screen}): what they would show"
+        }
+        previewText.text = line + (checked?.let { "\n$it" } ?: "")
+    }
+
+    // Each eye's panel read back against what was sent.
+    private fun checkGlasses() {
+        checked = "Checking the glasses…"
+        previewLine()
+        Thread {
+            val r = Native.screenCheck().lines().filter { it.isNotBlank() }.joinToString(" · ")
+            runOnUiThread {
+                checked = r.replaceFirstChar { it.uppercase() }
+                previewLine()
+            }
+        }.start()
+    }
+
     private var note: String? = null // the last control's problem
     private var startingAt = 0L // a mode was tapped: "Starting…" until the session shows (or 45 s)
 
@@ -412,7 +490,7 @@ class MainActivity : Activity() {
         if (Session.capturing || Session.screen.startsWith("stopped") || Session.screen.startsWith("error"))
             lines += "Phone screen: ${Session.screen}" + if (Session.screen == "on")
                 String.format(java.util.Locale.US, " · %.1f fps (%s)", Session.screenFps,
-                    if (settings.screenLevels == 2) "fast black & white" else "16 greys: slower") else ""
+                    if (settings.screenLevels == 2) "black & white" else "${settings.screenLevels} greys") else ""
         if (Session.blank) lines += "Turn it back on here, in the notification, or with your TouchBar gesture."
         if (Session.gesture.isNotEmpty()) lines += "Last gesture: ${Session.gesture}"
         if (starting) lines += "Connecting to the glasses and the server…"
@@ -451,6 +529,7 @@ class MainActivity : Activity() {
             "glasses ${Session.glasses} (L ${Session.left} R ${Session.right}" + (if (Session.shown) ", shown" else "") +
             ") · screen ${Session.screen} (${Session.screenFrames} frames) · mosh ${Session.mosh} · keyer ${Session.keyer}" +
             (companion?.let { " · companion: $it" } ?: "") + (if (Session.termux.isNotEmpty()) " · Termux ${Session.termux}" else "")
+        previewLine()
         Native.snapshot()?.let { terminal.screen = TerminalView.parse(it) }
         title = terminal.screen?.title?.ifEmpty { null } ?: getString(R.string.app_name)
         val fingerprint = Session.unknownHost

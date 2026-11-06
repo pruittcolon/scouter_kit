@@ -61,9 +61,18 @@ object Native {
     // One captured frame: a direct buffer of RGBA_8888 rows `stride` bytes apart. Blocks while the previous
     // frame is not on the display yet. One of SCREEN_*.
     // options: Settings.screenOptions() (fit, pan x, pan y, zoom, rotate, place x, y, w, h, invert, levels,
-    // contrast, sharpen, dark in the case, dark when folded).
+    // contrast, sharpen, dark in the case, dark when folded, gamma, threshold, steady, dither, detail, budget).
     @JvmStatic external fun screenFrame(buffer: java.nio.ByteBuffer, width: Int, height: Int, stride: Int,
                                         options: IntArray): Int
+    // What the glasses show (the last picture sent), else what they would show for this frame, into out (640 x 480
+    // bytes at least, 0 ... 255); info: width, height, sent (1). False for a bad frame.
+    @JvmStatic external fun screenPreview(buffer: java.nio.ByteBuffer, width: Int, height: Int, stride: Int,
+                                          options: IntArray, dx: Int, dy: Int, out: ByteArray, info: IntArray): Boolean
+    // frames, the last frame's bytes, bytes a second, detail (1 every pixel ... 4), frames skipped while busy,
+    // the picture's w, h, x, y, the path (2 black and white, 16 greys, 0 none), panels off (1).
+    @JvmStatic external fun screenStats(): IntArray
+    // Each eye's panel read back against what was sent, a line each; blocks for a second or more.
+    @JvmStatic external fun screenCheck(): String
     // Why the mirror keeps the panels off ("in the case", "folded"), or "".
     @JvmStatic external fun screenWhy(): String
     // Each eye's battery band beside the terminal, at once.
@@ -79,6 +88,7 @@ object Native {
     const val SCREEN_HIDDEN = 2 // in the case or folded: the panels are off
     const val SCREEN_STOPPED = 3
     const val SCREEN_BUSY = 4 // the link still carries earlier frames: this one waits
+    const val SCREEN_LATER = 5 // sent coarser (auto detail): the same frame again sharpens it
     // TOUCH_GESTURE (VM.md §6.7).
     const val GESTURE_TAP = 1
     const val GESTURE_DOUBLE = 2

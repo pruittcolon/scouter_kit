@@ -30,7 +30,12 @@ struct ScreenOptions {
   bool steady = true;       // 16 greys: a pixel changed by one level only keeps its old level (less flicker and
                             // fewer pixels to send)
   bool dither = false;      // black and white: an ordered (4 x 4 Bayer) dither shows greys as patterns (photos)
-  int levels = 16;          // 16 greys, or 2 (black and white: sent as VIDEO records, much faster)
+  int levels = 16;          // 16, 8 or 4 greys (the gray display), or 2 (black and white: VIDEO records, fastest)
+  // Less to send: the picture in blocks of detail x detail pixels (1 every pixel ... 4). 0, auto (black and
+  // white): every pixel when the frame's record fits `budget` KB, else coarser until it does; the same screen
+  // again (nothing moved) goes at every pixel whatever its size.
+  int detail = 1;
+  int budget = 6;
   int contrast = 0;         // 0 ... 100: how far the levels stretch toward the picture's darkest and brightest
   bool sharpen = false;     // an unsharp mask after scaling: crisper text
   bool hide_case = true;    // panels off while an arm is in the case (a lit panel disturbs charging)
@@ -66,10 +71,29 @@ void Stretch(std::vector<uint8_t> *p, int pw, Rect c, int amount);
 void Sharpen(std::vector<uint8_t> *p, int pw, Rect c);
 
 // Inside c: toward the inverse by `invert` percent, the midtones by gamma (x100), then the glasses' levels:
-// multiples of 17, which the library writes as they are (no dithering noise to send); 2 levels: 255 from
-// threshold up, else 0. Outside c stays black (see-through).
+// multiples of 17 (16 levels; 8 and 4 use every second or fifth), which the library writes as they are (no
+// dithering noise to send); 2 levels: 255 from threshold up, else 0. Outside c stays black (see-through).
+// cell: the dither's matrix steps every cell pixels (blocks of Pixelate stay whole).
 void Tone(std::vector<uint8_t> *p, int pw, Rect c, int invert, int gamma, int threshold, int levels,
-          bool dither = false);
+          bool dither = false, int cell = 1);
+
+// Inside c: each n x n block (from c's corner; the last ones may be smaller) its pixels' average.
+void Pixelate(std::vector<uint8_t> *p, int pw, Rect c, int n);
+
+// The picture before its tones: the phone's screen (RGBA_8888) turned, placed and scaled into pw x ph, its
+// contrast stretched and sharpened (luma, rot: scratch). Returns the content's rectangle.
+Rect Base(const uint8_t *rgba, int w, int h, int stride, const ScreenOptions &, int pw, int ph,
+          std::vector<uint8_t> *luma, std::vector<uint8_t> *rot, std::vector<uint8_t> *out);
+
+// The base's tones in blocks of n: what the glasses get.
+void Finish(const std::vector<uint8_t> &base, int pw, Rect c, const ScreenOptions &, int n, std::vector<uint8_t> *out);
+
+// The whole way at once, for a preview without the glasses (auto detail as every pixel).
+void Picture(const uint8_t *rgba, int w, int h, int stride, const ScreenOptions &, int pw, int ph,
+             std::vector<uint8_t> *out);
+
+// The picture's size for the eyes' offset: the columns both eyes see, all rows (as ScreenMirror::Start).
+void PictureSize(int dx, int dy, int *pw, int *ph);
 
 // The phone's screen on both eyes, in the columns both eyes see (the display's x from dx), all rows. 16 greys
 // go through the library's gray display (a bitmap, changed pixels uploaded); 2 levels as VIDEO records (VM.md
@@ -82,14 +106,26 @@ public:
   bool Start(int dx, int dy, std::string *error);
   // Clears the display; the arms keep nothing.
   void Stop();
-  // One captured frame (RGBA_8888). 16 greys: blocks while the previous frame is not on the display yet;
-  // 2 levels: skipped (kBusy) while the link still carries earlier ones.
+  // One captured frame (RGBA_8888). Greys: blocks while the previous frame is not on the display yet;
+  // 2 levels: skipped (kBusy) while the link still carries earlier ones. kLater: shown coarser (auto detail);
+  // the same frame again sharpens it.
   int Frame(const uint8_t *rgba, int w, int h, int stride, const ScreenOptions &);
   int frames();
   // Why the panels are off, or empty: "in the case" or "folded"; or the last error.
   std::string why();
 
-  static constexpr int kShown = 0, kSame = 1, kHidden = 2, kStopped = 3, kBusy = 4;
+  // What was sent: frames, the last frame's bytes, bytes a second (over about 2 s), the last detail, frames
+  // skipped while the link was busy, the picture's w, h, x, y, the path's levels (0 none), panels off (1).
+  struct Stats {
+    int frames = 0, bytes = 0, rate = 0, detail = 1, busy = 0, w = 0, h = 0, x = 0, y = 0, path = 0, hidden = 0;
+  };
+  Stats stats();
+  // The last picture sent (w x h, 0 ... 255): what the glasses show. False before the first.
+  bool Preview(std::vector<uint8_t> *out, int *w, int *h);
+  // Each eye's panel read back (CRC) against what the library sent: a line per eye. Frames wait meanwhile.
+  std::string Check();
+
+  static constexpr int kShown = 0, kSame = 1, kHidden = 2, kStopped = 3, kBusy = 4, kLater = 5;
 
 private:
   bool Hidden(const ScreenOptions &); // reads the arms' sensors at most once a second (mutex_ held)
@@ -97,7 +133,9 @@ private:
   bool Path(int levels);              // the drawing path for these levels (mutex_ held)
   void DropPath();
   bool StartVideo();
-  int SendVideo();
+  int VideoReady();                                    // kShown when a record may go, else kBusy or kSame
+  bool SendVideo(size_t max_bytes);                    // frame_ as a record: false when larger than max_bytes
+  void Count(int bytes, int detail);
 
   std::mutex mutex_;
   bool started_ = false;
@@ -105,12 +143,17 @@ private:
   int x_ = 0, y_ = 0, w_ = 0, h_ = 0;
   int levels_ = 0; // the path in use: 16 gray, 2 video, 0 none
   scouter_kit::gray::Bitmap *pic_ = nullptr;
-  std::vector<uint8_t> luma_, rot_, frame_, prev_;
+  std::vector<uint8_t> luma_, rot_, base_, last_base_, frame_, prev_;
   bool hidden_ = false;
+  bool paused_ = false; // Check runs
   int64_t props_us_ = 0;
   bool props_hidden_ = false;
   std::string hide_why_, error_;
   int frames_ = 0;
+  int seen_ = 0; // frames handed in
+  Stats stats_;
+  int64_t window_us_ = 0;
+  int window_bytes_ = 0;
   // The VIDEO path: its arena block (code, 1-bpp bitmap, decoder state, the record's buffer), each arm's
   // entry point, the encoder, the frame number.
   struct Video {
@@ -120,6 +163,8 @@ private:
     std::unique_ptr<scouter_kit::g1::VideoEncoder> enc;
     std::vector<uint8_t> pix;
     uint32_t k = 0;
+    int64_t lead = 30000; // µs from now to the frame's due time (VideoReady)
+    int sent = 0;         // the last record's bytes with its header
     bool redraw = true; // the panels lost their image: every row again
   } video_;
 };

@@ -1,6 +1,7 @@
 // The phone's screen on the emulated arms: the picture's maths (band, fit, tone), then a captured frame on
 // both eyes at each eye's offset, an unchanged frame not sent again, the panels off in the case, and a clean
 // display after Stop.
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <thread>
@@ -48,6 +49,22 @@ static std::vector<uint8_t> Phone(int w, int h, int rx, int ry, int rw, int rh, 
   return p;
 }
 
+// A white screen with black 3 x 3 blocks at random (a frame that compresses badly).
+static std::vector<uint8_t> Noise(int w, int h, int stride, unsigned seed) {
+  std::vector<uint8_t> p(size_t(stride) * h, 255);
+  for (int by = 0; by < h; by += 3)
+    for (int bx = 0; bx < w; bx += 3) {
+      seed = seed * 1103515245u + 12345u;
+      if (!((seed >> 16) & 1)) continue;
+      for (int y = by; y < std::min(h, by + 3); y++)
+        for (int x = bx; x < std::min(w, bx + 3); x++) {
+          uint8_t *px = &p[size_t(y) * stride + x * 4];
+          px[0] = px[1] = px[2] = 0;
+        }
+    }
+  return p;
+}
+
 int main() {
   // Tone: inverted, 16 levels as multiples of 17; 2 levels.
   std::vector<uint8_t> t = {0, 255, 128, 17};
@@ -65,6 +82,20 @@ int main() {
   t = {9, 9, 9};
   ssh::Tone(&t, 3, {1, 0, 1, 1}, 100, 100, 128, 16); // outside the content: untouched
   CHECK(t[0] == 9 && t[1] == 238 && t[2] == 9);
+  t = {0, 100, 200, 255}; // 4 greys: 0, 85, 170, 255
+  ssh::Tone(&t, 4, {0, 0, 4, 1}, 0, 100, 128, 4);
+  CHECK(t[0] == 0 && t[1] == 85 && t[2] == 170 && t[3] == 255);
+
+  // Pixelate: 2 x 2 blocks of their average; the dither keeps a block whole.
+  std::vector<uint8_t> px = {0, 100, 0, 100, 0, 100, 0, 100};
+  ssh::Pixelate(&px, 4, {0, 0, 4, 2}, 2);
+  CHECK(px == std::vector<uint8_t>(8, 50));
+  px.assign(16, 128);
+  ssh::Tone(&px, 4, {0, 0, 4, 4}, 0, 100, 128, 2, true, 2);
+  CHECK(px[0] == px[1] && px[0] == px[4] && px[0] == px[5]);
+  int pw = 0, ph = 0;
+  ssh::PictureSize(100, 9, &pw, &ph);
+  CHECK(pw == 540 && ph == 471);
 
   // Source: the whole screen, or a full-width band in the picture's shape at its place.
   ssh::ScreenOptions o;
@@ -167,6 +198,29 @@ int main() {
   CHECK(WaitFor([&] { return m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown; }, 10000));
   CHECK(WaitFor([] { return Lit(1, 300, 209, 380, 289) == 0 && Lit(1, 0, 9, 80, 89) > 5500; }));
 
+  // Auto detail: noise does not fit a 1 KB budget at every pixel, so it goes coarser (kLater, sent at a coarser
+  // detail); the same frame again (nothing moved) goes at every pixel.
+  opt.detail = 0;
+  opt.budget = 1;
+  auto noise = Noise(540, 471, stride, 7);
+  int res = ssh::ScreenMirror::kBusy;
+  CHECK(WaitFor([&] { res = m.Frame(noise.data(), 540, 471, stride, opt); return res != ssh::ScreenMirror::kBusy; }, 10000));
+  CHECK(res == ssh::ScreenMirror::kLater);
+  CHECK(m.stats().detail > 1 && m.stats().bytes > 0);
+  CHECK(WaitFor([&] { res = m.Frame(noise.data(), 540, 471, stride, opt); return res != ssh::ScreenMirror::kBusy; }, 10000));
+  CHECK(res == ssh::ScreenMirror::kShown && m.stats().detail == 1);
+  // The preview is that picture, as a render without the glasses makes it too.
+  std::vector<uint8_t> shown, local;
+  CHECK(m.Preview(&shown, &pw, &ph) && pw == 540 && ph == 471);
+  ssh::ScreenOptions every = opt;
+  every.detail = 1;
+  ssh::Picture(noise.data(), 540, 471, stride, every, 540, 471, &local);
+  CHECK(shown == local);
+  std::string check = m.Check();
+  std::printf("check:\n%s", check.c_str());
+  CHECK(!check.empty());
+  opt.detail = 1;
+
   // In the case: hidden, the panels off; out again: shown.
   g1::emulator::SetProperty(0, g1::PROP_IN_CASE, 1);
   std::this_thread::sleep_for(std::chrono::milliseconds(1100));
@@ -177,6 +231,16 @@ int main() {
   std::this_thread::sleep_for(std::chrono::milliseconds(1100));
   CHECK(WaitFor([&] { return m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown; }, 10000));
   CHECK(WaitFor([] { return Lit(1, 0, 9, 80, 89) > 5500; }));
+
+  // An arm whose session began in the case (the glasses connected there) and was taken out since: shown, by
+  // the arm's IN_CASE now rather than its session's first message.
+  g1::emulator::SetProperty(0, g1::PROP_IN_CASE, 1);
+  g1::emulator::Disconnect(0, 300);
+  CHECK(WaitFor([] { auto s = g1::left.GetState(); return s.connected && s.in_case; }, 15000));
+  g1::emulator::SetProperty(0, g1::PROP_IN_CASE, 0);
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  phone = Phone(540, 471, 200, 200, 80, 80, stride);
+  CHECK(WaitFor([&] { return m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown; }, 15000));
 
   m.Stop();
   CHECK(WaitFor([] { return Lit(0) == 0 && Lit(1) == 0; }));

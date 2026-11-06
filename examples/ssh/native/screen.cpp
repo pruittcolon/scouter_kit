@@ -172,14 +172,18 @@ void Sharpen(std::vector<uint8_t> *p, int pw, Rect c) {
   }
 }
 
-void Tone(std::vector<uint8_t> *p, int pw, Rect c, int invert, int gamma, int threshold, int levels, bool dither) {
+void Tone(std::vector<uint8_t> *p, int pw, Rect c, int invert, int gamma, int threshold, int levels, bool dither,
+          int cell) {
   int a = std::clamp(invert, 0, 100);
   double g = std::clamp(gamma, 20, 500) / 100.0;
+  int n = (levels == 4 || levels == 8 ? levels : 16) - 1; // steps between black and full
+  cell = std::max(1, cell);
   uint8_t lut[256];
   for (int v = 0; v < 256; v++) {
     int f = v + (255 - 2 * v) * a / 100; // a blend toward the inverse
     int q = g == 1.0 ? f : int(std::pow(f / 255.0, g) * 255.0 + 0.5);
-    lut[v] = levels == 2 ? (q >= threshold ? 255 : 0) : uint8_t((q * 15 + 127) / 255 * 17);
+    int k = (q * n + 127) / 255;
+    lut[v] = levels == 2 ? (q >= threshold ? 255 : 0) : uint8_t((k * 15 + n / 2) / n * 17);
   }
   if (levels == 2 && dither) {
     // The cut-off moves with a 4 x 4 Bayer matrix (fixed in place, so a still picture stays still): greys come
@@ -194,7 +198,7 @@ void Tone(std::vector<uint8_t> *p, int pw, Rect c, int invert, int gamma, int th
     for (int y = c.y; y < c.y + c.h; y++) {
       uint8_t *row = p->data() + size_t(y) * pw + c.x;
       for (int x = 0; x < c.w; x++) {
-        int cut = kBayer[y & 3][(c.x + x) & 3] * 16 + 8 + shift;
+        int cut = kBayer[((y - c.y) / cell) & 3][(x / cell) & 3] * 16 + 8 + shift;
         row[x] = tone[row[x]] >= cut ? 255 : 0;
       }
     }
@@ -204,6 +208,56 @@ void Tone(std::vector<uint8_t> *p, int pw, Rect c, int invert, int gamma, int th
     uint8_t *row = p->data() + size_t(y) * pw + c.x;
     for (int x = 0; x < c.w; x++) row[x] = lut[row[x]];
   }
+}
+
+void Pixelate(std::vector<uint8_t> *p, int pw, Rect c, int n) {
+  if (n <= 1) return;
+  uint8_t *d = p->data();
+  for (int by = c.y; by < c.y + c.h; by += n) {
+    int bh = std::min(n, c.y + c.h - by);
+    for (int bx = c.x; bx < c.x + c.w; bx += n) {
+      int bw = std::min(n, c.x + c.w - bx), sum = 0;
+      for (int y = by; y < by + bh; y++)
+        for (int x = bx; x < bx + bw; x++) sum += d[size_t(y) * pw + x];
+      uint8_t v = uint8_t(sum / (bw * bh));
+      for (int y = by; y < by + bh; y++) std::memset(d + size_t(y) * pw + bx, v, size_t(bw));
+    }
+  }
+}
+
+Rect Base(const uint8_t *rgba, int w, int h, int stride, const ScreenOptions &o, int pw, int ph,
+          std::vector<uint8_t> *luma, std::vector<uint8_t> *rot, std::vector<uint8_t> *out) {
+  Luma(rgba, w, h, stride, luma);
+  int sw = w, sh = h;
+  const std::vector<uint8_t> *src = luma;
+  if (o.rotate % 360 != 0) {
+    Rotate(*luma, w, h, o.rotate, rot, &sw, &sh);
+    src = rot;
+  }
+  Rect d = Place(pw, ph, o);
+  Rect c = Fit(out, pw, ph, *src, sw, Source(sw, sh, d.w, d.h, o), d, o.fit == ScreenOptions::kFit);
+  Stretch(out, pw, c, o.contrast);
+  if (o.sharpen) Sharpen(out, pw, c);
+  return c;
+}
+
+void Finish(const std::vector<uint8_t> &base, int pw, Rect c, const ScreenOptions &o, int n, std::vector<uint8_t> *out) {
+  *out = base;
+  n = std::clamp(n, 1, 4);
+  Pixelate(out, pw, c, n);
+  Tone(out, pw, c, o.invert, o.gamma, o.threshold, o.levels, o.dither, n);
+}
+
+void Picture(const uint8_t *rgba, int w, int h, int stride, const ScreenOptions &o, int pw, int ph,
+             std::vector<uint8_t> *out) {
+  std::vector<uint8_t> luma, rot, base;
+  Rect c = Base(rgba, w, h, stride, o, pw, ph, &luma, &rot, &base);
+  Finish(base, pw, c, o, std::max(1, o.detail), out);
+}
+
+void PictureSize(int dx, int dy, int *pw, int *ph) {
+  *pw = std::max(2, (640 - std::min(std::abs(dx), 600)) & ~1);
+  *ph = std::max(2, 480 - std::min(std::abs(dy), 400));
 }
 
 ScreenMirror::~ScreenMirror() { Stop(); }
@@ -236,10 +290,17 @@ bool ScreenMirror::Start(int dx, int dy, std::string *error) {
   Panels(true);
   levels_ = 0;
   prev_.clear();
+  last_base_.clear();
   hidden_ = false;
+  paused_ = false;
   props_us_ = 0;
   error_.clear();
+  seen_ = 0;
+  stats_ = Stats{};
+  window_us_ = 0;
+  window_bytes_ = 0;
   started_ = true;
+  LOG("screen: picture %d x %d at (%d, %d)", w_, h_, x_, y_);
   return true;
 }
 
@@ -342,15 +403,19 @@ bool ScreenMirror::StartVideo() {
   return true;
 }
 
-int ScreenMirror::SendVideo() {
+// Whether a record may go now: both arms connected with little queued; a rebooted arm (its bitmap and decoder
+// state lost) starts the path again.
+int ScreenMirror::VideoReady() {
   Video &v = video_;
   int64_t lead = 30000;
   for (int i = 0; i < 2; i++) {
     g1::Arm &arm = i == 0 ? g1::left : g1::right;
     auto st = arm.GetState();
     if (!st.present) continue;
-    if (!st.connected || st.queued > kQueued) return kBusy;
-    // A rebooted arm lost its bitmap and decoder state: the path starts again (every row at the next frame).
+    if (!st.connected || st.queued > kQueued) {
+      stats_.busy++;
+      return kBusy;
+    }
     if (st.epoch_changes != v.epochs[size_t(i)]) {
       LOG("screen: arm %d rebooted, the VIDEO path starts again", i);
       DropPath();
@@ -358,12 +423,20 @@ int ScreenMirror::SendVideo() {
     }
     lead = std::max<int64_t>(lead, st.interval_us + st.clock_error_us + 10000);
   }
+  v.lead = lead;
+  return kShown;
+}
+
+// frame_ as a VIDEO record to both arms, drawn at the same due time; false (nothing sent, the encoder as it was)
+// when the record would be larger than max_bytes.
+bool ScreenMirror::SendVideo(size_t max_bytes) {
+  Video &v = video_;
   for (size_t i = 0; i < v.pix.size(); i++) v.pix[i] = frame_[i] >= 128;
-  std::vector<uint8_t> rec = v.enc->Encode(v.pix, v.redraw, kRecordMax);
-  if (rec.empty()) return kBusy; // too large for one record: the next, smaller change goes
+  std::vector<uint8_t> rec = v.enc->Encode(v.pix, v.redraw, std::min<size_t>(max_bytes, kRecordMax));
+  if (rec.empty()) return false;
   // The record's time on the link at about 40 KB/s (2M PHY, short intervals); an arm that gets it later draws it
   // as soon as it is in, so a short lead only costs the eyes' sync on large changes, a long one the frame rate.
-  lead = std::min<int64_t>(lead + int64_t(rec.size()) * 1000000 / 40000, 1000000);
+  int64_t lead = std::min<int64_t>(v.lead + int64_t(rec.size()) * 1000000 / 40000, 1000000);
   std::vector<uint8_t> msg(kHeader + rec.size());
   Put32(msg, 4, v.k);
   Put32(msg, 8, uint32_t(rec.size()));
@@ -377,7 +450,74 @@ int ScreenMirror::SendVideo() {
   }
   v.redraw = false;
   v.k++;
-  return kShown;
+  v.sent = int(msg.size());
+  return true;
+}
+
+void ScreenMirror::Count(int bytes, int detail) {
+  frames_++;
+  stats_.bytes = bytes;
+  stats_.detail = detail;
+  int64_t now = g1::NowUs();
+  if (!window_us_) window_us_ = now;
+  window_bytes_ += bytes;
+  if (now - window_us_ >= 2000000) {
+    stats_.rate = int(int64_t(window_bytes_) * 1000000 / (now - window_us_));
+    window_us_ = now;
+    window_bytes_ = 0;
+  }
+}
+
+ScreenMirror::Stats ScreenMirror::stats() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  Stats s = stats_;
+  s.frames = frames_;
+  if (window_us_ && g1::NowUs() - window_us_ > 4000000) s.rate = 0; // nothing sent lately
+  s.w = w_;
+  s.h = h_;
+  s.x = x_;
+  s.y = y_;
+  s.path = started_ ? levels_ : 0;
+  s.hidden = hidden_ ? 1 : 0;
+  return s;
+}
+
+bool ScreenMirror::Preview(std::vector<uint8_t> *out, int *w, int *h) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!started_ || hidden_ || prev_.size() != size_t(w_) * h_ || prev_.empty()) return false;
+  *out = prev_;
+  *w = w_;
+  *h = h_;
+  return true;
+}
+
+std::string ScreenMirror::Check() {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!started_) return "the phone's screen is not on the glasses\n";
+    if (hidden_) return "the panels are off: " + hide_why_ + "\n";
+    paused_ = true; // no frames while the arms answer: the library's picture stays the one they are asked about
+  }
+  std::string out;
+  for (int i = 0; i < 2; i++) {
+    g1::Arm &arm = i == 0 ? g1::left : g1::right;
+    std::string name = i == 0 ? "left eye" : "right eye";
+    auto st = arm.GetState();
+    if (!st.present) continue;
+    if (!st.connected) {
+      out += name + ": not connected\n";
+      continue;
+    }
+    uint32_t got = 0, want = 0;
+    if (!arm.PanelCrc(0, 480, &got, &want)) out += name + ": no answer (panel off?)\n";
+    else out += name + (got == want ? ": shows what was sent\n" : ": differs from what was sent\n");
+  }
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    paused_ = false;
+  }
+  LOG("screen: check: %s", out.c_str());
+  return out;
 }
 
 void ScreenMirror::Stop() {
@@ -409,11 +549,17 @@ bool ScreenMirror::Hidden(const ScreenOptions &o) {
   for (g1::Arm *a : {&g1::left, &g1::right}) {
     g1::Arm::State s = a->GetState();
     if (!s.connected) continue;
-    if (s.in_case) in_case = true;
     const uint8_t ids[2] = {g1::PROP_IN_CASE, g1::PROP_WORN};
     uint32_t v[2] = {g1::UNKNOWN, g1::UNKNOWN};
-    if (!a->Props(ids, v)) continue;
-    if (v[0] == 1) in_case = true;
+    bool got = a->Props(ids, v);
+    // The arm's IN_CASE now; State::in_case is only what its session's first message said (the glasses
+    // connected in the case and taken out since: still true), so it counts only without the property.
+    if (got && v[0] != g1::UNKNOWN) {
+      if (v[0] == 1) in_case = true;
+    } else if (s.in_case) {
+      in_case = true;
+    }
+    if (!got) continue;
     if (v[1] != g1::UNKNOWN) {
       known = true;
       folded = folded && v[1] == 0;
@@ -428,15 +574,19 @@ bool ScreenMirror::Hidden(const ScreenOptions &o) {
 int ScreenMirror::Frame(const uint8_t *rgba, int w, int h, int stride, const ScreenOptions &o) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!started_) return kStopped;
+  if (paused_) return kBusy;
   if (w <= 0 || h <= 0 || stride < w * 4) return kSame;
+  if (seen_++ == 0) LOG("screen: first frame, %d x %d", w, h);
   bool hide = Hidden(o);
   if (hide != hidden_) {
     hidden_ = hide;
     if (hide) {
+      LOG("screen: panels off (%s)", hide_why_.c_str());
       sk::gray::Clear();
       sk::Flush();
       Panels(false);
     } else {
+      LOG("screen: panels on again");
       Panels(true);
       prev_.clear();
       video_.redraw = true; // the power-on cleared the panels: every row again
@@ -444,33 +594,56 @@ int ScreenMirror::Frame(const uint8_t *rgba, int w, int h, int stride, const Scr
   }
   if (hide) return kHidden;
   if (!Path(o.levels)) return kSame;
-  Luma(rgba, w, h, stride, &luma_);
-  int sw = w, sh = h;
-  const std::vector<uint8_t> *src = &luma_;
-  if (o.rotate % 360 != 0) {
-    Rotate(luma_, w, h, o.rotate, &rot_, &sw, &sh);
-    src = &rot_;
+  Rect c = Base(rgba, w, h, stride, o, w_, h_, &luma_, &rot_, &base_);
+  bool still = base_ == last_base_; // the same screen as last time: nothing moved
+  if (!still) last_base_ = base_;
+
+  if (levels_ == 2) {
+    int ready = VideoReady();
+    if (ready != kShown) return ready;
+    bool redraw = video_.redraw;
+    if (o.detail >= 1) {
+      int n = std::clamp(o.detail, 1, 4);
+      Finish(base_, w_, c, o, n, &frame_);
+      if (frame_ == prev_ && !redraw) return kSame;
+      if (!SendVideo(kRecordMax)) return kBusy; // too large for one record: the next, smaller change goes
+      prev_ = frame_;
+      Count(video_.sent, n);
+      return kShown;
+    }
+    // Auto: every pixel when that fits the budget, else coarser; nothing moved: every pixel whatever the size.
+    size_t budget = still ? kRecordMax : size_t(std::clamp(o.budget, 1, 64)) * 1024;
+    for (int n = 1; n <= 4; n++) {
+      Finish(base_, w_, c, o, n, &frame_);
+      if (frame_ == prev_ && !redraw) return n == 1 ? kSame : kLater;
+      if (SendVideo(n == 4 ? kRecordMax : budget)) {
+        prev_ = frame_;
+        Count(video_.sent, n);
+        return n == 1 ? kShown : kLater;
+      }
+    }
+    return kBusy;
   }
-  Rect d = Place(w_, h_, o);
-  Rect c = Fit(&frame_, w_, h_, *src, sw, Source(sw, sh, d.w, d.h, o), d, o.fit == ScreenOptions::kFit);
-  Stretch(&frame_, w_, c, o.contrast);
-  if (o.sharpen) Sharpen(&frame_, w_, c);
-  Tone(&frame_, w_, c, o.invert, o.gamma, o.threshold, levels_, o.dither);
-  if (o.steady && levels_ == 16 && prev_.size() == frame_.size())
+
+  // Greys: the library uploads the changed pixels (4 bits each).
+  int n = std::clamp(o.detail, 1, 4);
+  Finish(base_, w_, c, o, n, &frame_);
+  if (o.steady && o.levels != 4 && o.levels != 8 && prev_.size() == frame_.size())
     for (size_t i = 0; i < frame_.size(); i++)
       if (std::abs(int(frame_[i]) - int(prev_[i])) <= 17) frame_[i] = prev_[i];
-  if (frame_ == prev_ && !(levels_ == 2 && video_.redraw)) return kSame;
-  if (levels_ == 2) {
-    int r = SendVideo();
-    if (r != kShown) return r;
+  if (frame_ == prev_) return kSame;
+  int changed = 0;
+  if (prev_.size() == frame_.size()) {
+    for (size_t i = 0; i < frame_.size(); i++) changed += frame_[i] != prev_[i];
   } else {
-    sk::gray::Write(*pic_, sk::gray::ConstBitmapView{frame_.data(), w_, h_, w_}, 0, 0, sk::gray::DITHER_NONE);
-    sk::gray::Clear();
-    sk::gray::Draw(*pic_, x_, y_);
-    sk::Flush();
+    changed = int(frame_.size());
   }
+  sk::gray::Write(*pic_, sk::gray::ConstBitmapView{frame_.data(), w_, h_, w_}, 0, 0, sk::gray::DITHER_NONE);
+  sk::gray::Clear();
+  sk::gray::Draw(*pic_, x_, y_);
+  sk::Flush();
   prev_ = frame_;
-  frames_++;
+  Count((changed + 1) / 2, n);
   return kShown;
 }
 

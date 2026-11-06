@@ -268,7 +268,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *) {
 }
 
 JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_version(JNIEnv *env, jclass) {
-  return env->NewStringUTF("scouter_ssh 0.5, mosh 1.4.0");
+  return env->NewStringUTF("scouter_ssh 0.6, mosh 1.4.0");
 }
 
 // ------------------------------------------------ glasses
@@ -512,24 +512,15 @@ JNIEXPORT jintArray JNICALL Java_scouterkit_ssh_Native_battery(JNIEnv *env, jcla
   return out;
 }
 
-// One captured frame: a direct buffer of RGBA_8888 rows `stride` bytes apart (an ImageReader plane). Blocks
-// while the previous frame is not on the display yet. ScreenMirror's kShown, kSame, kHidden or kStopped.
-JNIEXPORT jint JNICALL Java_scouterkit_ssh_Native_screenFrame(JNIEnv *env, jclass, jobject buffer, jint w, jint h,
-                                                               jint stride, jintArray options) {
-  std::shared_ptr<ssh::ScreenMirror> screen;
-  {
-    std::lock_guard<std::mutex> lock(g_screen_mutex);
-    screen = g_screen;
-  }
-  if (!screen) return ssh::ScreenMirror::kStopped;
-  auto *p = static_cast<const uint8_t *>(env->GetDirectBufferAddress(buffer));
-  jlong capacity = env->GetDirectBufferCapacity(buffer);
-  // The last row may lack its padding.
-  if (!p || w <= 0 || h <= 0 || capacity < jlong(stride) * (h - 1) + jlong(w) * 4) return ssh::ScreenMirror::kSame;
-  // Settings.screenOptions: fit, pan x, pan y, zoom, rotate, place x, y, w, h, invert %, levels, contrast,
-  // sharpen, hide in the case, hide folded, gamma (x100), threshold, steady, dither.
-  jint v[19] = {0, 50, 0, 100, 0, 0, 0, 100, 100, 100, 2, 0, 0, 1, 0, 100, 128, 1, 0};
-  jsize n = std::min<jsize>(env->GetArrayLength(options), 19);
+} // extern "C"
+
+namespace {
+
+// Settings.screenOptions: fit, pan x, pan y, zoom, rotate, place x, y, w, h, invert %, levels, contrast,
+// sharpen, hide in the case, hide folded, gamma (x100), threshold, steady, dither, detail (0 auto), budget (KB).
+ssh::ScreenOptions Options(JNIEnv *env, jintArray options) {
+  jint v[21] = {0, 50, 0, 100, 0, 0, 0, 100, 100, 100, 2, 0, 0, 1, 0, 100, 128, 1, 0, 1, 6};
+  jsize n = std::min<jsize>(env->GetArrayLength(options), 21);
   env->GetIntArrayRegion(options, 0, n, v);
   ssh::ScreenOptions o;
   o.fit = std::clamp(int(v[0]), 0, 2);
@@ -546,12 +537,86 @@ JNIEXPORT jint JNICALL Java_scouterkit_ssh_Native_screenFrame(JNIEnv *env, jclas
   o.threshold = std::clamp(int(v[16]), 1, 254);
   o.steady = v[17] != 0;
   o.dither = v[18] != 0;
-  o.levels = v[10] == 2 ? 2 : 16;
+  o.levels = v[10] == 2 || v[10] == 4 || v[10] == 8 ? int(v[10]) : 16;
   o.contrast = std::clamp(int(v[11]), 0, 100);
   o.sharpen = v[12] != 0;
   o.hide_case = v[13] != 0;
   o.hide_folded = v[14] != 0 && !g_ignore_worn;
-  return screen->Frame(p, w, h, stride, o);
+  o.detail = std::clamp(int(v[19]), 0, 4);
+  o.budget = std::clamp(int(v[20]), 1, 64);
+  return o;
+}
+
+std::shared_ptr<ssh::ScreenMirror> Mirror() {
+  std::lock_guard<std::mutex> lock(g_screen_mutex);
+  return g_screen;
+}
+
+// The ImageReader plane's pixels, or null (the last row may lack its padding).
+const uint8_t *Pixels(JNIEnv *env, jobject buffer, jint w, jint h, jint stride) {
+  auto *p = static_cast<const uint8_t *>(env->GetDirectBufferAddress(buffer));
+  jlong capacity = env->GetDirectBufferCapacity(buffer);
+  if (!p || w <= 0 || h <= 0 || stride < w * 4 || capacity < jlong(stride) * (h - 1) + jlong(w) * 4) return nullptr;
+  return p;
+}
+
+} // namespace
+
+extern "C" {
+
+// One captured frame: a direct buffer of RGBA_8888 rows `stride` bytes apart (an ImageReader plane). Blocks
+// while the previous frame is not on the display yet. ScreenMirror's kShown, kSame, kHidden, kStopped, kBusy
+// or kLater.
+JNIEXPORT jint JNICALL Java_scouterkit_ssh_Native_screenFrame(JNIEnv *env, jclass, jobject buffer, jint w, jint h,
+                                                               jint stride, jintArray options) {
+  std::shared_ptr<ssh::ScreenMirror> screen = Mirror();
+  if (!screen) return ssh::ScreenMirror::kStopped;
+  const uint8_t *p = Pixels(env, buffer, w, h, stride);
+  if (!p) return ssh::ScreenMirror::kSame;
+  return screen->Frame(p, w, h, stride, Options(env, options));
+}
+
+// What the glasses show (the last picture sent), else what they would show for this frame (the glasses off,
+// hidden, or showing the terminal), into out (at least 640 x 480 bytes, 0 ... 255, row by row). info: width,
+// height, sent (1) or not (0). False for a bad frame.
+JNIEXPORT jboolean JNICALL Java_scouterkit_ssh_Native_screenPreview(JNIEnv *env, jclass, jobject buffer, jint w,
+                                                                     jint h, jint stride, jintArray options, jint dx,
+                                                                     jint dy, jbyteArray out, jintArray info) {
+  std::vector<uint8_t> pic;
+  int pw = 0, ph = 0, sent = 0;
+  if (auto screen = Mirror(); screen && screen->Preview(&pic, &pw, &ph)) {
+    sent = 1;
+  } else {
+    const uint8_t *p = Pixels(env, buffer, w, h, stride);
+    if (!p) return JNI_FALSE;
+    ssh::PictureSize(dx, dy, &pw, &ph);
+    ssh::Picture(p, w, h, stride, Options(env, options), pw, ph, &pic);
+  }
+  if (env->GetArrayLength(out) < jsize(pic.size()) || env->GetArrayLength(info) < 3) return JNI_FALSE;
+  env->SetByteArrayRegion(out, 0, jsize(pic.size()), reinterpret_cast<const jbyte *>(pic.data()));
+  jint v[3] = {pw, ph, sent};
+  env->SetIntArrayRegion(info, 0, 3, v);
+  return JNI_TRUE;
+}
+
+// The mirror's numbers (ScreenMirror::Stats): frames, last frame's bytes, bytes a second, detail, busy, w, h,
+// x, y, path levels (0: none), panels off; all 0 without a mirror.
+JNIEXPORT jintArray JNICALL Java_scouterkit_ssh_Native_screenStats(JNIEnv *env, jclass) {
+  jint v[11] = {};
+  if (auto screen = Mirror()) {
+    ssh::ScreenMirror::Stats s = screen->stats();
+    jint t[11] = {s.frames, s.bytes, s.rate, s.detail, s.busy, s.w, s.h, s.x, s.y, s.path, s.hidden};
+    std::copy(t, t + 11, v);
+  }
+  jintArray a = env->NewIntArray(11);
+  env->SetIntArrayRegion(a, 0, 11, v);
+  return a;
+}
+
+// Each eye's panel read back against what was sent (blocks for a second or more): a line per eye.
+JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_screenCheck(JNIEnv *env, jclass) {
+  auto screen = Mirror();
+  return env->NewStringUTF(screen ? screen->Check().c_str() : "the phone's screen is not on the glasses\n");
 }
 
 // heard, ended, silent ms, then the arms: connected left, right, the terminal shown on an eye, and the phone's

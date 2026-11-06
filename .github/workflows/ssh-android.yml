@@ -164,6 +164,6 @@ jobs:
             "Source: branch \`${GITHUB_REF_NAME}\`. GPL-3.0 (includes mosh).")
           gh release delete scouter-phone-latest --yes --cleanup-tag 2>/dev/null || true
           gh release create scouter-phone-latest --prerelease --target "$GITHUB_SHA" \
-            --title "SSH Scouter 0.2 for the phone (latest test build)" --notes "$notes" \
+            --title "SSH Scouter for the phone (latest test build)" --notes "$notes" \
             "$RUNNER_TEMP/out/scouter-phone.apk" "$RUNNER_TEMP/out/scouter-phone-emulated-debug.apk" \
             examples/ssh/termux/scouter.sh

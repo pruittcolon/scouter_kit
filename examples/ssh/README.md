@@ -86,9 +86,15 @@ with the app in the back.
 - **"Terminal on glasses"**: the mosh session on the glasses; by default it shows whatever the head's angle
   ("Started from the phone" in Settings switches back to the looking-up rule), and the phone stays awake while
   it is live.
-- **The phone's screen, the look and the place** (home screen, "Phone screen"): *Fast · black & white* sends each
-  frame as a VIDEO record (VM.md §3.7: only the changed rows, decoded on the arms, both eyes at one due time; frames
-  wait while the link is busy) and is much smoother than *Detailed · 16 greys* (the gray display's uploads). *Fit*
+- **The phone's screen, the look and the place** (home screen, "Phone screen"): *B&W · fast* sends each frame as
+  a VIDEO record (VM.md §3.7: only the changed rows, decoded on the arms, both eyes at one due time; frames wait
+  while the link is busy) and is much smoother than 4, 8 or 16 greys (the gray display's uploads of changed
+  pixels; fewer greys change fewer pixels). *Detail* sends the picture in 2 x 2 to 4 x 4 blocks, which encode
+  much smaller; *Auto* sends every pixel when the record fits the frame budget (KB), coarser blocks while the
+  screen moves, and every pixel again once it stops. The preview above these controls is the picture the glasses
+  got (or, while they show nothing, the one they would get) with its size per frame and per second; it is a
+  secure surface, left out of the screen sharing. *Check the glasses* reads each eye's panel back (CRC) against
+  what was sent. *Fit*
   keeps the shape, *Fill* crops to fill, *Stretch* distorts to fill; the layout editor places the picture anywhere
   on the glasses (drag, corner to resize, double-tap to fill); zoom, pan, rotation (90° steps), contrast boost,
   sharpen and invert apply at once. *Depth* (the eyes' offset, dx) moves the picture nearer or farther.
@@ -96,5 +102,6 @@ with the app in the back.
   the columns both eyes see, as 16 greys (or black and white), inverted by default since black is see-through.
   The whole screen with its shape kept, or a full-width band (Settings, "Phone screen on the glasses"). Turning
   the phone resizes the capture. Unchanged frames are not sent, and the rate drops by itself while the link is
-  busy. In the case or folded the panels go off. Ending the screen sharing (Android's status bar, Stop, or
+  busy. In the case (the arms' IN_CASE property now, not only what they said when the session began) or folded
+  the panels go off. Ending the screen sharing (Android's status bar, Stop, or
   "Terminal on glasses") brings the terminal back; the mosh session waits paused meanwhile.

@@ -45,7 +45,18 @@ class Settings(context: Context) {
     var screenInvert: Boolean
         get() = prefs.getBoolean("screen_invert", true)
         set(v) = prefs.edit().putBoolean("screen_invert", v).apply()
-    var screenLevels: Int by Number("screen_levels", 2) // 2: the fast path (VIDEO records)
+    var screenLevels: Int by Number("screen_levels", 2) // 2: the fast path (VIDEO records); 4, 8 or 16 greys
+    // Less to send: pixels in blocks of detail x detail (1 ... 4), or 0, auto (black and white): every pixel
+    // when a frame fits `screenBudget` KB, else coarser; a screen that stopped moving sharpens.
+    var screenDetail: Int by Number("screen_detail", 0)
+    var screenBudget: Int by Number("screen_budget", 6)
+    // The home screen's preview of what the glasses get, in the panels' green or in white.
+    var screenPreview: Boolean
+        get() = prefs.getBoolean("screen_preview", true)
+        set(v) = prefs.edit().putBoolean("screen_preview", v).apply()
+    var previewWhite: Boolean
+        get() = prefs.getBoolean("preview_white", false)
+        set(v) = prefs.edit().putBoolean("preview_white", v).apply()
     // The look: percent toward the inverse (0 as on the phone, 100 light backgrounds dark), midtones (gamma
     // x100), the black-and-white threshold, and steady (16 greys: one-level flicker ignored).
     var screenInvertPct: Int
@@ -98,7 +109,7 @@ class Settings(context: Context) {
     fun screenOptions() = intArrayOf(listOf(FIT, FILL, STRETCH).indexOf(screenFit).coerceAtLeast(0), screenPanX, screenPanY,
         screenZoom, screenRotate, screenOutX, screenOutY, screenOutW, screenOutH, screenInvertPct, screenLevels,
         screenContrast, if (screenSharpen) 1 else 0, if (screenHideCase) 1 else 0, if (screenHideFolded) 1 else 0,
-        screenGamma, screenThreshold, if (screenSteady) 1 else 0, if (screenDither) 1 else 0)
+        screenGamma, screenThreshold, if (screenSteady) 1 else 0, if (screenDither) 1 else 0, screenDetail, screenBudget)
 
     // Once: the fast path (black and white) for everyone, as 0.4 made it the default.
     fun migrate() {
