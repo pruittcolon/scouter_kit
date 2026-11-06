@@ -91,7 +91,7 @@ bool ScreenMirror::Start(int dx, std::string *error) {
   // The library's picture of the display goes black, then the panels power-cycle: that clears what the
   // terminal's program drew there, which the library never saw.
   sk::gray::Clear();
-  sk::gray::Flush();
+  sk::Flush();
   Panels(false);
   Panels(true);
   pic_ = &sk::gray::CreateBitmap(w_, h_);
@@ -114,7 +114,7 @@ void ScreenMirror::Stop() {
   if (pic_) sk::gray::Unload(*pic_);
   pic_ = nullptr;
   sk::gray::Clear();
-  sk::gray::Flush();
+  sk::Flush();
   if (hidden_) Panels(true); // the terminal's program decides from here
   hidden_ = false;
 }
@@ -156,7 +156,7 @@ int ScreenMirror::Frame(const uint8_t *rgba, int w, int h, int stride, const Scr
     hidden_ = hide;
     if (hide) {
       sk::gray::Clear();
-      sk::gray::Flush();
+      sk::Flush();
       Panels(false);
     } else {
       Panels(true);
@@ -168,11 +168,11 @@ int ScreenMirror::Frame(const uint8_t *rgba, int w, int h, int stride, const Scr
   Fit(&frame_, w_, h_, luma_, w, Source(w, h, w_, h_, o), !o.band, o.invert ? 255 : 0);
   Tone(&frame_, o.invert, o.levels);
   if (frame_ == prev_) return kSame;
-  sk::gray::Write(*pic_, sk::ConstBitmapView{frame_.data(), w_, h_, w_}, 0, 0, sk::gray::DITHER_NONE);
+  sk::gray::Write(*pic_, sk::gray::ConstBitmapView{frame_.data(), w_, h_, w_}, 0, 0, sk::gray::DITHER_NONE);
   prev_ = frame_;
   sk::gray::Clear();
   sk::gray::Draw(*pic_, x_, y_);
-  sk::gray::Flush();
+  sk::Flush();
   frames_++;
   return kShown;
 }
