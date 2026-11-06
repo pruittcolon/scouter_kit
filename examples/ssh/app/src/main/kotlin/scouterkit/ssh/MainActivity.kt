@@ -58,7 +58,7 @@ class MainActivity : Activity() {
         screenTile = Tile(this, "Phone screen", "Share the entire screen") { phoneScreen() }
         offTile = Tile(this, "Display off", "Dark, link kept") { toggleDisplay() }
         for ((i, t) in listOf(termTile, screenTile, offTile).withIndex())
-            tiles.addView(t, lp(0, weight = 1f).apply { if (i > 0) leftMargin = dp(10) })
+            tiles.addView(t, lp(0, android.view.ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { if (i > 0) leftMargin = dp(10) })
         page.addView(tiles, lp().apply { bottomMargin = dp(14) })
 
         val quick = card("Quick controls")
@@ -208,8 +208,10 @@ class MainActivity : Activity() {
         super.onActivityResult(request, result, data)
         if (request == CompanionApp.REQUEST) companion = CompanionApp.result(this, if (result == RESULT_OK) data else null)
         if (request == SCREEN_REQUEST) {
-            if (result == RESULT_OK && data != null) ScouterService.sendScreen(this, result, data)
-            else note = "screen sharing not allowed"
+            if (result == RESULT_OK && data != null) {
+                startingAt = android.os.SystemClock.elapsedRealtime()
+                ScouterService.sendScreen(this, result, data)
+            } else note = "Screen sharing was not allowed."
             show()
         }
     }
@@ -232,6 +234,7 @@ class MainActivity : Activity() {
         val settings = Settings(this)
         note = if (settings.host.isEmpty()) "No server yet: run scouter.sh in Termux, then Settings, Terminal server, \"Termux on this phone\"." else null
         settings.glassesAllowed = true
+        startingAt = android.os.SystemClock.elapsedRealtime()
         ScouterService.send(this, ScouterService.ACTION_TERMINAL)
         show()
     }
@@ -268,6 +271,7 @@ class MainActivity : Activity() {
     }
 
     private var note: String? = null // the last control's problem
+    private var startingAt = 0L // a mode was tapped: "Starting…" until the session shows (or 45 s)
 
     // R3: in Doze the network waits for maintenance windows unless the app is exempt (keyer's association
     // exempts it).
@@ -276,7 +280,10 @@ class MainActivity : Activity() {
     private fun show() {
         val settings = Settings(this)
         val running = ScouterService.running && Session.showing.isNotEmpty()
+        if (running) startingAt = 0L
+        val starting = !running && startingAt > 0 && android.os.SystemClock.elapsedRealtime() - startingAt < 45000
         headline.text = when {
+            starting -> "Starting…"
             !running -> "Ready when you are"
             Session.blank -> "Display off"
             Session.showing == Settings.SCREEN -> "Phone screen on the glasses"
@@ -297,6 +304,7 @@ class MainActivity : Activity() {
             lines += "Phone screen: ${Session.screen}"
         if (Session.blank) lines += "Turn it back on here, in the notification, or with your TouchBar gesture."
         if (Session.gesture.isNotEmpty()) lines += "Last gesture: ${Session.gesture}"
+        if (starting) lines += "Connecting to the glasses and the server…"
         note?.let { lines += it }
         detail.text = lines.joinToString("\n").ifEmpty { "Pick Terminal or Phone screen to start." }
 
@@ -322,7 +330,7 @@ class MainActivity : Activity() {
             Session.mosh == "off" -> Ui.FAINT
             else -> Ui.WARN
         })
-        pill(if (Session.capturing) "Sharing" else "Not sharing", if (Session.capturing) Ui.ACCENT else Ui.FAINT)
+        pill(if (Session.capturing) "Sharing" else "Screen", if (Session.capturing) Ui.ACCENT else Ui.FAINT)
 
         termTile.select(running && !Session.blank && Session.showing == Settings.TERMINAL)
         screenTile.select(running && !Session.blank && Session.showing == Settings.SCREEN,
