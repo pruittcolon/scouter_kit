@@ -23,19 +23,28 @@ import (
 type Flags struct {
 	Left, Right, Adapter string
 	Log                  bool
+	DX, DY               int
+	aligned              bool // Register ran: DX and DY are the flags' (else the library's default)
 }
 
 func (f *Flags) Register() {
+	a := LoadAlign()
+	f.aligned = true
 	flag.StringVar(&f.Left, "left", "", `left arm address (empty: the bonded glasses, "none": no left arm)`)
 	flag.StringVar(&f.Right, "right", "", `right arm address (empty: the bonded glasses, "none": no right arm)`)
 	flag.StringVar(&f.Adapter, "adapter", "", `BlueZ adapter, "hci1" or its address (empty: the first powered one)`)
 	flag.BoolVar(&f.Log, "log", false, "the library logs to stderr")
+	flag.IntVar(&f.DX, "dx", a.DX, "the eyes' horizontal alignment (default: saved by examples/screen, else 100)")
+	flag.IntVar(&f.DY, "dy", a.DY, "the eyes' vertical alignment (default: saved by examples/screen, else 9)")
 }
 
 // Connect initializes the library and returns its configuration and the
 // arms in use.
 func Connect(f Flags) (scouterkit.Config, []scouterkit.Arm, error) {
 	cfg := scouterkit.DefaultConfig()
+	if f.aligned {
+		cfg.DX, cfg.DY = f.DX, f.DY
+	}
 	cfg.Left, cfg.Right, cfg.Adapter = f.Left, f.Right, f.Adapter
 	cfg.Log = f.Log
 	if err := scouterkit.Init(cfg); err != nil {

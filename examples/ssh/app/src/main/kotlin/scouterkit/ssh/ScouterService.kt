@@ -32,6 +32,7 @@ object Session {
     @Volatile var mosh = "off"
     @Volatile var keyer = "off"
     @Volatile var shown = false // the terminal shows on an eye
+    @Volatile var foreground = false // MainActivity is in front: it gets a paired keyboard's keys (Keyboard)
     @Volatile var title = ""
     @Volatile var unknownHost: String? = null // a fingerprint waiting for the user's confirmation
     // The devices Android reports near (ScouterCompanionService: keyer); null: unknown (none reported since the
@@ -195,6 +196,7 @@ class ScouterService : Service() {
     // The emulated flavour has no keyer.
     private fun active(): Boolean {
         if (BuildConfig.FLAVOR == "emulated") return true
+        if (settings.keyboard) return Session.foreground
         if (settings.keyer.isEmpty()) return false
         return keyer?.up == true
     }
@@ -216,10 +218,16 @@ class ScouterService : Service() {
         if (!bluetoothOn(this)) return bluetoothOff()
         startKeyer()
         if (!active()) {
-            if (!work.hasCallbacks(letGo)) work.postDelayed(letGo, maxOf(3000L, probeUntil - SystemClock.elapsedRealtime()))
+            val grace = if (settings.keyboard) KEYBOARD_GRACE_MS else 3000L
+            if (!work.hasCallbacks(letGo)) work.postDelayed(letGo, maxOf(grace, probeUntil - SystemClock.elapsedRealtime()))
             return
         }
         work.removeCallbacks(letGo)
+        // Keyboard mode: the terminal shows on the glasses whatever the head's angle, as while keyer's keys come.
+        if (settings.keyboard && Session.keyer != KEYBOARD) {
+            Native.force(true)
+            update(keyer = KEYBOARD)
+        }
         if (glassesWith != null && glassesWith != glassesSettings()) stopGlasses(false)
         if (stopped != null && stoppedWith != glassesSettings()) stopped = null
         if (!work.hasCallbacks(retryGlasses)) startGlasses()
@@ -240,6 +248,10 @@ class ScouterService : Service() {
         work.removeCallbacks(watchdog)
         work.removeCallbacks(letGo)
         stopKeyer()
+        if (Session.keyer == KEYBOARD) {
+            Native.force(false)
+            update(keyer = "off")
+        }
         pauseMosh()
         stopGlasses(true, stopped?.let { "stopped: $it (pair again in the case)" } ?: "off")
         if (stopped == null) stopForeground(STOP_FOREGROUND_REMOVE)
@@ -368,6 +380,7 @@ class ScouterService : Service() {
     }
 
     private fun startKeyer() {
+        if (settings.keyboard) return stopKeyer()
         if (keyer != null && keyerAddress != settings.keyer) stopKeyer()
         if (keyer != null || settings.keyer.isEmpty()) return
         keyerAddress = settings.keyer
@@ -429,7 +442,8 @@ class ScouterService : Service() {
         mosh?.let { Session.mosh = it }
         keyer?.let { Session.keyer = it }
         // R4: awake only while the terminal is live, shown on an eye or typed into with keyer.
-        val live = Session.mosh == "connected" && Session.glasses == "ready" && (Session.shown || Session.keyer == "keys")
+        val live = Session.mosh == "connected" && Session.glasses == "ready" &&
+            (Session.shown || Session.keyer == "keys" || Session.keyer == KEYBOARD)
         if (live && wake == null) wake = getSystemService(PowerManager::class.java)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "scouter:terminal").apply { acquire() }
         if (!live) wake?.release().also { wake = null }
@@ -470,6 +484,8 @@ class ScouterService : Service() {
         const val ACTION_TRUST = "scouterkit.ssh.TRUST"
         const val ACTION_NEAR = "scouterkit.ssh.NEAR" // keyer came or went (Session.near)
         const val PROBE_MS = 30000L // how long keyer's link is tried without it coming up
+        const val KEYBOARD = "phone keyboard" // Session.keyer in keyboard mode, while the app is in front
+        const val KEYBOARD_GRACE_MS = 60000L // keyboard mode: the session lets go this long after the app left the front
         @Volatile var running = false // a service instance exists
         // Requested in Settings: Bluetooth (the links, and on Android 14+ the connectedDevice service's
         // prerequisite) and notifications (13+: the state).

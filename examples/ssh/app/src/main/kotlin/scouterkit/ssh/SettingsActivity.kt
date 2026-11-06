@@ -40,11 +40,36 @@ class SettingsActivity : Activity() {
         button("Allow Bluetooth and notifications") { requestPermissions(ScouterService.PERMISSIONS.toTypedArray(), ASK) }
 
         heading("Server")
-        text("Host", settings.host) { settings.host = it.trim() }
-        number("Port", settings.port, 1..65535) { settings.port = it }
-        text("User", settings.user) { settings.user = it.trim() }
+        val host = text("Host (an address, or the server's Tailscale IP)", settings.host) { settings.host = it.trim() }
+        val port = number("Port", settings.port, 1..65535) { settings.port = it }
+        val user = text("User", settings.user) { settings.user = it.trim() }
         keyState = TextView(this)
         list.addView(keyState)
+        button("1. Create a key on this phone") {
+            if (Vault(this).has(Vault.SSH_KEY)) {
+                android.app.AlertDialog.Builder(this)
+                    .setTitle("Replace the key?")
+                    .setMessage("Servers that have the old key will need the new one installed.")
+                    .setPositiveButton("Replace") { _, _ -> createKey() }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            } else createKey()
+        }
+        serverPassword = EditText(this).apply {
+            hint = "the server's password (used once, never saved)"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        list.addView(serverPassword)
+        button("2. Install the key on the server") {
+            install(host.text.toString().trim(), port.text.toString().toIntOrNull() ?: settings.port, user.text.toString().trim())
+        }
+        button("Share the public key (to add it to a server yourself)") {
+            val line = Vault(this).text(Vault.SSH_PUBLIC)
+            if (line == null) keyState.text = "no key made on this phone yet"
+            else startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
+                .putExtra(Intent.EXTRA_TEXT, line), "Public key"))
+        }
+        list.addView(TextView(this).apply { text = "Or bring a key of your own:"; setPadding(0, 24, 0, 0) })
         button("Import SSH key file (OpenSSH)") {
             startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), PICK)
         }
@@ -68,7 +93,7 @@ class SettingsActivity : Activity() {
         glassesState = TextView(this)
         list.addView(glassesState)
         connect = android.widget.CheckBox(this).apply {
-            text = "Connect to the glasses while keyer is on"
+            text = "Connect to the glasses while keyer is on (or, in keyboard mode, while the app is open)"
             setOnCheckedChangeListener { _, on -> settings.glassesAllowed = on }
         }
         list.addView(connect)
@@ -104,6 +129,14 @@ class SettingsActivity : Activity() {
             text = "Debug: show the terminal with the glasses folded"
             isChecked = settings.ignoreWorn
             setOnCheckedChangeListener { _, on -> settings.ignoreWorn = on }
+        })
+
+        heading("Keyboard")
+        list.addView(android.widget.CheckBox(this).apply {
+            text = "Use a keyboard paired with this phone instead of keyer: the terminal runs while this app is " +
+                "open (its screen stays on) and shows on the glasses whatever the head's angle"
+            isChecked = settings.keyboard
+            setOnCheckedChangeListener { _, on -> settings.keyboard = on }
         })
 
         heading("keyer")
@@ -153,12 +186,73 @@ class SettingsActivity : Activity() {
     private lateinit var keyState: TextView
     private lateinit var pasted: EditText
     private lateinit var passphrase: EditText
+    private lateinit var serverPassword: EditText
 
     private fun showKey() {
         val vault = Vault(this)
         val host = vault.text(Vault.HOST_KEY)
-        keyState.text = (if (vault.has(Vault.SSH_KEY)) "SSH key: stored" else "SSH key: none") +
-            (if (host != null) "\nhost key: $host" else "")
+        val made = vault.text(Vault.SSH_PUBLIC)?.let { Bootstrap.keyFingerprint(it) }
+        keyState.text = (when {
+            made != null -> "SSH key: made on this phone, $made"
+            vault.has(Vault.SSH_KEY) -> "SSH key: imported"
+            else -> "SSH key: none (create one below)"
+        }) + (if (host != null) "\nserver's host key: $host" else "")
+    }
+
+    // A new key, in the vault; the private key never leaves the phone.
+    private fun createKey() {
+        keyState.text = "making a key…"
+        Thread {
+            val result = runCatching { Bootstrap.newKey(Vault(this)) }
+            runOnUiThread {
+                showKey()
+                result.exceptionOrNull()?.let { keyState.text = "no key: ${it.message}" }
+            }
+        }.start()
+    }
+
+    // The phone's public key onto the server, with the password once (ssh-copy-id); the server's host key is
+    // confirmed first, as for every connection.
+    private fun install(host: String, port: Int, user: String) {
+        val vault = Vault(this)
+        val line = vault.text(Vault.SSH_PUBLIC) ?: return run { keyState.text = "create a key on this phone first (1.)" }
+        val password = serverPassword.text.toString()
+        if (host.isEmpty() || user.isEmpty() || password.isEmpty()) return run { keyState.text = "fill in host, user and the password" }
+        settings.host = host
+        settings.port = port
+        settings.user = user
+        keyState.text = "installing the key on $user@$host…"
+        Thread {
+            val message = try {
+                if (Bootstrap(vault).installKey(host, port, user, password, line))
+                    "key installed on $user@$host: the app connects with it now"
+                else "key installed on $user@$host, but mosh-server is missing there: install mosh on the server"
+            } catch (e: Bootstrap.UnknownHost) {
+                runOnUiThread { trust(host, port, e.fingerprint) { install(host, port, user) } }
+                return@Thread
+            } catch (e: Exception) {
+                "not installed: ${e.message}"
+            }
+            runOnUiThread {
+                serverPassword.setText("")
+                showKey()
+                keyState.text = message + "\n" + keyState.text
+            }
+        }.start()
+    }
+
+    private fun trust(host: String, port: Int, fingerprint: String, then: () -> Unit) {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Trust this server?")
+            .setCancelable(false)
+            .setMessage("$host:$port\n$fingerprint\n\nOn the server, ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub " +
+                "(or _ed25519_) shows its fingerprint.")
+            .setPositiveButton("Trust") { _, _ ->
+                Vault(this).putText(Vault.HOST_KEY, "$host:$port $fingerprint")
+                then()
+            }
+            .setNegativeButton("Cancel") { _, _ -> keyState.text = "not installed: the server was not trusted" }
+            .show()
     }
 
     // The key and its passphrase stay in the vault; the key is checked by loading it once (R6).
@@ -173,6 +267,7 @@ class SettingsActivity : Activity() {
         }
         val vault = Vault(this)
         vault.put(Vault.SSH_KEY, key)
+        vault.delete(Vault.SSH_PUBLIC) // an imported key: not one made here
         if (phrase.isNotEmpty()) vault.put(Vault.SSH_PASSPHRASE, phrase) else vault.delete(Vault.SSH_PASSPHRASE)
         pasted.setText("")
         passphrase.setText("")
