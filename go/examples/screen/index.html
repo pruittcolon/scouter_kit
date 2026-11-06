@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glasses Screen Control</title>
+<style>
+  :root {
+    --bg: #f4f5f2; --card: #ffffff; --ink: #1d211c; --muted: #646b61; --line: #dfe3dc;
+    --accent: #2f8f4e; --accent-ink: #ffffff; --warn: #b5651d; --track: #d9ded5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1210; --card: #171b18; --ink: #e6ebe4; --muted: #8f988c; --line: #262c27;
+      --accent: #5fd884; --accent-ink: #0b130d; --warn: #e3a35f; --track: #2a312b;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1210; --card: #171b18; --ink: #e6ebe4; --muted: #8f988c; --line: #262c27;
+    --accent: #5fd884; --accent-ink: #0b130d; --warn: #e3a35f; --track: #2a312b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Ubuntu, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 20px 16px 48px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 14px; margin-top: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 12px; }
+  .row { display: grid; grid-template-columns: 92px 1fr 54px; align-items: center; gap: 10px; margin: 10px 0; }
+  .row label { font-size: 14px; }
+  .val { font-variant-numeric: tabular-nums; text-align: right; color: var(--muted); font-size: 13px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+  .seg button { flex: 1; border: 0; background: transparent; color: var(--ink); padding: 8px 6px; font: inherit;
+    font-size: 14px; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed=true] { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  .toggles { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 999px;
+    padding: 7px 14px; font: inherit; font-size: 14px; cursor: pointer; }
+  .chip[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  .btn { border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 9px;
+    padding: 9px 14px; font: inherit; font-size: 14px; cursor: pointer; }
+  .btn:hover, .chip:hover, .seg button:hover { filter: brightness(1.08); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .pad { display: grid; grid-template-columns: repeat(3, 48px); grid-template-rows: repeat(3, 40px); gap: 6px;
+    justify-content: center; margin: 6px 0 4px; }
+  .pad button { border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 8px;
+    font-size: 18px; cursor: pointer; }
+  .pad .c { font-size: 12px; color: var(--muted); }
+  .status { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; }
+  .batt { display: flex; align-items: center; gap: 8px; }
+  .cell { width: 44px; height: 20px; border: 2px solid var(--muted); border-radius: 4px; position: relative; padding: 2px; }
+  .cell::after { content: ""; position: absolute; right: -6px; top: 5px; width: 3px; height: 6px; background: var(--muted); border-radius: 0 2px 2px 0; }
+  .fill { height: 100%; background: var(--accent); border-radius: 1px; width: 0; transition: width .4s; }
+  .fill.low { background: var(--warn); }
+  .big { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); display: inline-block; margin-right: 6px; }
+  .dot.on { background: var(--accent); }
+  .note { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+  .preview { position: relative; background: #050605; border-radius: 8px; aspect-ratio: 740 / 471; overflow: hidden;
+    border: 1px solid var(--line); margin-top: 6px; }
+  .eye { position: absolute; top: 0; bottom: 0; border: 1px dashed #3d5c45; }
+  .pic { position: absolute; background: rgba(95, 216, 132, .22); border: 2px solid #5fd884; border-radius: 3px; }
+  .pv-label { position: absolute; font-size: 11px; color: #7fa889; padding: 3px 6px; }
+  .theme { border: 1px solid var(--line); background: transparent; color: var(--muted); border-radius: 8px; padding: 5px 10px; cursor: pointer; font: inherit; font-size: 13px; }
+  @media (max-width: 420px) { .row { grid-template-columns: 78px 1fr 46px; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Glasses Screen</h1>
+      <div class="sub">Changes apply live and save automatically.</div>
+    </div>
+    <button class="theme" id="theme">Theme</button>
+  </header>
+
+  <section class="card" style="margin-top:16px">
+    <div class="status">
+      <div><span class="dot" id="dot"></span><span id="conn">Connecting…</span></div>
+      <div class="batt"><span>Left</span><div class="cell"><div class="fill" id="bl"></div></div><span class="big" id="blt">–</span></div>
+      <div class="batt"><span>Right</span><div class="cell"><div class="fill" id="br"></div></div><span class="big" id="brt">–</span></div>
+      <div class="sub" id="info"></div>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section class="card">
+      <h2>What to show</h2>
+      <div class="seg" id="mode">
+        <button data-v="follow">Follow mouse</button>
+        <button data-v="full">Whole screen</button>
+        <button data-v="fixed">Fixed spot</button>
+      </div>
+      <div class="row"><label for="zoom">Zoom</label><input type="range" id="zoom" min="0.2" max="6" step="0.05"><span class="val" id="zoom-v"></span></div>
+      <p class="note">Follow mouse at zoom 1 is the sharpest. Whole screen fits everything but text gets small.</p>
+    </section>
+
+    <section class="card">
+      <h2>Position &amp; size on the lens</h2>
+      <div class="pad">
+        <span></span><button data-move="0,-8" title="Up">↑</button><span></span>
+        <button data-move="-8,0" title="Left">←</button><button class="c" id="center" title="Center">center</button><button data-move="8,0" title="Right">→</button>
+        <span></span><button data-move="0,8" title="Down">↓</button><span></span>
+      </div>
+      <div class="row"><label for="x">Left edge</label><input type="range" id="x" min="0" max="740" step="1"><span class="val" id="x-v"></span></div>
+      <div class="row"><label for="y">Top edge</label><input type="range" id="y" min="0" max="471" step="1"><span class="val" id="y-v"></span></div>
+      <div class="row"><label for="w">Width</label><input type="range" id="w" min="64" max="740" step="1"><span class="val" id="w-v"></span></div>
+      <div class="row"><label for="h">Height</label><input type="range" id="h" min="32" max="471" step="1"><span class="val" id="h-v"></span></div>
+      <div class="preview" id="preview">
+        <div class="eye" id="eyeL"></div><div class="eye" id="eyeR"></div>
+        <div class="pic" id="pic"></div>
+        <span class="pv-label" style="left:0;top:0">left eye</span><span class="pv-label" style="right:0;bottom:0">right eye</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Look</h2>
+      <div class="row"><label for="brightness">Brightness</label><input type="range" id="brightness" min="0" max="42" step="1"><span class="val" id="brightness-v"></span></div>
+      <div class="row"><label for="gamma">Contrast</label><input type="range" id="gamma" min="0.3" max="3" step="0.05"><span class="val" id="gamma-v"></span></div>
+      <div class="row"><label for="fps">Frame rate</label><input type="range" id="fps" min="1" max="30" step="1"><span class="val" id="fps-v"></span></div>
+      <div class="toggles">
+        <button class="chip" data-t="invert">Invert (recommended)</button>
+        <button class="chip" data-t="sharp">Sharp 2-level</button>
+      </div>
+      <p class="note">Black is see-through on the glasses. Invert turns a white desktop into glowing text on a clear background and saves battery.</p>
+    </section>
+
+    <section class="card">
+      <h2>Line up your eyes</h2>
+      <div class="row"><label for="dx">Sideways</label><input type="range" id="dx" min="-320" max="320" step="1"><span class="val" id="dx-v"></span></div>
+      <div class="row"><label for="dy">Up / down</label><input type="range" id="dy" min="-64" max="64" step="1"><span class="val" id="dy-v"></span></div>
+      <div class="actions">
+        <button class="btn" data-nudge="dx,-1">◀ 1</button><button class="btn" data-nudge="dx,1">1 ▶</button>
+        <button class="btn" data-nudge="dy,-1">▲ 1</button><button class="btn" data-nudge="dy,1">1 ▼</button>
+      </div>
+      <p class="note" id="realign">Adjust until the two images merge into one. Each change reconnects the glasses for a few seconds. Every other glasses program uses this too.</p>
+    </section>
+
+    <section class="card">
+      <h2>Battery saver</h2>
+      <div class="toggles">
+        <button class="chip" data-t="hide_idle">Off in the case &amp; when folded</button>
+      </div>
+      <div class="row"><label for="look_up">Look up to see</label><input type="range" id="look_up" min="0" max="40" step="1"><span class="val" id="look_up-v"></span></div>
+      <p class="note">Keep "off in the case" on: a lit display stops the arms from charging. "Look up to see" shows the screen only when you tilt your head up by that many degrees (0 = always on), which saves the most battery.</p>
+    </section>
+
+    <section class="card">
+      <h2>Top bar &amp; controls</h2>
+      <div class="toggles">
+        <button class="chip" data-t="bar">Battery bar</button>
+        <button class="chip" data-t="clock">Clock</button>
+      </div>
+      <div class="actions">
+        <button class="btn primary" id="pause">Pause</button>
+        <button class="btn" id="reset">Reset picture</button>
+      </div>
+      <p class="note">Pause clears the lenses. Reset puts the picture back to the default spot and size (keeps brightness and eye alignment).</p>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let S = null, dragging = null, timer = null, pending = {};
+
+const sliders = {
+  zoom: { fmt: v => (+v).toFixed(2) + "×", num: true },
+  x: { fmt: v => v }, y: { fmt: v => v }, w: { fmt: v => v }, h: { fmt: v => v },
+  brightness: { fmt: v => v }, gamma: { fmt: v => (+v).toFixed(2) }, fps: { fmt: v => v },
+  dx: { fmt: v => v, align: true }, dy: { fmt: v => v, align: true },
+  look_up: { fmt: v => +v === 0 ? "always" : v + "°" },
+};
+
+function send(patch) {
+  Object.assign(pending, patch);
+  clearTimeout(timer);
+  timer = setTimeout(async () => {
+    const body = JSON.stringify(pending); pending = {};
+    try {
+      const r = await fetch("/api/set", { method: "POST", headers: { "X-Scouter": "1", "Content-Type": "application/json" }, body });
+      if (r.ok) render(await r.json());
+    } catch (e) { setConn(false, "Program not running"); }
+  }, 90);
+}
+
+for (const id of Object.keys(sliders)) {
+  const el = $(id);
+  el.addEventListener("pointerdown", () => dragging = id);
+  el.addEventListener("pointerup", () => dragging = null);
+  el.addEventListener("input", () => {
+    $(id + "-v").textContent = sliders[id].fmt(el.value);
+    const v = (id === "zoom" || id === "gamma") ? parseFloat(el.value) : parseInt(el.value, 10);
+    send({ [id]: v });
+    if (S) { if (sliders[id].align) S.align[id] = v; else S.settings[id] = v; drawPreview(); }
+  });
+}
+
+document.querySelectorAll("#mode button").forEach(b => b.onclick = () => send({ mode: b.dataset.v }));
+document.querySelectorAll("[data-t]").forEach(b => b.onclick = () => {
+  if (!S) return;
+  const t = b.dataset.t;
+  if (t === "sharp") send({ levels: S.settings.levels === 2 ? 16 : 2 });
+  else send({ [t]: !S.settings[t] });
+});
+document.querySelectorAll("[data-move]").forEach(b => b.onclick = () => {
+  if (!S) return;
+  const [dx, dy] = b.dataset.move.split(",").map(Number);
+  send({ x: S.settings.x + dx, y: S.settings.y + dy });
+});
+$("center").onclick = () => {
+  if (!S) return;
+  const [W, H] = S.display, s = S.settings;
+  send({ x: Math.round((W - s.w) / 2), y: Math.round((H - s.h) / 2) });
+};
+document.querySelectorAll("[data-nudge]").forEach(b => b.onclick = () => {
+  if (!S) return;
+  const [k, d] = b.dataset.nudge.split(",");
+  send({ [k]: S.align[k] + Number(d) });
+});
+$("pause").onclick = () => S && send({ paused: !S.paused });
+$("reset").onclick = () => send({ reset: true });
+
+function setConn(on, text) { $("dot").classList.toggle("on", on); $("conn").textContent = text; }
+
+function batt(fill, label, b) {
+  const p = b.percent;
+  $(fill).style.width = (p < 0 ? 0 : p) + "%";
+  $(fill).classList.toggle("low", p >= 0 && p <= 20);
+  $(label).textContent = p < 0 ? "?" : p + "%" + (b.charging ? " ⚡" : "");
+}
+
+function drawPreview() {
+  if (!S || !S.display[0]) return;
+  const [W, H] = S.display, s = S.settings, dx = S.align.dx, pv = $("preview");
+  pv.style.aspectRatio = W + " / " + H;
+  const pct = (v, of) => (100 * v / of) + "%";
+  const lx = Math.max(0, -dx), rx = Math.max(0, dx);
+  $("eyeL").style.left = pct(lx, W); $("eyeL").style.width = pct(640, W);
+  $("eyeR").style.left = pct(rx, W); $("eyeR").style.width = pct(640, W);
+  const p = $("pic");
+  p.style.left = pct(s.x, W); p.style.top = pct(s.y, H); p.style.width = pct(s.w, W); p.style.height = pct(s.h, H);
+}
+
+function render(st) {
+  S = st;
+  const s = st.settings;
+  setConn(st.connected && !st.realigning, st.realigning ? "Re-aligning…" : !st.connected ? "Connecting…" :
+    st.hidden ? "Connected · display off (" + st.hidden + ")" : "Connected · showing");
+  batt("bl", "blt", st.battery[0]); batt("br", "brt", st.battery[1]);
+  $("info").textContent = st.display[0] ? `lens ${st.display[0]}×${st.display[1]} · screen ${st.screen[0]}×${st.screen[1]} · ${st.frames} frames` : "";
+  $("x").max = st.display[0] || 740; $("w").max = st.display[0] || 740;
+  $("y").max = st.display[1] || 471; $("h").max = st.display[1] || 471;
+  for (const id of Object.keys(sliders)) {
+    if (dragging === id || id in pending) continue;
+    const v = sliders[id].align ? st.align[id] : s[id];
+    $(id).value = v; $(id + "-v").textContent = sliders[id].fmt(v);
+  }
+  document.querySelectorAll("#mode button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === s.mode));
+  document.querySelectorAll("[data-t]").forEach(b => {
+    const t = b.dataset.t;
+    b.setAttribute("aria-pressed", t === "sharp" ? s.levels === 2 : !!s[t]);
+  });
+  $("pause").textContent = st.paused ? "Resume" : "Pause";
+  drawPreview();
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" });
+    render(await r.json());
+  } catch (e) { setConn(false, "Program not running — start scouter-screen"); }
+}
+poll(); setInterval(poll, 1500);
+
+// Theme: follows the system, the button switches light / dark (kept in this browser).
+const root = document.documentElement;
+try { const t = localStorage.getItem("theme"); if (t) root.dataset.theme = t; } catch (e) {}
+$("theme").onclick = () => {
+  const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  root.dataset.theme = dark ? "light" : "dark";
+  try { localStorage.setItem("theme", root.dataset.theme); } catch (e) {}
+};
+</script>
+</body>
+</html>
