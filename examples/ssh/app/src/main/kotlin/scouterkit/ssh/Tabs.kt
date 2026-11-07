@@ -24,8 +24,8 @@ object Tabs {
         "w=$(tmux list-windows -t $t -F '#{window_index} #{pane_current_command}' | awk '$2 ~ /$pattern/ {print $1; exit}'); " +
             "if [ -n \"\$w\" ]; then tmux select-window -t $t:\$w; else tmux new-window -t $t: -n $name '$cmd'; fi"
 
-    // The shell command for an action ("new", "claude", "cursor", "next", "prev", "close", "select:N", "mouse",
-    // "mouse_off"), or null.
+    // The shell command for an action ("new", "claude", "cursor", "next", "prev", "close", "close:N", "select:N",
+    // "mouse", "mouse_off"), or null. Closing never closes the session's first tab.
     fun command(action: String, session: String): String? {
         val t = "'" + session.replace("'", "") + "'"
         val path = "PATH=\"\$HOME/.local/bin:\$HOME/bin:/usr/local/bin:\$PATH\"; export PATH; "
@@ -36,6 +36,9 @@ object Tabs {
             action == "next" -> "tmux next-window -t $t"
             action == "prev" -> "tmux previous-window -t $t"
             action == "close" -> "[ \"$(tmux display -p -t $t '#{window_index}')\" != 0 ] && tmux kill-window -t $t"
+            action.startsWith("close:") -> action.removePrefix("close:").filter { it.isDigit() }.ifEmpty { return null }.let { n ->
+                "[ \"$(tmux list-windows -t $t -F '#{window_index}' | head -n 1)\" != $n ] && tmux kill-window -t $t:$n"
+            }
             action.startsWith("select:") -> "tmux select-window -t $t:${action.removePrefix("select:").filter { it.isDigit() }}"
             action == "list" -> "tmux list-windows -t $t -F '#{window_index}|#{window_name}|#{window_active}'"
             action == "mouse" -> "tmux set -g mouse on"

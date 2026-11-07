@@ -225,9 +225,36 @@ void Pixelate(std::vector<uint8_t> *p, int pw, Rect c, int n) {
   }
 }
 
+// The pointer (o.cursor_*) on a w x h luma picture: an arrow about 13 of the glasses' pixels tall, its tip at
+// the spot, white with a black rim (one of them lit, whatever the picture's inversion).
+void Cursor(std::vector<uint8_t> *luma, int w, int h, const ScreenOptions &o, int pw, int ph) {
+  if (o.cursor_x < 0 || o.cursor_y < 0 || w <= 0 || h <= 0 || pw <= 0 || ph <= 0) return;
+  float per = std::max(float(w) / float(pw), float(h) / float(ph)) * 100.0f / float(std::max(100, o.zoom));
+  float size = 13.0f * std::max(per, 0.25f); // the arrow's height, phone pixels
+  float rim = std::max(1.0f, 1.3f * per);
+  int tx = int(int64_t(std::clamp(o.cursor_x, 0, 10000)) * (w - 1) / 10000);
+  int ty = int(int64_t(std::clamp(o.cursor_y, 0, 10000)) * (h - 1) / 10000);
+  // The arrow: the tip, straight down its left side, back up to a point right of it (units of size).
+  int x0 = std::max(0, int(tx - rim - 1)), x1 = std::min(w - 1, int(tx + 0.72f * size + rim + 1));
+  int y0 = std::max(0, int(ty - rim - 1)), y1 = std::min(h - 1, int(ty + size + rim + 1));
+  const float k = 0.7071f;
+  for (int y = y0; y <= y1; y++) {
+    for (int x = x0; x <= x1; x++) {
+      float u = float(x - tx), v = float(y - ty);
+      float d1 = u;                                         // its left side
+      float d2 = (v - u) * k;                               // the side from the tip to the right point
+      float d3 = -(0.3f * u + 0.7f * (v - size)) / 0.7616f; // the side from the bottom to the right point
+      float d = std::min({d1, d2, d3});
+      if (d < -rim) continue;
+      (*luma)[size_t(y) * size_t(w) + size_t(x)] = d >= rim ? 255 : 0;
+    }
+  }
+}
+
 Rect Base(const uint8_t *rgba, int w, int h, int stride, const ScreenOptions &o, int pw, int ph,
           std::vector<uint8_t> *luma, std::vector<uint8_t> *rot, std::vector<uint8_t> *out) {
   Luma(rgba, w, h, stride, luma);
+  Cursor(luma, w, h, o, pw, ph);
   int sw = w, sh = h;
   const std::vector<uint8_t> *src = luma;
   if (o.rotate % 360 != 0) {

@@ -379,7 +379,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *) {
 }
 
 JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_version(JNIEnv *env, jclass) {
-  return env->NewStringUTF("scouter_ssh 0.17, mosh 1.4.0");
+  return env->NewStringUTF("scouter_ssh 0.18, mosh 1.4.0");
 }
 
 // ------------------------------------------------ glasses
@@ -956,10 +956,11 @@ JNIEXPORT jintArray JNICALL Java_scouterkit_ssh_Native_battery(JNIEnv *env, jcla
 namespace {
 
 // Settings.screenOptions: fit, pan x, pan y, zoom, rotate, place x, y, w, h, invert %, levels, contrast,
-// sharpen, hide in the case, hide folded, gamma (x100), threshold, steady, dither, detail (0 auto), budget (KB).
+// sharpen, hide in the case, hide folded, gamma (x100), threshold, steady, dither, detail (0 auto), budget (KB),
+// the pointer's x, y (1/10000 of the screen; -1 none).
 ssh::ScreenOptions Options(JNIEnv *env, jintArray options) {
-  jint v[21] = {0, 50, 0, 100, 0, 0, 0, 100, 100, 100, 2, 0, 0, 1, 0, 100, 128, 1, 0, 1, 6};
-  jsize n = std::min<jsize>(env->GetArrayLength(options), 21);
+  jint v[23] = {0, 50, 0, 100, 0, 0, 0, 100, 100, 100, 2, 0, 0, 1, 0, 100, 128, 1, 0, 1, 6, -1, -1};
+  jsize n = std::min<jsize>(env->GetArrayLength(options), 23);
   env->GetIntArrayRegion(options, 0, n, v);
   ssh::ScreenOptions o;
   o.fit = std::clamp(int(v[0]), 0, 2);
@@ -983,6 +984,8 @@ ssh::ScreenOptions Options(JNIEnv *env, jintArray options) {
   o.hide_folded = v[14] != 0 && !g_ignore_worn;
   o.detail = std::clamp(int(v[19]), 0, 4);
   o.budget = std::clamp(int(v[20]), 1, 64);
+  o.cursor_x = v[21] < 0 ? -1 : std::min(int(v[21]), 10000);
+  o.cursor_y = v[22] < 0 ? -1 : std::min(int(v[22]), 10000);
   return o;
 }
 

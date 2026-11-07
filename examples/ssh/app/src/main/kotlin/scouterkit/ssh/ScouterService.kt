@@ -53,6 +53,10 @@ object Session {
     @Volatile var dictating = false // what is said is typed into the terminal
     @Volatile var pointer = false // the pointer is on (its keys move and click it)
     @Volatile var tabs = "" // the last tab action's problem, if any
+    // The glasses' cursor on the phone's screen, in 1/10000 of its width and height (-1: none): drawn into the
+    // phone's picture (Settings.screenOptions), its clicks tapped there by VoxKeys.
+    @Volatile var cursorX = -1
+    @Volatile var cursorY = -1
     @Volatile var tabList = listOf<Tabs.Tab>() // the terminal's tabs (tmux windows), for the dashboard
     @Volatile var heard = listOf<String>() // the last phrases, newest first
     // The devices Android reports near (ScouterCompanionService: keyer); null: unknown (none reported since the
@@ -277,6 +281,7 @@ class ScouterService : Service() {
                 display(on, "app")
             }
             ACTION_TRUST -> work.post { trust(intent.getStringExtra("fingerprint")) }
+            ACTION_CLOSE -> work.post { closeSource() }
             // The pointer (extra "cmd": toggle, off, move:DX:DY, click, right, up, down) and tabs (extra "tab").
             ACTION_POINTER -> work.post { pointer(intent.getStringExtra("cmd").orEmpty()) }
             ACTION_TABS -> work.post { tabs(intent.getStringExtra("tab").orEmpty()) }
@@ -423,7 +428,7 @@ class ScouterService : Service() {
         val key = chosen()
         // A server's screen chosen and not running: started (again after a failure once its wait is over); the
         // glasses keep its card until its first image.
-        if (key.startsWith("screen:") && remote == null && SystemClock.elapsedRealtime() >= remoteRetryAt)
+        if (key.startsWith("screen:") && remote == null && key !in closed && SystemClock.elapsedRealtime() >= remoteRetryAt)
             servers.firstOrNull { "screen:${it.id}" == key }?.let { s ->
                 startRemote(s)
                 Session.screenSource = key
@@ -603,6 +608,7 @@ class ScouterService : Service() {
     // A terminal's session: its SSH start runs on its own thread (an unreachable server holds up nothing else),
     // then mosh keeps it, side by side with the other terminals', while the process lives.
     private fun startTerm(s: Settings.Server) {
+        if (s.id in closed) return // closed by the user: until it is chosen again
         val t = terms.getOrPut(s.id) { Term(s.id) }
         if (t.started || t.thread?.isAlive == true || t.unknownHost != null) return
         if (t.status.startsWith("error") && SystemClock.elapsedRealtime() < t.retryAt) return
@@ -723,10 +729,12 @@ class ScouterService : Service() {
             key == Settings.PHONE -> listOf("PHONE SCREEN", "", "Not shared right now", "Share it in Vox: Phone screen", "", hint)
             key.startsWith("screen:") -> {
                 val name = settings.servers().firstOrNull { "screen:${it.id}" == key }?.name ?: "Screen"
-                if (remoteWhy.isEmpty()) listOf("${name.uppercase()} SCREEN", "", "Starting…", "", hint)
+                if (key in closed) listOf("${name.uppercase()} SCREEN", "", "Closed", "Choose it again to start it", "", hint)
+                else if (remoteWhy.isEmpty()) listOf("${name.uppercase()} SCREEN", "", "Starting…", "", hint)
                 else listOf("${name.uppercase()} SCREEN", "", remoteWhy, "Trying again by itself", "", hint)
             }
             server == null -> listOf("NO TERMINAL", "", "Add a server in Vox: Terminal tab", "", hint)
+            server.id in closed -> listOf(server.name.uppercase(), "", "Closed", "Choose it again to connect", "", hint)
             t == null || t.status == "off" || t.status == "starting" || t.status == "connecting" ->
                 listOf(server.name.uppercase(), "", "Connecting…", "", hint)
             t.unknownHost != null -> listOf(server.name.uppercase(), "", "New host key: confirm it in Vox", "", hint)
@@ -745,6 +753,37 @@ class ScouterService : Service() {
                 .map { (if (arm == 0) "left " else "right ") + it.second }
         }.firstOrNull()
         return listOfNotNull(touch?.let { "Next source: $it" }, "Alt+arrows").joinToString(" · ")
+    }
+
+    // Alt+Q: the source shown closes (a terminal's connection ends, a screen stops) and the glasses go to the next
+    // one still open; with none, the card says it is closed until it is chosen again.
+    private val closed = HashSet<String>() // terminals' ids and "screen:ID" keys the user closed
+    private fun closeSource() {
+        val key = chosen()
+        when {
+            key.startsWith("term:") -> {
+                val id = key.removePrefix("term:")
+                closed += id
+                terms[id]?.let { dropTerm(it) }
+            }
+            key == Settings.PHONE -> screen?.let { screenEnded("closed") }
+            key.startsWith("screen:") -> {
+                closed += key
+                stopRemote()
+                remoteWhy = "closed"
+            }
+            else -> return
+        }
+        Log.i(TAG, "closed $key")
+        val open = settings.sources().map { it.first }.firstOrNull { k ->
+            k != key && when {
+                k.startsWith("term:") -> terms[k.removePrefix("term:")]?.started == true
+                k == Settings.PHONE -> screen != null
+                else -> false
+            }
+        }
+        if (open != null) choose(open) else render(Settings.TERMINAL)
+        update()
     }
 
     private fun vaultKey(id: String) = Vault.MOSH + "." + id.filter { it.isLetterOrDigit() || it == '-' || it == '_' }
@@ -947,6 +986,8 @@ class ScouterService : Service() {
                 if (settings.servers().none { it.id == id }) return
                 if (settings.activeServer != id || settings.host.isEmpty()) settings.useServer(id)
                 terms[id]?.let { if (it.status.startsWith("error")) it.retryAt = 0L } // chosen again: tried at once
+                closed.remove(key)
+                closed.remove(id)
                 settings.source = key
                 stopRemote()
                 render(Settings.TERMINAL)
@@ -965,6 +1006,7 @@ class ScouterService : Service() {
             }
             key.startsWith("screen:") -> {
                 val s = settings.servers().firstOrNull { it.id == key.removePrefix("screen:") } ?: return
+                closed.remove(key)
                 settings.source = key
                 lastScreen = key
                 remoteTries = 0
@@ -1036,6 +1078,7 @@ class ScouterService : Service() {
     private var barWidth = 0
     private val pointerIdle = Runnable { // hidden after a while; its keys still work
         Native.pointer(-1, -1)
+        hideCursor()
         if (pointerBar >= 0) {
             pointerBar = -1
             pointerRow = 0
@@ -1045,6 +1088,11 @@ class ScouterService : Service() {
 
     private fun pointer(cmd: String) {
         val parts = cmd.split(":")
+        if (onPhone()) {
+            phonePointer(parts)
+            Session.changed()
+            return
+        }
         when (parts[0]) {
             "toggle" -> if (Session.pointer) pointerOff() else pointerOn()
             "off" -> pointerOff()
@@ -1116,19 +1164,90 @@ class ScouterService : Service() {
         dash()
     }
 
-    // A click on the bar: a tab is shown, the + makes another; the wheel goes to the tab before or after.
+    // A click on the bar: a tab is shown (a right click closes it), the + makes another, PHONE brings up the
+    // phone's screen; the wheel goes to the tab before or after.
     private fun barClick(what: String) {
         val hit = barHits.getOrNull(pointerBar) ?: return
         Session.tabs = ""
-        when (what) {
-            "click" -> tabs(hit.action)
-            "up" -> tabs("prev")
-            "down" -> tabs("next")
+        when {
+            hit.action == "phone" -> if (what == "click") {
+                barLeave()
+                phoneScreen()
+            }
+            what == "click" -> tabs(hit.action)
+            what == "right" && hit.action.startsWith("select:") -> tabs("close:" + hit.action.removePrefix("select:"))
+            what == "up" -> tabs("prev")
+            what == "down" -> tabs("next")
         }
+    }
+
+    // The phone's screen on the glasses: at once while it is shared, else Android asks in the app (it comes up on
+    // the phone) and the glasses say so meanwhile.
+    private fun phoneScreen() {
+        if (screen == null) runCatching {
+            startActivity(Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_SHARE, true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }.onFailure { Log.w(TAG, "share: ${it.message}") }
+        choose(Settings.PHONE)
+    }
+
+    // ------------------------------------------------ the cursor on the phone's screen
+
+    // The phone's own screen on the glasses: the pointer is a cursor on it, its clicks are taps (VoxKeys).
+    private fun onPhone() = screen != null && settings.show == Settings.SCREEN &&
+        Session.screenSource.ifEmpty { Settings.PHONE } == Settings.PHONE
+
+    private var cursorX = 5000
+    private var cursorY = 5000
+
+    private fun phonePointer(parts: List<String>) {
+        when (parts[0]) {
+            "toggle" -> if (Session.pointer) pointerOff() else pointerOn()
+            "off" -> pointerOff()
+            "move" -> {
+                if (!Session.pointer) pointerOn()
+                // A step: 1/60 of the screen across, 1/45 down (the keyboard's arrows, a cell of the touchpad).
+                cursorX = (cursorX + (parts.getOrNull(1)?.toIntOrNull() ?: 0) * 167).coerceIn(0, 10000)
+                cursorY = (cursorY + (parts.getOrNull(2)?.toIntOrNull() ?: 0) * 222).coerceIn(0, 10000)
+                showCursor()
+            }
+            "click", "right", "up", "down" -> {
+                if (!Session.pointer) pointerOn()
+                val b = getSystemService(android.view.WindowManager::class.java).maximumWindowMetrics.bounds
+                val x = cursorX / 10000f * (b.width() - 1)
+                val y = cursorY / 10000f * (b.height() - 1)
+                val ok = when (parts[0]) {
+                    "click" -> VoxKeys.tap(x, y)
+                    "right" -> VoxKeys.tap(x, y, long = true)
+                    "up" -> VoxKeys.scroll(x, y, -b.height() / 5f, b.height().toFloat())
+                    else -> VoxKeys.scroll(x, y, b.height() / 5f, b.height().toFloat())
+                }
+                Session.tabs = if (ok) "" else "clicks on the phone need Vox's keyboard shortcuts (Android Settings: Accessibility, Vox)"
+                showCursor()
+            }
+        }
+    }
+
+    // The cursor into the phone's picture (PhoneScreen sends it again when the options change); hidden after a while.
+    private fun showCursor() {
+        Session.cursorX = cursorX
+        Session.cursorY = cursorY
+        work.removeCallbacks(pointerIdle)
+        work.postDelayed(pointerIdle, 10000)
+    }
+
+    private fun hideCursor() {
+        Session.cursorX = -1
+        Session.cursorY = -1
     }
 
     private fun pointerOn() {
         Session.pointer = true
+        if (onPhone()) {
+            cursorX = 5000
+            cursorY = 5000
+            return showCursor()
+        }
         if (settings.tmuxMouse) tabs("mouse")
         pointerRow = settings.rows / 2
         pointerCol = settings.cols / 2
@@ -1139,6 +1258,7 @@ class ScouterService : Service() {
         Session.pointer = false
         work.removeCallbacks(pointerIdle)
         Native.pointer(-1, -1)
+        hideCursor()
         if (pointerBar >= 0) barLeave()
     }
 
@@ -1431,6 +1551,7 @@ class ScouterService : Service() {
         if (show == Settings.SCREEN && Session.screenSource.isEmpty()) Session.screenSource = remote?.key ?: Settings.PHONE
         settings.show = show
         Session.source = settings.sourceName(chosen())
+        if (!onPhone()) hideCursor()
         if (show == Settings.SCREEN) {
             val error = Native.screenStart()
             if (error != null) {
@@ -1459,6 +1580,34 @@ class ScouterService : Service() {
 
     // A TouchBar gesture: what Settings says it does.
     private fun gesture(arm: Int, gesture: Int) {
+        // The left TouchBar: a hold's own action when it is let go; held 3 s, the glasses go look-up only
+        // (Always visible off), which only the app turns back (no accidental switches).
+        if (arm == 0 && gesture == Native.GESTURE_HOLD) {
+            work.removeCallbacks(longHold)
+            work.postDelayed(longHold, LONG_HOLD_MS - 458)
+            return
+        }
+        if (arm == 0 && gesture == Native.GESTURE_HOLD_END) {
+            if (!work.hasCallbacks(longHold)) return // the long hold happened
+            work.removeCallbacks(longHold)
+            return gestureAction(arm, Native.GESTURE_HOLD)
+        }
+        if (gesture == Native.GESTURE_HOLD_END) return
+        gestureAction(arm, gesture)
+    }
+
+    private val longHold = Runnable {
+        Session.gesture = "left held 3 s: look-up only"
+        Log.i(TAG, "left held 3 s: Always visible off")
+        if (settings.phoneForce) {
+            settings.phoneForce = false
+            refresh()
+        }
+        voiceSay("Look-up only. Turn Always visible back on in Vox.")
+        Session.changed()
+    }
+
+    private fun gestureAction(arm: Int, gesture: Int) {
         val action = settings.gestureAction(arm, gesture)
         val name = (if (arm == 0) "left " else "right ") + (Settings.GESTURES.firstOrNull { it.first == gesture }?.second ?: "gesture $gesture")
         Session.gesture = "$name: ${Settings.ACTIONS[action] ?: action}"
@@ -1546,11 +1695,13 @@ class ScouterService : Service() {
         const val ACTION_DISPLAY = "scouterkit.ssh.DISPLAY" // the display on / off (EXTRA_ON, else the other way)
         const val ACTION_SOURCE = "scouterkit.ssh.SOURCE" // a source on the glasses (Shortcuts.EXTRA: a key, next, prev)
         const val ACTION_SERVER = "scouterkit.ssh.SERVER" // a saved server's terminal (extra "id"; none: the next)
+        const val ACTION_CLOSE = "scouterkit.ssh.CLOSE" // the source shown closes (Alt+Q)
         const val ACTION_VOICE = "scouterkit.ssh.VOICE" // voice (extra "mode": listen, stop, always)
         const val ACTION_LOOK_UP = "scouterkit.ssh.LOOK_UP" // the look-up view's settings changed
         const val ACTION_POINTER = "scouterkit.ssh.POINTER" // the pointer (extra "cmd")
         // Retries after a failure (the glasses' start, the terminal's session): soon at first, then less often.
         val RETRY_MS = longArrayOf(3000, 5000, 8000, 12000, 20000, 30000)
+        const val LONG_HOLD_MS = 3000L // the left TouchBar held this long: look-up only
         const val ACTION_TABS = "scouterkit.ssh.TABS" // a tab action (extra "tab", Tabs.command)
         const val MIC = "\uF130" // the terminal font's microphone (Nerd Fonts)
         const val EXTRA_ON = "on"

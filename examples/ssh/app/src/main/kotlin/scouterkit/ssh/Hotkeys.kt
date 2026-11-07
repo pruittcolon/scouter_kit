@@ -1,6 +1,8 @@
 package scouterkit.ssh
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.graphics.Path
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -47,6 +49,19 @@ object Hotkeys {
             return true
         }
         if (!e.isAltPressed || e.isCtrlPressed || e.isMetaPressed) return false
+        // The phone's screen on the glasses: Alt+Backspace is Back, Alt+H Home (VoxKeys).
+        if (Session.showing == Settings.SCREEN && Session.screenSource.ifEmpty { Settings.PHONE } == Settings.PHONE &&
+            (e.keyCode == KeyEvent.KEYCODE_DEL || e.keyCode == KeyEvent.KEYCODE_H)) {
+            if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0)
+                VoxKeys.global(if (e.keyCode == KeyEvent.KEYCODE_DEL) AccessibilityService.GLOBAL_ACTION_BACK
+                else AccessibilityService.GLOBAL_ACTION_HOME)
+            return true
+        }
+        // Alt+Q closes the source shown (a terminal's connection, a screen's sharing).
+        if (e.keyCode == KeyEvent.KEYCODE_Q) {
+            if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0) ScouterService.send(context, ScouterService.ACTION_CLOSE)
+            return true
+        }
         // Alt+M the pointer; Alt+T a new tab, Alt+[ / ] the tab before / after, Alt+W closes the tab shown.
         val tab = when (e.keyCode) {
             KeyEvent.KEYCODE_T -> "new"
@@ -113,8 +128,46 @@ object Hotkeys {
 
 // The keyboard's shortcuts in every app: an accessibility service that only filters key events (it reads no
 // screen content); every other key goes on as it came.
+// It also taps the phone where the glasses' cursor is (Android's accessibility gestures), and Back and Home.
 class VoxKeys : AccessibilityService() {
+    override fun onServiceConnected() {
+        instance = this
+    }
+
+    override fun onDestroy() {
+        if (instance === this) instance = null
+        super.onDestroy()
+    }
+
     override fun onKeyEvent(event: KeyEvent): Boolean = Hotkeys.handle(this, event)
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
     override fun onInterrupt() {}
+
+    companion object {
+        @Volatile private var instance: VoxKeys? = null
+
+        // A tap (long: held 650 ms, a right click) at x, y of the phone's screen, in pixels. False: VoxKeys is off.
+        fun tap(x: Float, y: Float, long: Boolean = false): Boolean {
+            val s = instance ?: return false
+            val path = Path().apply { moveTo(x.coerceAtLeast(0f), y.coerceAtLeast(0f)) }
+            val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, if (long) 650 else 40)).build()
+            return s.dispatchGesture(g, null, null)
+        }
+
+        // A scroll from x, y: a swipe of dy pixels (positive: the page goes on downward, as a wheel turned down).
+        fun scroll(x: Float, y: Float, dy: Float, height: Float): Boolean {
+            val s = instance ?: return false
+            val from = y.coerceIn(1f, height - 2f)
+            val to = (from - dy).coerceIn(1f, height - 2f)
+            val path = Path().apply {
+                moveTo(x.coerceAtLeast(0f), from)
+                lineTo(x.coerceAtLeast(0f), to)
+            }
+            val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 220)).build()
+            return s.dispatchGesture(g, null, null)
+        }
+
+        // Back, Home, Recents (AccessibilityService.GLOBAL_ACTION_*).
+        fun global(action: Int): Boolean = instance?.performGlobalAction(action) ?: false
+    }
 }

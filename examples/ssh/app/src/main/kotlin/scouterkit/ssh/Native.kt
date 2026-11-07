@@ -122,6 +122,7 @@ object Native {
     const val GESTURE_DOUBLE = 2
     const val GESTURE_TRIPLE = 3
     const val GESTURE_HOLD = 4 // a press held 458 ms
+    const val GESTURE_HOLD_END = 5 // that press let go
 
     // From the native threads: a new screen or status.
     @JvmStatic fun changed() {

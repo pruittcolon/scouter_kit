@@ -77,7 +77,11 @@ object Dashboard {
         x += label.measureText(name) + 10f
         val tabText = paint(barH * 0.66f, 13, MEDIUM)
         val dark = paint(barH * 0.66f, 0, MEDIUM)
-        val room = w - pad - 6f - (barH + 6f) // the + at the end
+        // The phone's screen at the bar's right end: a tab that brings it up.
+        val phoneLabel = paint(barH * 0.6f, 13, CONDENSED, 0.12f)
+        val phoneW = phoneLabel.measureText("PHONE") + barH * 0.9f + 12f
+        val phoneBox = RectF(w - pad - 6f - phoneW, barY, w - pad - 6f, barY + barH)
+        val room = phoneBox.left - 8f - (barH + 6f) // the + after the tabs
         var shown = 0
         val hits = mutableListOf<Hit>()
         val mark = Paint().apply { isAntiAlias = true; style = Paint.Style.STROKE; strokeWidth = 1.5f; color = grey(15) }
@@ -130,6 +134,29 @@ object Dashboard {
             c.drawText("+", box.centerX(), textY + barH * 0.06f, plus)
             hits += Hit(box.left, box.right, "new")
             if (on) hovered(box)
+        }
+        run {
+            val on = hover == "phone"
+            if (on) {
+                fill.color = grey(14)
+                c.drawRoundRect(phoneBox, 4f, 4f, fill)
+            } else {
+                line.color = grey(6)
+                c.drawRoundRect(phoneBox, 4f, 4f, line)
+            }
+            // A small phone: a rounded outline with a dot for its button.
+            val ph = barH * 0.62f
+            val pw = ph * 0.55f
+            val px = phoneBox.left + 6f
+            val py = phoneBox.centerY() - ph / 2
+            val icon = Paint().apply { isAntiAlias = true; style = Paint.Style.STROKE; strokeWidth = 1.2f; color = grey(if (on) 0 else 13) }
+            c.drawRoundRect(RectF(px, py, px + pw, py + ph), 2f, 2f, icon)
+            icon.style = Paint.Style.FILL
+            c.drawCircle(px + pw / 2, py + ph - 2.2f, 0.9f, icon)
+            phoneLabel.color = grey(if (on) 0 else 13)
+            c.drawText("PHONE", px + pw + 5f, textY, phoneLabel)
+            hits += Hit(phoneBox.left, phoneBox.right, "phone")
+            if (on) hovered(phoneBox)
         }
         line.color = grey(3)
         val ruleY = barY + barH + 3.5f

@@ -242,6 +242,35 @@ int main() {
   phone = Phone(540, 471, 200, 200, 80, 80, stride);
   CHECK(WaitFor([&] { return m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown; }, 15000));
 
+  // The pointer: an arrow at its spot on a black screen (its rim or its fill lit, whatever the inversion), nothing
+  // without it; it moves with its spot.
+  {
+    std::vector<uint8_t> dark(size_t(540) * 4 * 471, 0);
+    for (size_t i = 3; i < dark.size(); i += 4) dark[i] = 255;
+    ssh::ScreenOptions po;
+    po.invert = 0;
+    po.levels = 16;
+    po.detail = 1;
+    std::vector<uint8_t> none, at, moved;
+    ssh::Picture(dark.data(), 540, 471, 540 * 4, po, 270, 236, &none);
+    po.cursor_x = 5000;
+    po.cursor_y = 5000;
+    ssh::Picture(dark.data(), 540, 471, 540 * 4, po, 270, 236, &at);
+    po.cursor_x = 1000;
+    ssh::Picture(dark.data(), 540, 471, 540 * 4, po, 270, 236, &moved);
+    auto lit = [](const std::vector<uint8_t> &p, int x0, int x1, int y0, int y1, int pw) {
+      int n = 0;
+      for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) n += p[size_t(y) * size_t(pw) + size_t(x)] > 128;
+      return n;
+    };
+    CHECK(lit(none, 0, 270, 0, 236, 270) == 0);
+    CHECK(lit(at, 130, 150, 112, 135, 270) > 10); // just right of and below the middle
+    CHECK(lit(at, 0, 100, 0, 236, 270) == 0);
+    CHECK(lit(moved, 20, 45, 112, 135, 270) > 10);
+    CHECK(lit(moved, 130, 150, 112, 135, 270) == 0);
+  }
+
   m.Stop();
   CHECK(WaitFor([] { return Lit(0) == 0 && Lit(1) == 0; }));
   CHECK(m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kStopped);

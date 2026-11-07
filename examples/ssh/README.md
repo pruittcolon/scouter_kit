@@ -135,7 +135,18 @@ glasses, the saved servers) and **Settings**.
   default, `tmux set -g mouse on` when the pointer starts) clicking a tab there switches to it.
 - **The dashboard's tab bar**: up from the terminal's top row the pointer goes onto it (the tab or + it is on
   gets a bright ring and a notch, `Dashboard.Hit`); left and right go a tab at a time, a click shows that tab
-  (the + opens another), the wheel goes to the tab before or after, and down goes back into the terminal under it.
+  (the + opens another, a right click closes it, never the session's first), the wheel goes to the tab before or
+  after, and down goes back into the terminal under it. **PHONE** at its right end brings up the phone's screen
+  (Android asks in the app first while it is not shared).
+- **The cursor on the phone's screen**: with the phone's screen on the glasses the pointer is an arrow drawn into
+  its picture (`ScreenOptions::cursor_*`, before rotate and zoom); a click taps the phone there, a right click is a
+  long press, the wheel scrolls (VoxKeys: Android's accessibility gestures; *Vox* must be on in Accessibility).
+  Alt+Backspace is Back, Alt+H Home. Typing goes to the phone's app as usual (the pointer off: Enter and Space
+  are its clicks while it is on).
+- **Closing**: Alt+Q closes the source shown (a terminal's connection, the phone's sharing, a server's screen) and
+  the glasses go to the next one still open; a closed one stays closed until it is chosen again.
+- **Look-up only**: the left TouchBar held 3 s turns *Always visible* off (the glasses show when looking up);
+  only the app turns it back on, so a stray touch cannot. The left hold's own action comes when it is let go.
 
 ## Voice
 

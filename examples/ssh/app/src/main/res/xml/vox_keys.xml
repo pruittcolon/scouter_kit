@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- VoxKeys: key events only (no window content, no gestures). -->
+<!-- VoxKeys: key events, and taps for the glasses' cursor on the phone's screen (no window content). -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityFlags="flagRequestFilterKeyEvents"
     android:canRequestFilterKeyEvents="true"
+    android:canPerformGestures="true"
     android:canRetrieveWindowContent="false"
     android:description="@string/keys_description"
     android:notificationTimeout="100" />

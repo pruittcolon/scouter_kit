@@ -40,7 +40,13 @@ struct ScreenOptions {
   bool sharpen = false;     // an unsharp mask after scaling: crisper text
   bool hide_case = true;    // panels off while an arm is in the case (a lit panel disturbs charging)
   bool hide_folded = false; // panels off while both arms say "not worn" (WORN is a guess from the arms' radio)
+  // A pointer on the phone's screen (the glasses' cursor for it), where it sits in 1/10000 of the screen's width
+  // and height; -1: none. Drawn on the phone's picture first, so it follows rotate, zoom and pan.
+  int cursor_x = -1, cursor_y = -1;
 };
+
+// The pointer (o.cursor_*) drawn on a w x h luma picture that becomes a pw x ph one on the glasses.
+void Cursor(std::vector<uint8_t> *luma, int w, int h, const ScreenOptions &o, int pw, int ph);
 
 // RGBA_8888 rows (stride bytes apart) to 0..255 luma, w x h bytes.
 void Luma(const uint8_t *rgba, int w, int h, int stride, std::vector<uint8_t> *out);
