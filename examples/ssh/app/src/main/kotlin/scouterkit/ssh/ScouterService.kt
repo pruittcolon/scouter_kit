@@ -219,6 +219,15 @@ class ScouterService : Service() {
         Native.onGesture = { a, g -> work.post { gesture(a, g) } }
         VoxKeys.onMouse = { x, y -> mouse(x, y) }
         VoxKeys.onTrackpad = { kind, dx, dy -> work.post { trackpad(kind, dx, dy) } }
+        Looks.app = VoxKeys.app
+        VoxKeys.onApp = { pkg ->
+            work.post {
+                Looks.app = pkg
+                lookSwitch()
+            }
+        }
+        settings.listen(lookPrefs)
+        work.postDelayed(windowPoll, 3000)
         LookUp.onChange = { work.post { header() } }
         work.post(headerTick)
         work.postDelayed(tabPoll, 5000)
@@ -364,6 +373,9 @@ class ScouterService : Service() {
         VoxKeys.onMouse = null
         VoxKeys.onTrackpad = null
         VoxKeys.capture(false)
+        VoxKeys.onApp = null
+        settings.unlisten(lookPrefs)
+        work.removeCallbacks(windowPoll)
         work.removeCallbacks(batteryTicker)
         runCatching { unregisterReceiver(lock) }
         runCatching { unregisterReceiver(bonds) }
@@ -1852,9 +1864,66 @@ class ScouterService : Service() {
             }
         } else Native.screenStop()
         if (blankByLock) blankByLock = false
+        lookSwitch()
         update()
         refresh()
         if (show == Settings.TERMINAL) header()
+    }
+
+    // ------------------------------------------------ the look per app
+
+    // The look of what the screen shows now: the phone's app in front, a server's window, else the source; null while
+    // the terminal shows.
+    private fun lookKey(): String? {
+        if (settings.show != Settings.SCREEN) return null
+        val src = Session.screenSource.ifEmpty { Settings.PHONE }
+        if (src == Settings.PHONE) return Looks.app.takeIf { it.isNotEmpty() }?.let { "app:$it" } ?: "src:phone"
+        val id = src.removePrefix("screen:")
+        return Looks.windows[id]?.takeIf { it.isNotEmpty() }?.let { "win:$id:$it" } ?: "src:$src"
+    }
+
+    // What shows changed (an app, a window, the source): its look comes back.
+    private fun lookSwitch() {
+        if (!settings.looksPerApp) return
+        val key = lookKey() ?: return
+        if (key == Looks.key) return
+        if (Looks.use(settings, key)) Log.i(TAG, "look: $key")
+        Session.changed()
+    }
+
+    // A look setting changed (the Screen tab): the look in use keeps it.
+    private val lookPrefs = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, k ->
+        if (k in Looks.PREFS) work.post { if (settings.looksPerApp) Looks.remember(settings) }
+    }
+
+    // A server's screen on the glasses: its window in front (X11's active window's class), asked every few seconds
+    // over the server's kept SSH connection; a server where that fails is asked again after a minute.
+    private var windowAsking = false
+    private val windowRetry = HashMap<String, Long>()
+    private val windowPoll = object : Runnable {
+        override fun run() {
+            work.postDelayed(this, 2500)
+            val src = Session.screenSource
+            if (!settings.looksPerApp || settings.show != Settings.SCREEN || !src.startsWith("screen:") || windowAsking) return
+            val s = settings.servers().firstOrNull { "screen:${it.id}" == src } ?: return
+            if (SystemClock.elapsedRealtime() < (windowRetry[s.id] ?: 0L)) return
+            windowAsking = true
+            Thread {
+                val out = runCatching { Bootstrap(vault).runShared(s.host, s.port, s.user, WINDOW_CMD) }.getOrNull()
+                val cls = out?.lines()?.lastOrNull { it.contains("WM_CLASS") }?.let { Regex("\"([^\"]*)\"\\s*$").find(it)?.groupValues?.get(1) }
+                work.post {
+                    windowAsking = false
+                    if (cls.isNullOrEmpty()) {
+                        windowRetry[s.id] = SystemClock.elapsedRealtime() + 60000
+                        return@post
+                    }
+                    if (Looks.windows[s.id] != cls) {
+                        Looks.windows = Looks.windows + (s.id to cls)
+                        lookSwitch()
+                    }
+                }
+            }.start()
+        }
     }
 
     // The display on or off; why: for the status line.
@@ -1977,6 +2046,10 @@ class ScouterService : Service() {
         const val TAG = "scouter"
         const val CHANNEL = "session"
         const val NOTIFICATION = 1
+        // The X11 window in front on a server (its WM_CLASS line), for the look per window.
+        const val WINDOW_CMD = "export DISPLAY=\"\${DISPLAY:-:0}\"; U=\$(id -u); if [ -z \"\$XAUTHORITY\" ] && " +
+            "[ -f \"/run/user/\$U/gdm/Xauthority\" ]; then export XAUTHORITY=\"/run/user/\$U/gdm/Xauthority\"; fi; " +
+            "xprop -id \"\$(xprop -root _NET_ACTIVE_WINDOW | sed 's/.*# //')\" WM_CLASS"
         const val ACTION_STOP = "scouterkit.ssh.STOP"
         const val ACTION_TRUST = "scouterkit.ssh.TRUST"
         const val ACTION_NEAR = "scouterkit.ssh.NEAR" // keyer came or went (Session.near)

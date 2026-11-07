@@ -49,6 +49,11 @@ class MainActivity : Activity() {
     private lateinit var notesState: TextView
     private lateinit var dashPreview: android.widget.ImageView
     private lateinit var shareChip: TextView
+    private lateinit var lookTitle: TextView
+    private lateinit var lookSub: TextView
+    private lateinit var forgetChip: TextView
+    private lateinit var defaultChip: TextView
+    private var screenBuiltFor: String? = null // the look the Screen tab's controls were made with
     private lateinit var voiceState: TextView
     private lateinit var voiceModel: TextView
     private lateinit var modelButton: TextView
@@ -104,6 +109,7 @@ class MainActivity : Activity() {
         setContentView(root)
         pages += homePage(settings)
         pages += screenPage(settings)
+        screenBuiltFor = Looks.key
         pages += terminalPage(settings)
         pages += voicePage(settings)
         for (p in pages) content.addView(p, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -285,6 +291,32 @@ class MainActivity : Activity() {
         shown.addView(chipRow(shareChip, colour, chip("Check the glasses", false) { checkGlasses() }))
         page.addView(shown)
 
+        // The look per app: whose look the settings below are, kept as they change.
+        val per = card("Look for")
+        lookTitle = text("", 18f, Ui.TEXT, Ui.BOLD)
+        lookSub = text("", 12.5f, Ui.MUTED).apply { setPadding(0, dp(2), 0, dp(4)) }
+        per.addView(lookTitle)
+        per.addView(lookSub)
+        forgetChip = chip("Forget its look", false) {
+            Looks.forget(settings, Looks.key)
+            rebuildScreen()
+            show()
+        }
+        defaultChip = chip("Use for every app", false) {
+            Looks.makeDefault(settings, Looks.key)
+            note = "This look is now the default for every app without its own."
+            show()
+        }
+        per.addView(chipRow(forgetChip, defaultChip))
+        per.addToggle(toggle("Remember the look per app", "Each phone app and laptop window keeps the look you set while " +
+            "it shows, and gets it back when it shows again", settings.looksPerApp) {
+            settings.looksPerApp = it
+            if (!it) Looks.key = ""
+            if (ScouterService.running) ScouterService.send(this)
+            show()
+        })
+        page.addView(per)
+
         // The look: presets, then the two sliders that matter most; the rest folded.
         val look = page.section("Look", "screen_look", "contrast", open = true, hint = "Black is see-through on the glasses.")
         lateinit var invertBar: android.widget.SeekBar
@@ -356,8 +388,11 @@ class MainActivity : Activity() {
         more.addToggle(toggle("Dither", "Black & white: greys as fine patterns (photos, video; more to send)", settings.screenDither) {
             settings.screenDither = it
         })
-        more.addToggle(toggle("Steady", "16 greys: ignore one-step flicker (smoother, less to send)", settings.screenSteady) {
+        more.addToggle(toggle("Steady", "Pixels change only when clearly brighter or darker: no shimmer, less to send", settings.screenSteady) {
             settings.screenSteady = it
+        })
+        more.addToggle(toggle("Clean edges", "Black and white: lone specks go, pinholes fill", settings.screenClean) {
+            settings.screenClean = it
         })
         lateinit var moreChip: TextView
         moreChip = chip("More", false) {
@@ -368,6 +403,20 @@ class MainActivity : Activity() {
         look.addView(chipRow(moreChip))
         look.addView(more)
         markPreset()
+        // Android's own text modes, to try: plain large text (Google's Reading mode), or bolder outlined text
+        // everywhere (Accessibility). Crisp text reads better on the glasses and is less to send.
+        look.addView(subhead("Text modes on the phone"))
+        look.addView(chipRow(
+            chip("Reading mode", false) {
+                val pkg = "com.google.android.accessibility.reader"
+                val open = packageManager.getLaunchIntentForPackage(pkg)
+                runCatching { startActivity(open ?: Intent(Intent.ACTION_VIEW, android.net.Uri.parse("market://details?id=$pkg"))) }
+                    .onFailure { runCatching { startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://play.google.com/store/apps/details?id=$pkg"))) } }
+            },
+            chip("Text contrast", false) {
+                runCatching { startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+            },
+        ))
 
         val where = page.section("Place", "screen_place", "place",
             hint = "Where it shows: drag to move, drag the corner to resize, double-tap to fill.")
@@ -390,6 +439,24 @@ class MainActivity : Activity() {
         where.addView(slider("Pan down", 0, 100, settings.screenPanY, { "$it%" }, { settings.screenPanY = it }) { settings.screenPanY = it })
         where.addView(segmented(listOf("0" to "Upright", "90" to "↻ 90°", "180" to "180°", "270" to "↺ 90°"),
             settings.screenRotate.toString()) { settings.screenRotate = it.toInt() })
+        // The screen's bars cut away first (the clock and icons change often and are rarely wanted).
+        fun pct(v: Int) = if (v == 0) "none" else String.format(java.util.Locale.US, "%.1f%%", v / 10f)
+        val cutTop = slider("Cut the top", 0, 150, settings.screenCropTop, { pct(it) }, { settings.screenCropTop = it }) {
+            settings.screenCropTop = it
+        }
+        val cutBottom = slider("Cut the bottom", 0, 150, settings.screenCropBottom, { pct(it) }, { settings.screenCropBottom = it }) {
+            settings.screenCropBottom = it
+        }
+        fun cut(top: Int, bottom: Int) {
+            settings.screenCropTop = top
+            settings.screenCropBottom = bottom
+            ((cutTop as LinearLayout).getChildAt(1) as android.widget.SeekBar).progress = top
+            ((cutBottom as LinearLayout).getChildAt(1) as android.widget.SeekBar).progress = bottom
+        }
+        where.addView(subhead("Bars"))
+        where.addView(chipRow(chip("The phone's bars", false) { cut(30, 22) }, chip("None", false) { cut(0, 0) }))
+        where.addView(cutTop)
+        where.addView(cutBottom)
 
         val size = page.section("Speed and detail", "screen_speed", "speed",
             hint = "Less to send is faster on the glasses and lighter on both batteries.")
@@ -1022,6 +1089,30 @@ class MainActivity : Activity() {
         voiceAction.set(Session.listening, if (Session.listening) "Listening" else "Voice")
         pointerAction.set(Session.pointer)
 
+        // The look per app.
+        val lk = Looks.key
+        if (lk != screenBuiltFor && settings.looksPerApp) rebuildScreen()
+        when {
+            !settings.looksPerApp -> {
+                lookTitle.text = "Every app"
+                lookSub.text = "One look for everything (per app is off)."
+            }
+            lk.isEmpty() -> {
+                lookTitle.text = "Nothing on the glasses yet"
+                lookSub.text = "Once a screen shows, its app (or laptop window) is named here."
+            }
+            else -> {
+                lookTitle.text = Looks.name(this, settings, lk)
+                val own = Looks.own(settings, lk)
+                lookSub.text = if (Looks.fallback(lk) == null) "The default look for this screen's apps."
+                    else if (own) "Its own look: kept as you change it."
+                    else "The default look: change anything to give it its own."
+            }
+        }
+        val app = lk.isNotEmpty() && Looks.fallback(lk) != null && settings.looksPerApp
+        forgetChip.visibility = if (app && Looks.own(settings, lk)) View.VISIBLE else View.GONE
+        defaultChip.visibility = if (app) View.VISIBLE else View.GONE
+
         // The other tabs.
         val sharing = Session.capturing
         if (sharing != sharingShown) {
@@ -1061,6 +1152,23 @@ class MainActivity : Activity() {
                 .setNegativeButton("Cancel", null)
                 .show()
         }
+    }
+
+    // The Screen tab made again (its controls show the look now in use), where it was scrolled to.
+    private fun rebuildScreen() {
+        screenBuiltFor = Looks.key
+        if (pages.size < 2) return
+        val old = pages[1]
+        val y = old.scrollY
+        val page = screenPage(Settings(this))
+        pages[1] = page
+        val i = content.indexOfChild(old)
+        content.removeView(old)
+        content.addView(page, i, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        page.visibility = if (tab == 1) View.VISIBLE else View.GONE
+        page.post { page.scrollTo(0, y) }
+        sharingShown = null
+        previewView.refresh()
     }
 
     private fun title(t: String) {

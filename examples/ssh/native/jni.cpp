@@ -1107,8 +1107,8 @@ namespace {
 // sharpen, hide in the case, hide folded, gamma (x100), threshold, steady, dither, detail (0 auto), budget (KB),
 // the pointer's x, y (1/10000 of the screen; -1 none).
 ssh::ScreenOptions Options(JNIEnv *env, jintArray options) {
-  jint v[23] = {0, 50, 0, 100, 0, 0, 0, 100, 100, 100, 2, 0, 0, 1, 0, 100, 128, 1, 0, 1, 6, -1, -1};
-  jsize n = std::min<jsize>(env->GetArrayLength(options), 23);
+  jint v[26] = {0, 50, 0, 100, 0, 0, 0, 100, 100, 100, 2, 0, 0, 1, 0, 100, 128, 1, 0, 1, 6, -1, -1, 1, 0, 0};
+  jsize n = std::min<jsize>(env->GetArrayLength(options), 26);
   env->GetIntArrayRegion(options, 0, n, v);
   ssh::ScreenOptions o;
   o.fit = std::clamp(int(v[0]), 0, 2);
@@ -1134,6 +1134,9 @@ ssh::ScreenOptions Options(JNIEnv *env, jintArray options) {
   o.budget = std::clamp(int(v[20]), 1, 64);
   o.cursor_x = v[21] < 0 ? -1 : std::min(int(v[21]), 10000);
   o.cursor_y = v[22] < 0 ? -1 : std::min(int(v[22]), 10000);
+  o.clean = v[23] != 0;
+  o.crop_top = std::clamp(int(v[24]), 0, 400);
+  o.crop_bottom = std::clamp(int(v[25]), 0, 400);
   return o;
 }
 

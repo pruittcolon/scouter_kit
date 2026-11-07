@@ -29,6 +29,8 @@
 
     <queries>
         <package android:name="com.termux" />
+        <!-- Google's Reading mode, opened from the Screen tab. -->
+        <package android:name="com.google.android.accessibility.reader" />
         <!-- The look-up header names the apps whose notifications it shows. -->
         <intent>
             <action android:name="android.intent.action.MAIN" />

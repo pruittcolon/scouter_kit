@@ -29,8 +29,8 @@ struct ScreenOptions {
                             // see-through on the glasses)
   int gamma = 100;          // the midtones: 100 as is, above darker, below brighter (x100)
   int threshold = 128;      // black and white: brighter than this lights
-  bool steady = true;       // 16 greys: a pixel changed by one level only keeps its old level (less flicker and
-                            // fewer pixels to send)
+  bool steady = true;       // 16 greys: a pixel changed by one level only keeps its old level; black and white: a
+                            // pixel changes only once it is clearly past the threshold (less flicker, less to send)
   bool dither = false;      // black and white: an ordered (4 x 4 Bayer) dither shows greys as patterns (photos)
   int levels = 16;          // 16, 8 or 4 greys (the gray display), or 2 (black and white: VIDEO records, fastest)
   // Less to send: the picture in blocks of detail x detail pixels (1 every pixel ... 4). 0, auto (black and
@@ -45,6 +45,9 @@ struct ScreenOptions {
   // A pointer on the phone's screen (the glasses' cursor for it), where it sits in 1/10000 of the screen's width
   // and height; -1: none. Drawn on the phone's picture first, so it follows rotate, zoom and pan.
   int cursor_x = -1, cursor_y = -1;
+  bool clean = true;       // black and white at every pixel: lone specks go, pinholes fill (cleaner, less to send)
+  // Rows cut from the screen's top and bottom first (status and navigation bars), in 1/1000 of its height.
+  int crop_top = 0, crop_bottom = 0;
 };
 
 // What the mirror may take back when the arms' arena runs short (the terminal's kept fonts): called, with no lock
@@ -91,6 +94,10 @@ void Tone(std::vector<uint8_t> *p, int pw, Rect c, int invert, int gamma, int th
 
 // Inside c: each n x n block (from c's corner; the last ones may be smaller) its pixels' average.
 void Pixelate(std::vector<uint8_t> *p, int pw, Rect c, int n);
+
+// Black and white (0 / 255) inside c: a lit pixel with no lit neighbour goes dark, a dark one with its four
+// neighbours lit lights (outside c counts as dark).
+void Despeckle(std::vector<uint8_t> *p, int pw, Rect c);
 
 // The picture before its tones: the phone's screen (RGBA_8888) turned, placed and scaled into pw x ph, its
 // contrast stretched and sharpened (luma, rot: scratch). Returns the content's rectangle.
@@ -163,7 +170,9 @@ private:
   int x_ = 0, y_ = 0, w_ = 0, h_ = 0;
   int levels_ = 0; // the path in use: 16 gray, 2 video, 0 none
   scouter_kit::gray::Bitmap *pic_ = nullptr;
-  std::vector<uint8_t> luma_, rot_, base_, last_base_, frame_, prev_;
+  std::vector<uint8_t> luma_, rot_, base_, last_base_, frame_, prev_, lo_, hi_;
+  int prev_detail_ = 0; // the detail prev_ went at (steady compares like with like)
+  void Make(const ScreenOptions &, Rect c, int n); // frame_ at detail n (steady against prev_)
   bool hidden_ = false;
   bool paused_ = false; // Check runs
   int64_t props_us_ = 0;

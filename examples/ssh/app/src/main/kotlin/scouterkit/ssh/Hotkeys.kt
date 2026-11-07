@@ -239,7 +239,21 @@ class VoxKeys : AccessibilityService() {
     }
 
     override fun onKeyEvent(event: KeyEvent): Boolean = Hotkeys.handle(this, event)
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+
+    // Which app is in front (its package name only, from window changes; the screen's content is never read), for
+    // the look the glasses keep per app. Vox, the system's own windows and keyboards are left out.
+    private var imes: Set<String>? = null
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        val pkg = event.packageName?.toString() ?: return
+        if (pkg == packageName || pkg == "com.android.systemui" || pkg == "android") return
+        val keyboards = imes ?: runCatching {
+            getSystemService(android.view.inputmethod.InputMethodManager::class.java).inputMethodList.map { it.packageName }.toSet()
+        }.getOrDefault(emptySet()).also { imes = it }
+        if (pkg in keyboards || pkg == app) return
+        app = pkg
+        onApp?.invoke(pkg)
+    }
     override fun onInterrupt() {}
 
     // What the trackpad did while taken (onTrackpad's kind).
@@ -256,6 +270,9 @@ class VoxKeys : AccessibilityService() {
         @Volatile var onMouse: ((Float, Float) -> Unit)? = null // where Android's pointer is, in screen pixels
         // The trackpad's events while taken (Trackpad's kind, dx, dy), on the accessibility thread.
         @Volatile var onTrackpad: ((Int, Float, Float) -> Unit)? = null
+        // The app in front changed (its package), and the last one.
+        @Volatile var onApp: ((String) -> Unit)? = null
+        @Volatile var app = ""
         @Volatile private var captured = false
         @Volatile private var wantCapture = false
 

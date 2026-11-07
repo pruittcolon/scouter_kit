@@ -126,6 +126,19 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   rendered, not drawn, until both arms have it; `wHold`) or the screen mirror's 1-bpp bitmap (its next frame
   decoded off the panel). The 16-grey screen path shows at once after the out. If no picture comes for a switch,
   the last one is drawn again after a while.
+- **The look per app** (*Remember the look per app*, Screen tab, on by default; `Looks.kt`): the screen's look (place,
+  zoom, bars, greys, detail, invert, contrast and the rest) is kept per phone app, per laptop window and per source.
+  VoxKeys notes which app is in front (window changes' package names only; it reads no screen content); for a
+  server's screen the app asks X11 for the active window's class over the kept SSH connection every 2.5 s
+  (`xprop`; DISPLAY :0 unless set). A change made while an app or window shows is kept for it, and its look comes
+  back when it shows again; one without its own takes its source's (made from the look in use the first time).
+  *Look for* names it; *Forget its look* and *Use for every app* are there too. Changes made in Vox itself count
+  for the app shown before Vox.
+- **Cleaner black and white**: *Steady* (on by default) now also holds black-and-white pixels until they are 16
+  levels past the threshold, against the last frame sent at the same detail, so nothing shimmers and still screens
+  send nothing; *Clean edges* (on) drops lone specks and fills pinholes at full detail; *Cut the top* / *Cut the
+  bottom* (Place, with a preset for the phone's bars) remove the status and navigation bars before anything else.
+  *Text modes on the phone* opens Google's Reading mode or Android's text contrast settings to try.
 - **Coming back to the terminal** from a screen or with the display on again starts its program anew but keeps its
   fonts on the arms meanwhile (27 KB that would take about a second to send again).
 

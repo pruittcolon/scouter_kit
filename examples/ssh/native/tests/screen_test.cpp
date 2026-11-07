@@ -65,7 +65,47 @@ static std::vector<uint8_t> Noise(int w, int h, int stride, unsigned seed) {
   return p;
 }
 
+// A screen of one grey.
+static std::vector<uint8_t> Grey(int w, int h, int stride, uint8_t v) {
+  std::vector<uint8_t> p(size_t(stride) * h, 255);
+  for (int y = 0; y < h; y++)
+    for (int x = 0; x < w; x++) {
+      uint8_t *px = &p[size_t(y) * stride + x * 4];
+      px[0] = px[1] = px[2] = v;
+    }
+  return p;
+}
+
 int main() {
+  // Despeckle: a lone lit pixel goes, a pinhole in a lit area fills, the area's edge stays.
+  {
+    int w = 12, h = 8;
+    std::vector<uint8_t> p(size_t(w) * h, 0);
+    p[size_t(2 * w + 2)] = 255;
+    for (int y = 3; y < 7; y++)
+      for (int x = 6; x < 11; x++) p[size_t(y * w + x)] = 255;
+    p[size_t(4 * w + 8)] = 0;
+    ssh::Despeckle(&p, w, ssh::Rect{0, 0, w, h});
+    CHECK(p[size_t(2 * w + 2)] == 0);
+    CHECK(p[size_t(4 * w + 8)] == 255);
+    CHECK(p[size_t(3 * w + 6)] == 255 && p[size_t(6 * w + 10)] == 255);
+  }
+  // The bars cut: a black status bar (lit once inverted) shows, and with the top 6 % cut it is gone.
+  {
+    int sw = 100, sh = 200, st = sw * 4;
+    auto bar = Phone(sw, sh, 0, 0, sw, 10, st);
+    ssh::ScreenOptions po;
+    po.levels = 2;
+    po.fit = ssh::ScreenOptions::kStretch;
+    std::vector<uint8_t> with, without;
+    ssh::Picture(bar.data(), sw, sh, st, po, 100, 200, &with);
+    po.crop_top = 60;
+    ssh::Picture(bar.data(), sw, sh, st, po, 100, 200, &without);
+    int top = 0, rest = 0;
+    for (int i = 0; i < 100 * 5; i++) top += with[size_t(i)] != 0;
+    for (uint8_t v : without) rest += v != 0;
+    CHECK(top == 500 && rest == 0);
+  }
   // Tone: inverted, 16 levels as multiples of 17; 2 levels.
   std::vector<uint8_t> t = {0, 255, 128, 17};
   ssh::Tone(&t, 4, {0, 0, 4, 1}, 100, 100, 128, 16);
@@ -216,6 +256,21 @@ int main() {
   CHECK(WaitFor([&] { return m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown; }, 10000));
   CHECK(WaitFor([] { return Lit(1, 300, 209, 380, 289) == 0 && Lit(1, 0, 9, 80, 89) > 5500; }));
   CHECK(fx->busy_until() == until); // no reveal for it
+
+  // Steady black and white: a grey just past the threshold either way changes nothing (no frame sent); one
+  // clearly past it does.
+  auto grey = [&](uint8_t v) { return Grey(540, 471, stride, v); };
+  auto send = [&](const std::vector<uint8_t> &p) {
+    int r = ssh::ScreenMirror::kBusy;
+    WaitFor([&] { r = m.Frame(p.data(), 540, 471, stride, opt); return r != ssh::ScreenMirror::kBusy; }, 10000);
+    return r;
+  };
+  int first = send(grey(100));
+  if (first != ssh::ScreenMirror::kShown) std::printf("steady: first grey gave %d\n", first);
+  CHECK(first == ssh::ScreenMirror::kShown); // lit (inverted 155: clearly past 128)
+  CHECK(send(grey(134)) == ssh::ScreenMirror::kSame);  // 121: under 128, within the margin
+  CHECK(send(grey(170)) == ssh::ScreenMirror::kShown); // 85: clearly dark
+  CHECK(send(grey(122)) == ssh::ScreenMirror::kSame);  // 133: over 128, within the margin
 
   // Auto detail: noise does not fit a 1 KB budget at every pixel, so it goes coarser (kLater, sent at a coarser
   // detail); the same frame again (nothing moved) goes at every pixel.

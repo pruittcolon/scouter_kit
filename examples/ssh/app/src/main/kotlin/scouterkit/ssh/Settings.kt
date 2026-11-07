@@ -106,12 +106,27 @@ class Settings(context: Context) {
     var offWhenLocked: Boolean
         get() = prefs.getBoolean("off_when_locked", true)
         set(v) = prefs.edit().putBoolean("off_when_locked", v).apply()
+    // Black and white cleaned (lone specks out, pinholes filled), and rows cut from the screen's top and bottom
+    // first (its status and navigation bars), in 1/1000 of its height.
+    var screenClean: Boolean
+        get() = prefs.getBoolean("screen_clean", true)
+        set(v) = prefs.edit().putBoolean("screen_clean", v).apply()
+    var screenCropTop: Int by Number("screen_crop_top", 0)
+    var screenCropBottom: Int by Number("screen_crop_bottom", 0)
+    // The look remembered per app (Looks), and the looks themselves (JSON by key).
+    var looksPerApp: Boolean
+        get() = prefs.getBoolean("looks_per_app", true)
+        set(v) = prefs.edit().putBoolean("looks_per_app", v).apply()
+    var looks: String by Text("looks", "{}")
+    // Each change of the settings (Looks keeps the look per app); the caller holds the listener.
+    fun listen(l: android.content.SharedPreferences.OnSharedPreferenceChangeListener) = prefs.registerOnSharedPreferenceChangeListener(l)
+    fun unlisten(l: android.content.SharedPreferences.OnSharedPreferenceChangeListener) = prefs.unregisterOnSharedPreferenceChangeListener(l)
     // For Native.screenFrame.
     fun screenOptions() = intArrayOf(listOf(FIT, FILL, STRETCH).indexOf(screenFit).coerceAtLeast(0), screenPanX, screenPanY,
         screenZoom, screenRotate, screenOutX, screenOutY, screenOutW, screenOutH, screenInvertPct, screenLevels,
         screenContrast, if (screenSharpen) 1 else 0, if (screenHideCase) 1 else 0, if (screenHideFolded) 1 else 0,
         screenGamma, screenThreshold, if (screenSteady) 1 else 0, if (screenDither) 1 else 0, screenDetail, screenBudget,
-        Session.cursorX, Session.cursorY)
+        Session.cursorX, Session.cursorY, if (screenClean) 1 else 0, screenCropTop, screenCropBottom)
 
     // Once: the fast path (black and white) for everyone, as 0.4 made it the default.
     fun migrate() {

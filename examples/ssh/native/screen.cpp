@@ -274,6 +274,13 @@ Rect Base(const uint8_t *rgba, int w, int h, int stride, const ScreenOptions &o,
           std::vector<uint8_t> *luma, std::vector<uint8_t> *rot, std::vector<uint8_t> *out) {
   Luma(rgba, w, h, stride, luma);
   Cursor(luma, w, h, o, pw, ph);
+  // The bars cut away (after the cursor, which is placed on the whole screen).
+  int top = h * std::clamp(o.crop_top, 0, 400) / 1000, bottom = h * std::clamp(o.crop_bottom, 0, 400) / 1000;
+  if (top + bottom > 0 && h - top - bottom >= 16) {
+    luma->erase(luma->begin() + ptrdiff_t(size_t(h - bottom) * size_t(w)), luma->end());
+    luma->erase(luma->begin(), luma->begin() + ptrdiff_t(size_t(top) * size_t(w)));
+    h -= top + bottom;
+  }
   int sw = w, sh = h;
   const std::vector<uint8_t> *src = luma;
   if (o.rotate % 360 != 0) {
@@ -292,6 +299,31 @@ void Finish(const std::vector<uint8_t> &base, int pw, Rect c, const ScreenOption
   n = std::clamp(n, 1, 4);
   Pixelate(out, pw, c, n);
   Tone(out, pw, c, o.invert, o.gamma, o.threshold, o.levels, o.dither, n);
+  if (o.levels == 2 && o.clean && !o.dither && n == 1) Despeckle(out, pw, c);
+}
+
+void Despeckle(std::vector<uint8_t> *p, int pw, Rect c) {
+  if (c.w < 3 || c.h < 3) return;
+  std::vector<uint8_t> in(*p);
+  auto at = [&](int x, int y) {
+    return x >= c.x && x < c.x + c.w && y >= c.y && y < c.y + c.h && in[size_t(y) * size_t(pw) + size_t(x)] != 0;
+  };
+  for (int y = c.y; y < c.y + c.h; y++)
+    for (int x = c.x; x < c.x + c.w; x++) {
+      uint8_t &v = (*p)[size_t(y) * size_t(pw) + size_t(x)];
+      if (v) {
+        bool alone = true;
+        for (int dy = -1; dy <= 1 && alone; dy++)
+          for (int dx = -1; dx <= 1; dx++)
+            if ((dx || dy) && at(x + dx, y + dy)) {
+              alone = false;
+              break;
+            }
+        if (alone) v = 0;
+      } else if (at(x - 1, y) && at(x + 1, y) && at(x, y - 1) && at(x, y + 1)) {
+        v = 255;
+      }
+    }
 }
 
 void Picture(const uint8_t *rgba, int w, int h, int stride, const ScreenOptions &o, int pw, int ph,
@@ -307,6 +339,19 @@ void PictureSize(int dx, int dy, int *pw, int *ph) {
 }
 
 ScreenMirror::~ScreenMirror() { Stop(); }
+
+// frame_ at detail n. Black and white, steady: a pixel keeps what it showed unless it is clearly past the threshold
+// (16 levels either way), against the last frame sent at the same detail.
+void ScreenMirror::Make(const ScreenOptions &o, Rect c, int n) {
+  Finish(base_, w_, c, o, n, &frame_);
+  if (o.levels != 2 || !o.steady || o.dither || video_.redraw || prev_.size() != frame_.size() || prev_detail_ != n) return;
+  ScreenOptions lo = o, hi = o;
+  lo.threshold = std::max(1, o.threshold - 16);
+  hi.threshold = std::min(254, o.threshold + 16);
+  Finish(base_, w_, c, lo, n, &lo_); // lights from here: stays lit
+  Finish(base_, w_, c, hi, n, &hi_); // and from here: comes on
+  for (size_t i = 0; i < frame_.size(); i++) frame_[i] = prev_[i] ? lo_[i] : hi_[i];
+}
 
 void ScreenMirror::Panels(bool on) {
   for (g1::Arm *a : {&g1::left, &g1::right})
@@ -698,20 +743,22 @@ int ScreenMirror::Frame(const uint8_t *rgba, int w, int h, int stride, const Scr
     bool redraw = video_.redraw;
     if (o.detail >= 1) {
       int n = std::clamp(o.detail, 1, 4);
-      Finish(base_, w_, c, o, n, &frame_);
+      Make(o, c, n);
       if (frame_ == prev_ && !redraw) return kSame;
       if (!SendVideo(kRecordMax)) return kBusy; // too large for one record: the next, smaller change goes
       prev_ = frame_;
+      prev_detail_ = n;
       Count(video_.sent, n);
       return kShown;
     }
     // Auto: every pixel when that fits the budget, else coarser; nothing moved: every pixel whatever the size.
     size_t budget = still ? kRecordMax : size_t(std::clamp(o.budget, 1, 64)) * 1024;
     for (int n = 1; n <= 4; n++) {
-      Finish(base_, w_, c, o, n, &frame_);
+      Make(o, c, n);
       if (frame_ == prev_ && !redraw) return n == 1 ? kSame : kLater;
       if (SendVideo(n == 4 ? kRecordMax : budget)) {
         prev_ = frame_;
+        prev_detail_ = n;
         Count(video_.sent, n);
         return n == 1 ? kShown : kLater;
       }
