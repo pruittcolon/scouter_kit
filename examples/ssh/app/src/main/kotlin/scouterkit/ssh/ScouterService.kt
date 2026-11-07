@@ -57,6 +57,13 @@ object Session {
     // phone's picture (Settings.screenOptions), its clicks tapped there by VoxKeys.
     @Volatile var cursorX = -1
     @Volatile var cursorY = -1
+    @Volatile var typing = false // keys typed into the phone's app: Enter and Space go to it (the arrows end it)
+    // A quick reply to a notification (its own Reply), written on the dashboard: to whom, the words so far, and
+    // "Sent" or a problem for a moment after. replyKey null: none.
+    @Volatile var replyKey: String? = null
+    @Volatile var replyTo: String? = null
+    @Volatile var replyDraft = ""
+    @Volatile var replyStatus = ""
     @Volatile var tabList = listOf<Tabs.Tab>() // the terminal's tabs (tmux windows), for the dashboard
     @Volatile var heard = listOf<String>() // the last phrases, newest first
     // The devices Android reports near (ScouterCompanionService: keyer); null: unknown (none reported since the
@@ -206,6 +213,7 @@ class ScouterService : Service() {
         vault = Vault(this)
         Native.onChanged = { work.post { poll() } }
         Native.onGesture = { a, g -> work.post { gesture(a, g) } }
+        VoxKeys.onMouse = { x, y -> mouse(x, y) }
         LookUp.onChange = { work.post { header() } }
         work.post(headerTick)
         work.postDelayed(tabPoll, 5000)
@@ -282,6 +290,7 @@ class ScouterService : Service() {
             }
             ACTION_TRUST -> work.post { trust(intent.getStringExtra("fingerprint")) }
             ACTION_CLOSE -> work.post { closeSource() }
+            ACTION_REPLY -> work.post { reply(intent.getStringExtra("key").orEmpty()) }
             // The pointer (extra "cmd": toggle, off, move:DX:DY, click, right, up, down) and tabs (extra "tab").
             ACTION_POINTER -> work.post { pointer(intent.getStringExtra("cmd").orEmpty()) }
             ACTION_TABS -> work.post { tabs(intent.getStringExtra("tab").orEmpty()) }
@@ -345,6 +354,7 @@ class ScouterService : Service() {
         Session.capturing = false
         Session.showing = ""
         Native.onGesture = null
+        VoxKeys.onMouse = null
         work.removeCallbacks(batteryTicker)
         runCatching { unregisterReceiver(lock) }
         runCatching { unregisterReceiver(bonds) }
@@ -963,6 +973,10 @@ class ScouterService : Service() {
             work.removeCallbacks(screenTicker)
             work.postDelayed(screenTicker, 2000)
             refresh()
+            pendingNote?.let { key ->
+                pendingNote = null
+                work.postDelayed({ openNote(key) }, 500)
+            }
         }
     }
 
@@ -1139,27 +1153,47 @@ class ScouterService : Service() {
         } ?: -1
     }
 
-    // Up from the terminal's top row: onto the bar, at the tab above the pointer (else the nearest).
+    // The dashboard's places by row (top to bottom: the tab bar, then the notifications), each left to right.
+    private fun barRows(): List<List<Int>> = barHits.indices.groupBy { barHits[it].top }.toSortedMap().values
+        .map { row -> row.sortedBy { barHits[it].left } }
+
+    private fun nearestIn(row: List<Int>, x: Float): Int? = row.minByOrNull { i ->
+        val h = barHits[i]
+        if (x < h.left) h.left - x else if (x > h.right) x - h.right else 0f
+    }
+
+    // Up from the terminal's top row: onto the dashboard's lowest row (the notifications, else the tab bar), at the
+    // place above the pointer (else the nearest).
     private fun barEnter() {
-        pointerBar = barNearest(pointerCol)
+        val rows = barRows()
+        val x = if (settings.cols <= 0) 0f else (pointerCol + 0.5f) * barWidth / settings.cols
+        pointerBar = rows.lastOrNull()?.let { nearestIn(it, x) } ?: -1
         if (pointerBar < 0) return
-        Native.pointer(-1, -1) // the cell in the terminal goes; the bar shows where it is
+        Native.pointer(-1, -1) // the cell in the terminal goes; the dashboard shows where it is
         dash()
     }
 
-    // On the bar: left and right go a tab at a time, down goes back into the terminal under it.
+    // On the dashboard: left and right go a place at a time in a row, up and down a row (to the place nearest
+    // above or below); down from the lowest row goes back into the terminal under it.
     private fun barMove(dx: Int, dy: Int) {
-        if (dy > 0) {
-            pointerCol = barCol(barHits.getOrNull(pointerBar) ?: return barLeave())
-            barLeave()
-            return
+        val rows = barRows()
+        val r = rows.indexOfFirst { pointerBar in it }
+        val here = barHits.getOrNull(pointerBar)
+        if (r < 0 || here == null) return barLeave()
+        when {
+            dy > 0 && r == rows.size - 1 -> {
+                pointerCol = barCol(here)
+                return barLeave()
+            }
+            dy > 0 -> pointerBar = nearestIn(rows[r + 1], here.center) ?: pointerBar
+            dy < 0 && r > 0 -> pointerBar = nearestIn(rows[r - 1], here.center) ?: pointerBar
+            dx != 0 -> {
+                val row = rows[r]
+                pointerBar = row[(row.indexOf(pointerBar) + if (dx > 0) 1 else -1).coerceIn(0, row.size - 1)]
+            }
+            else -> return
         }
-        if (dx == 0) return
-        val next = (pointerBar + if (dx > 0) 1 else -1).coerceIn(0, barHits.size - 1)
-        if (next != pointerBar) {
-            pointerBar = next
-            dash()
-        }
+        dash()
     }
 
     private fun barLeave() {
@@ -1178,6 +1212,10 @@ class ScouterService : Service() {
                 barLeave()
                 phoneScreen()
             }
+            hit.action.startsWith("note:") -> {
+                val key = hit.action.removePrefix("note:")
+                if (what == "click") openNote(key) else if (what == "right") replyStart(key)
+            }
             what == "click" -> tabs(hit.action)
             what == "right" && hit.action.startsWith("select:") -> tabs("close:" + hit.action.removePrefix("select:"))
             what == "up" -> tabs("prev")
@@ -1193,6 +1231,75 @@ class ScouterService : Service() {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }.onFailure { Log.w(TAG, "share: ${it.message}") }
         choose(Settings.PHONE)
+    }
+
+    // ------------------------------------------------ notifications
+
+    // A notification clicked on the dashboard: its app opens on the phone (as its notification would) and the
+    // glasses show the phone's screen with the cursor ready, to click on through and type with the keyboard.
+    // The screen not shared yet: Android asks first, then the notification opens.
+    private var pendingNote: String? = null
+    private fun openNote(key: String) {
+        barLeave()
+        if (screen == null) {
+            pendingNote = key
+            return phoneScreen()
+        }
+        runCatching {
+            startActivity(Intent(this, NoteActivity::class.java).putExtra(NoteActivity.EXTRA_KEY, key)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION))
+        }.onFailure { Log.w(TAG, "note: ${it.message}") }
+        choose(Settings.PHONE)
+        Session.typing = false
+        if (onPhone()) {
+            Session.pointer = true
+            cursorX = 5000
+            cursorY = 5000
+            showCursor()
+        }
+    }
+
+    // A quick reply (a right click on a notification that has its own Reply): typed (VoxKeys takes every key
+    // meanwhile) or said (Alt+Space), shown on the dashboard, sent with Enter through the notification.
+    private val replyClear = Runnable {
+        Session.replyKey = null
+        Session.replyTo = null
+        Session.replyStatus = ""
+        dash()
+        Session.changed()
+    }
+
+    private fun replyStart(key: String) {
+        val n = LookUp.notes.firstOrNull { it.key == key } ?: return
+        if (!n.reply) return openNote(key)
+        work.removeCallbacks(replyClear)
+        Session.replyKey = key
+        Session.replyTo = n.title.ifBlank { n.app }
+        Session.replyDraft = ""
+        Session.replyStatus = ""
+        dash()
+        Session.changed()
+    }
+
+    // "c:TEXT" adds, "del" takes the last character, "send", "cancel".
+    private fun reply(what: String) {
+        val key = Session.replyKey ?: return
+        if (Session.replyStatus.isNotEmpty()) return
+        when {
+            what.startsWith("c:") -> Session.replyDraft += what.removePrefix("c:")
+            what == "del" -> Session.replyDraft = Session.replyDraft.dropLast(1)
+            what == "cancel" -> return replyClear.run()
+            what == "send" -> {
+                val text = Session.replyDraft.trim()
+                if (text.isEmpty()) return replyClear.run()
+                val ok = VoxNotifications.reply(this, key, text)
+                Log.i(TAG, "reply: " + if (ok) "sent" else "failed")
+                Session.replyStatus = if (ok) "Sent \u2713" else "Could not send: open it instead (click)"
+                work.postDelayed(replyClear, if (ok) 1500 else 3000)
+            }
+        }
+        dash()
+        Session.changed()
     }
 
     // ------------------------------------------------ the cursor on the phone's screen
@@ -1228,6 +1335,27 @@ class ScouterService : Service() {
                 }
                 Session.tabs = if (ok) "" else "clicks on the phone need Vox's keyboard shortcuts (Android Settings: Accessibility, Vox)"
                 showCursor()
+            }
+        }
+    }
+
+    // A mouse or trackpad paired with the phone moves Android's own pointer (and clicks for itself); VoxKeys
+    // watches where it goes, and the glasses draw the cursor there while they show the phone's screen.
+    private var mouseAt = 0L
+    private fun mouse(x: Float, y: Float) {
+        if (!onPhone()) return
+        val b = getSystemService(android.view.WindowManager::class.java).maximumWindowMetrics.bounds
+        if (b.width() <= 1 || b.height() <= 1) return
+        cursorX = (x / (b.width() - 1) * 10000).toInt().coerceIn(0, 10000)
+        cursorY = (y / (b.height() - 1) * 10000).toInt().coerceIn(0, 10000)
+        Session.cursorX = cursorX
+        Session.cursorY = cursorY
+        val now = SystemClock.uptimeMillis()
+        if (now - mouseAt > 500) { // the hiding after a while, pushed back at most twice a second
+            mouseAt = now
+            work.post {
+                work.removeCallbacks(pointerIdle)
+                work.postDelayed(pointerIdle, 10000)
             }
         }
     }
@@ -1361,11 +1489,17 @@ class ScouterService : Service() {
         if (ended || settings.dashRows == 0) return
         val size = Native.dashSize()
         if (size[0] <= 0 || size[1] <= 0) return
-        val hover = if (Session.pointer) barHits.getOrNull(pointerBar)?.action else null
+        val hovered = barHits.getOrNull(pointerBar)?.action
+        val hover = if (Session.pointer) hovered else null
         val f = Dashboard.render(this, settings, size[0], size[1], dashVoice, Session.listening, hover)
         barHits = f.hits
         barWidth = size[0]
-        if (pointerBar >= barHits.size) pointerBar = barHits.size - 1 // a tab closed under it
+        // The same place after a new picture (notifications come and go); one closed: the place now there.
+        if (pointerBar >= 0) {
+            val again = barHits.indexOfFirst { it.action == hovered }
+            pointerBar = if (again >= 0) again else minOf(pointerBar, barHits.size - 1)
+            if (again < 0 && pointerBar >= 0 && hover != null) return dash()
+        }
         Native.dash(f.packed)
     }
 
@@ -1464,6 +1598,10 @@ class ScouterService : Service() {
     // A phrase: a command (always listening: only after "Vox"), or, while dictating, text for the terminal.
     private fun heard(text: String, once: Boolean) {
         Session.heard = (listOf(text) + Session.heard).take(8)
+        if (Session.replyKey != null && Session.replyStatus.isEmpty()) { // said into a quick reply
+            val sep = if (Session.replyDraft.isEmpty() || Session.replyDraft.endsWith(" ")) "" else " "
+            return reply("c:$sep${text.trim()}")
+        }
         var said = text
         if (!once && !Session.dictating) said = VoiceCommands.afterWake(text) ?: run {
             Session.changed()
@@ -1700,6 +1838,7 @@ class ScouterService : Service() {
         const val ACTION_SOURCE = "scouterkit.ssh.SOURCE" // a source on the glasses (Shortcuts.EXTRA: a key, next, prev)
         const val ACTION_SERVER = "scouterkit.ssh.SERVER" // a saved server's terminal (extra "id"; none: the next)
         const val ACTION_CLOSE = "scouterkit.ssh.CLOSE" // the source shown closes (Alt+Q)
+        const val ACTION_REPLY = "scouterkit.ssh.REPLY" // a quick reply's key (extra "key": c:TEXT, del, send, cancel)
         const val ACTION_VOICE = "scouterkit.ssh.VOICE" // voice (extra "mode": listen, stop, always)
         const val ACTION_LOOK_UP = "scouterkit.ssh.LOOK_UP" // the look-up view's settings changed
         const val ACTION_POINTER = "scouterkit.ssh.POINTER" // the pointer (extra "cmd")

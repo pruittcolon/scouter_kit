@@ -6,7 +6,9 @@ import android.graphics.Path
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.accessibility.AccessibilityEvent
 
 // A keyboard's shortcuts (a Bluetooth keyboard paired with the phone): Alt with an arrow moves around the
@@ -20,6 +22,34 @@ object Hotkeys {
     fun handle(context: Context, e: KeyEvent): Boolean {
         val settings = Settings(context)
         if (!settings.hotkeys) return false
+        // A quick reply being written on the dashboard: every key is its (Alt+Space / Alt+V still listen).
+        if (Session.replyKey != null && !(e.isAltPressed && (e.keyCode == KeyEvent.KEYCODE_SPACE || e.keyCode == KeyEvent.KEYCODE_V))) {
+            if (e.action != KeyEvent.ACTION_DOWN) return true
+            val what = when (e.keyCode) {
+                KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> "send"
+                KeyEvent.KEYCODE_ESCAPE -> "cancel"
+                KeyEvent.KEYCODE_DEL -> "del"
+                else -> e.getUnicodeChar(e.metaState).takeIf { it > 0 && !e.isCtrlPressed }?.let { "c:" + String(Character.toChars(it)) }
+            } ?: return true
+            ScouterService.send(context, ScouterService.ACTION_REPLY, "key" to what)
+            return true
+        }
+        // The phone's screen on the glasses, the pointer on: typing goes to the phone's app as it is (Space, and
+        // Enter once something was typed); the arrows move the cursor again.
+        val onPhone = Session.showing == Settings.SCREEN && Session.screenSource.ifEmpty { Settings.PHONE } == Settings.PHONE
+        if (Session.pointer && onPhone && !e.isAltPressed && !e.isCtrlPressed && !e.isMetaPressed) {
+            when (e.keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN ->
+                    Session.typing = false
+                KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> if (Session.typing) return false
+                KeyEvent.KEYCODE_PAGE_UP, KeyEvent.KEYCODE_PAGE_DOWN, KeyEvent.KEYCODE_ESCAPE -> {}
+                else -> {
+                    if (e.action == KeyEvent.ACTION_DOWN && (e.getUnicodeChar(e.metaState) > 0 || e.keyCode == KeyEvent.KEYCODE_DEL))
+                        Session.typing = true
+                    return false
+                }
+            }
+        }
         // The pointer's keys while it is on (no Alt): arrows move it (Shift: by 5), Enter or Space clicks (Shift+Enter:
         // right click), Page Up / Down scroll, Escape ends it.
         if (Session.pointer && !e.isAltPressed && !e.isCtrlPressed && !e.isMetaPressed) {
@@ -132,6 +162,31 @@ object Hotkeys {
 class VoxKeys : AccessibilityService() {
     override fun onServiceConnected() {
         instance = this
+        watchMouse()
+    }
+
+    // A mouse or a keyboard's trackpad on the phone: watched, never taken (Android 15+: observed sources), so
+    // Android's pointer moves and clicks as always and the glasses can draw where it is.
+    private fun watchMouse() {
+        if (android.os.Build.VERSION.SDK_INT < 35) return
+        val info = serviceInfo ?: return
+        try {
+            info.motionEventSources = InputDevice.SOURCE_MOUSE
+            info.javaClass.getMethod("setObservedMotionEventSources", Int::class.javaPrimitiveType)
+                .invoke(info, InputDevice.SOURCE_MOUSE)
+            serviceInfo = info
+        } catch (e: Throwable) {
+            // Never left taking the mouse: nothing watched.
+            android.util.Log.w(ScouterService.TAG, "mouse: ${e.message}")
+            runCatching {
+                info.motionEventSources = 0
+                serviceInfo = info
+            }
+        }
+    }
+
+    override fun onMotionEvent(event: MotionEvent) {
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) onMouse?.invoke(event.x, event.y)
     }
 
     override fun onDestroy() {
@@ -145,6 +200,7 @@ class VoxKeys : AccessibilityService() {
 
     companion object {
         @Volatile private var instance: VoxKeys? = null
+        @Volatile var onMouse: ((Float, Float) -> Unit)? = null // where Android's pointer is, in screen pixels
 
         // A tap (long: held 650 ms, a right click) at x, y of the phone's screen, in pixels. False: VoxKeys is off.
         fun tap(x: Float, y: Float, long: Boolean = false): Boolean {

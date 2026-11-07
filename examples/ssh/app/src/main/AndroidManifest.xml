@@ -66,6 +66,14 @@
             android:taskAffinity=""
             android:theme="@android:style/Theme.NoDisplay" />
         <activity android:name=".SettingsActivity" android:exported="false" />
+        <!-- A notification clicked on the glasses: opens its app, unseen, then goes (LookUp.kt). -->
+        <activity
+            android:name=".NoteActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <activity android:name=".HidSpikeActivity" android:exported="false" />
         <activity android:name=".PairingActivity" android:exported="false" />
         <service

@@ -22,8 +22,9 @@ object Dashboard {
     // hits: where the tab bar's tabs and its + are (left to right), for the pointer.
     class Frame(val packed: ByteArray, val preview: Bitmap, val hits: List<Hit> = emptyList())
 
-    // A place on the tab bar the pointer can click: its pixels across, and its action ("select:N", "new").
-    class Hit(val left: Float, val right: Float, val action: String) {
+    // A place on the dashboard the pointer can click: its pixels across and down, and its action ("select:N",
+    // "new", "phone" on the tab bar; "note:KEY" a notification). Places with the same top are a row.
+    class Hit(val left: Float, val right: Float, val action: String, val top: Float = 0f, val bottom: Float = 0f) {
         val center get() = (left + right) / 2
     }
 
@@ -116,7 +117,7 @@ object Dashboard {
                 c.drawText(text, x + 6f, textY, tabText)
             }
             val action = "select:${t.index}"
-            hits += Hit(box.left, box.right, action)
+            hits += Hit(box.left, box.right, action, barY, barY + barH)
             if (hover == action) hovered(box)
             x += tw + 5f
             shown++
@@ -132,7 +133,7 @@ object Dashboard {
             }
             val plus = paint(barH * 0.8f, if (on) 0 else 13, LIGHT).apply { textAlign = Paint.Align.CENTER }
             c.drawText("+", box.centerX(), textY + barH * 0.06f, plus)
-            hits += Hit(box.left, box.right, "new")
+            hits += Hit(box.left, box.right, "new", barY, barY + barH)
             if (on) hovered(box)
         }
         run {
@@ -155,7 +156,7 @@ object Dashboard {
             c.drawCircle(px + pw / 2, py + ph - 2.2f, 0.9f, icon)
             phoneLabel.color = grey(if (on) 0 else 13)
             c.drawText("PHONE", px + pw + 5f, textY, phoneLabel)
-            hits += Hit(phoneBox.left, phoneBox.right, "phone")
+            hits += Hit(phoneBox.left, phoneBox.right, "phone", barY, barY + barH)
             if (on) hovered(phoneBox)
         }
         line.color = grey(3)
@@ -223,7 +224,20 @@ object Dashboard {
             val title = paint(rowH * 0.19f, 15, MEDIUM)
             val body = paint(rowH * 0.18f, 10, LIGHT)
             val lineH = rowH / 3f
-            if (voice != null) {
+            val replyTo = Session.replyTo
+            if (replyTo != null) {
+                // A quick reply being written: to whom, the words so far with a caret, and the keys.
+                val head = (if (listening) "\u25CF " else "") + "REPLY \u00B7 " + replyTo.uppercase(Locale.getDefault())
+                c.drawText(TextUtils.ellipsize(head, app, mw, TextUtils.TruncateAt.END).toString(), mx, top + lineH * 0.62f, app)
+                val status = Session.replyStatus
+                if (status.isNotEmpty()) c.drawText(status, mx, top + lineH * 1.62f, title)
+                else {
+                    val words = wrap(Session.replyDraft + "\u258F", title, mw).takeLast(1)
+                    for ((i, l) in words.withIndex()) c.drawText(l, mx, top + lineH * (1.62f + i), title)
+                }
+                c.drawText("ENTER SEND \u00B7 ESC CANCEL \u00B7 ALT+SPACE SAY IT", mx, top + lineH * 2.62f,
+                    paint(rowH * 0.14f, 7, CONDENSED, 0.1f))
+            } else if (voice != null) {
                 c.drawText(if (listening) "\u25CF LISTENING" else "VOICE", mx, top + lineH * 0.62f, app)
                 val words = voice.replace(ScouterService.MIC, "").trim()
                 val lines = wrap(words, title, mw).takeLast(2)
@@ -237,6 +251,10 @@ object Dashboard {
                 val appW = minOf(mw * 0.3f, app.measureText("MESSAGES") + 6f)
                 for ((i, n) in notes.withIndex()) {
                     val y = top + lineH * (i + 0.66f)
+                    // A row the pointer can click: open it (on the phone's screen), or reply.
+                    val row = RectF(mx - 3f, top + lineH * i + 1f, mRight + 1f, top + lineH * (i + 1) - 1f)
+                    val action = "note:${n.key}"
+                    if (n.key.isNotEmpty()) hits += Hit(row.left, row.right, action, row.top, row.bottom)
                     c.drawText(TextUtils.ellipsize(n.app.uppercase(Locale.getDefault()), app, appW - 4f, TextUtils.TruncateAt.END).toString(), mx, y, app)
                     val head = n.title.ifBlank { n.app }
                     val tx = mx + appW
@@ -247,6 +265,16 @@ object Dashboard {
                         val rest = avail - title.measureText(headText) - 6f
                         if (rest > 20f) c.drawText(TextUtils.ellipsize(n.text.replace('\n', ' '), body, rest, TextUtils.TruncateAt.END).toString(),
                             tx + title.measureText(headText) + 6f, y, body)
+                    }
+                    if (hover == action) {
+                        // The ring, and what a click does at its right end (over the text, on black).
+                        c.drawRoundRect(row, 3f, 3f, mark)
+                        val hint = paint(rowH * 0.13f, 15, CONDENSED, 0.1f).apply { textAlign = Paint.Align.RIGHT }
+                        val says = if (n.reply) "OPEN \u00B7 \u21E7\u23CE REPLY" else "OPEN"
+                        val hw = hint.measureText(says) + 8f
+                        fill.color = Color.BLACK
+                        c.drawRect(row.right - hw - 2f, row.top + 1.5f, row.right - 1.5f, row.bottom - 1.5f, fill)
+                        c.drawText(says, row.right - 5f, row.centerY() + hint.textSize * 0.36f, hint)
                     }
                 }
                 if (LookUp.notes.size > 3) {

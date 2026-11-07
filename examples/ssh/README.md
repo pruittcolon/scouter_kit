@@ -143,6 +143,16 @@ glasses, the saved servers) and **Settings**.
   long press, the wheel scrolls (VoxKeys: Android's accessibility gestures; *Vox* must be on in Accessibility).
   Alt+Backspace is Back, Alt+H Home. Typing goes to the phone's app as usual (the pointer off: Enter and Space
   are its clicks while it is on).
+- **Notifications on the dashboard**: the pointer goes on from the terminal's top row up into the newest three
+  notifications (then up again to the tab bar). A click opens the notification's app on the phone (as tapping it
+  would: `NoteActivity` sends its intent) and the glasses switch to the phone's screen with the cursor in the
+  middle, to click through and type. A right click on one with its own Reply (messages) writes a quick reply on
+  the dashboard instead: typed (VoxKeys takes the keys meanwhile) or said (Alt+Space), Enter sends it through the
+  notification (Android's RemoteInput), Escape cancels.
+- **A mouse or a keyboard's trackpad** paired with the phone moves Android's own pointer and clicks as always;
+  VoxKeys only watches it (Android 15+: observed motion event sources, never taken) and the glasses draw the
+  cursor where it is while they show the phone's screen. With the pointer on, typing goes to the phone's app:
+  Space, and Enter once something was typed; an arrow key makes the keys the cursor's again.
 - **Closing**: Alt+Q closes the source shown (a terminal's connection, the phone's sharing, a server's screen) and
   the glasses go to the next one still open; a closed one stays closed until it is chosen again.
 - **Look-up only**: the left TouchBar held 3 s turns *Always visible* off (the glasses show when looking up);

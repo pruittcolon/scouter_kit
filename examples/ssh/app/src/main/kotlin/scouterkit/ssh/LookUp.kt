@@ -1,8 +1,14 @@
 package scouterkit.ssh
 
+import android.app.Activity
+import android.app.ActivityOptions
 import android.app.Notification
+import android.app.PendingIntent
+import android.app.RemoteInput
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import java.text.SimpleDateFormat
@@ -13,7 +19,9 @@ import java.util.Locale
 // batteries on its first line, the newest phone notification on its second (Settings.lookUpClock,
 // lookUpNotifications), then a rule.
 object LookUp {
-    class Note(val app: String, val title: String, val text: String, val posted: Long)
+    // key: the notification's (VoxNotifications opens it, replies to it); reply: it has its own Reply.
+    class Note(val app: String, val title: String, val text: String, val posted: Long, val key: String = "",
+               val reply: Boolean = false)
 
     // The phone's notifications, newest first (VoxNotifications), and who to tell when they change.
     @Volatile var notes: List<Note> = emptyList()
@@ -72,13 +80,50 @@ object LookUp {
 // The phone's notifications for the look-up header: the clearable ones from other apps, newest first (no
 // ongoing ones such as music or this app's own). Only while the user allows it (Notification access).
 class VoxNotifications : NotificationListenerService() {
+    // What a click on a note does (its own content intent, else its app), and its Reply (an action that takes
+    // text, Android's RemoteInput).
+    private class Acts(val pkg: String, val open: PendingIntent?, val reply: Notification.Action?, val autoCancel: Boolean)
+
     companion object {
+        @Volatile private var acts: Map<String, Acts> = emptyMap()
+        @Volatile private var instance: VoxNotifications? = null
+
+        // The note's app, as its notification would open it (on the phone, from Vox's NoteActivity). False: gone.
+        fun open(activity: Activity, key: String): Boolean {
+            val a = acts[key] ?: return false
+            val options = ActivityOptions.makeBasic()
+            if (android.os.Build.VERSION.SDK_INT >= 34)
+                options.setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+            val sent = a.open != null && runCatching {
+                a.open.send(activity, 0, null, null, null, null, options.toBundle())
+            }.onFailure { android.util.Log.w(ScouterService.TAG, "note: ${it.message}") }.isSuccess
+            if (!sent) {
+                val launch = activity.packageManager.getLaunchIntentForPackage(a.pkg) ?: return false
+                activity.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+            if (a.autoCancel) instance?.let { l -> runCatching { l.cancelNotification(key) } }
+            return true
+        }
+
+        // A reply sent through the note's own Reply, as typing in the notification shade would. False: none.
+        fun reply(context: Context, key: String, text: String): Boolean {
+            val action = acts[key]?.reply ?: return false
+            val inputs = action.remoteInputs ?: return false
+            val intent = Intent().addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+            val results = Bundle()
+            for (r in inputs) results.putCharSequence(r.resultKey, text)
+            RemoteInput.addResultsToIntent(inputs, intent, results)
+            return runCatching { action.actionIntent.send(context, 0, intent) }
+                .onFailure { android.util.Log.w(ScouterService.TAG, "reply: ${it.message}") }.isSuccess
+        }
+
         val QUIET = setOf(Notification.CATEGORY_SERVICE, Notification.CATEGORY_TRANSPORT, Notification.CATEGORY_PROGRESS,
             Notification.CATEGORY_STATUS, Notification.CATEGORY_SYSTEM, Notification.CATEGORY_NAVIGATION,
             Notification.CATEGORY_STOPWATCH, Notification.CATEGORY_LOCATION_SHARING)
     }
 
     override fun onListenerConnected() {
+        instance = this
         refresh()
         // After an update or the phone's start Android binds this listener, and may not tell the app it was
         // replaced (BluetoothSwitch): Vox starts by itself (Settings.autoStart) from here as well.
@@ -89,6 +134,8 @@ class VoxNotifications : NotificationListenerService() {
     override fun onNotificationRemoved(sbn: StatusBarNotification?) = refresh()
 
     override fun onListenerDisconnected() {
+        if (instance === this) instance = null
+        acts = emptyMap()
         LookUp.notes = emptyList()
         LookUp.onChange?.invoke()
     }
@@ -96,10 +143,17 @@ class VoxNotifications : NotificationListenerService() {
     private fun refresh() {
         val all = runCatching { activeNotifications }.getOrNull() ?: return
         val ranking = runCatching { currentRanking }.getOrNull()
-        LookUp.notes = all.filter { keep(it, ranking) }.sortedByDescending { it.postTime }.map { sbn ->
+        val kept = all.filter { keep(it, ranking) }.sortedByDescending { it.postTime }
+        acts = kept.associate { sbn ->
+            val n = sbn.notification
+            val reply = n.actions?.firstOrNull { a -> a.remoteInputs?.any { it.allowFreeFormInput } == true }
+            sbn.key to Acts(sbn.packageName, n.contentIntent, reply, (n.flags and Notification.FLAG_AUTO_CANCEL) != 0)
+        }
+        LookUp.notes = kept.map { sbn ->
             val e = sbn.notification.extras
             LookUp.Note(label(sbn.packageName), e.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty(),
-                e.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty(), sbn.postTime)
+                e.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty(), sbn.postTime, sbn.key,
+                acts[sbn.key]?.reply != null)
         }.filter { it.title.isNotBlank() || it.text.isNotBlank() }
         LookUp.onChange?.invoke()
     }
@@ -123,4 +177,26 @@ class VoxNotifications : NotificationListenerService() {
     private fun label(pkg: String): String = runCatching {
         packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
     }.getOrElse { pkg.substringAfterLast('.').replaceFirstChar { it.uppercase() } }
+}
+
+// Opens a notification's app on the phone for the glasses (the pointer clicked it on the dashboard): a moment in
+// front, unseen, so Android lets the notification's own intent start its app, then gone.
+class NoteActivity : Activity() {
+    companion object {
+        const val EXTRA_KEY = "key"
+    }
+
+    private var done = false
+
+    // In front (its window shown, transparent): Android lets the intent start its app from here.
+    override fun onResume() {
+        super.onResume()
+        if (done) return
+        done = true
+        val key = intent.getStringExtra(EXTRA_KEY).orEmpty()
+        if (!VoxNotifications.open(this, key)) android.util.Log.w(ScouterService.TAG, "note: gone")
+        finish()
+        @Suppress("DEPRECATION")
+        overridePendingTransition(0, 0)
+    }
 }
