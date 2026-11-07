@@ -9,10 +9,10 @@ import android.widget.TextView
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.KeyPair
 
-// Settings, in cards: access, the glasses (pairing, brightness, alignment, the looking-up angle), the TouchBar's
-// gestures, the phone's screen, the server in use and the phone's key (presets for Claude in this phone's
-// Ubuntu), Termux, keyboard and keyer. The terminal's and the screen's everyday controls are on the main
-// screen's tabs. Switches and sliders apply at once; text fields when the screen is left.
+// Settings, in sections that fold: the glasses (pairing, the looking-up angle, alignment), the TouchBar, the
+// keyboard and trackpad, the phone's SSH key, shortcuts, Termux, access and troubleshooting. Servers are edited
+// on the Terminal tab; the everyday switches are on the Glasses tab. Switches and sliders apply at once; text
+// fields when the screen is left.
 class SettingsActivity : Activity() {
     private lateinit var settings: Settings
     private val fields = mutableListOf<Pair<EditText, (String) -> Unit>>()
@@ -23,30 +23,19 @@ class SettingsActivity : Activity() {
         val page = page()
         page.addView(header("Settings", "Make the glasses yours", "Done") { finish() })
 
-        val access = card("Access")
-        permissions = text("", 13.5f, Ui.MUTED)
-        access.addView(permissions)
-        access.addView(button("Allow Bluetooth and notifications") { requestPermissions(ScouterService.PERMISSIONS.toTypedArray(), ASK) })
-        access.addView(button("Let it run in the background (battery: unrestricted)") { unrestricted() })
-        page.addView(access)
-
-        val glasses = card("Glasses")
+        val glasses = page.section("Glasses", "set_glasses", "glasses", open = true)
         glassesState = text("", 13.5f, Ui.MUTED)
         glasses.addView(glassesState)
-        glasses.addView(button("Pair glasses (in the open case)", PRIMARY) { startActivity(Intent(this, PairingActivity::class.java)) })
-        glasses.addView(button("Use the glasses Android already paired") { useBonded() })
+        glasses.addView(chipRow(
+            chip("Pair glasses", true) { startActivity(Intent(this, PairingActivity::class.java)) },
+            chip("Use the paired ones", false) { useBonded() },
+        ))
         connect = toggle("Connect to the glasses", "Off: the app leaves the arms alone", settings.glassesAllowed) { settings.glassesAllowed = it }
         glasses.addToggle(connect)
-        glasses.addToggle(toggle("Start by itself", "No tap needed: the glasses connect and show the terminal when the app " +
-            "opens, after the phone starts, after updates and when Bluetooth comes on; in and out of the case they " +
-            "connect again by themselves. Stop everything ends it until the next start.", settings.autoStart) {
+        glasses.addToggle(toggle("Start by itself", "The glasses connect when the app opens, after the phone starts and " +
+            "after updates; out of the case they come back by themselves.", settings.autoStart) {
             settings.autoStart = it
             if (it && settings.startsByItself()) ScouterService.send(this)
-        })
-        glasses.rule()
-        glasses.addView(slider("Brightness", 0, 42, settings.brightness, { "${it * 100 / 42}%" }) { v ->
-            settings.brightness = v
-            Thread { Native.brightness(v) }.start()
         })
         glasses.addView(slider("Show when looking up by", 0, 60, settings.angle, { "$it°" }) {
             settings.angle = it
@@ -55,13 +44,13 @@ class SettingsActivity : Activity() {
         val grid = text("", 12.5f, Ui.FAINT)
         fun showGrid(dx: Int, dy: Int) {
             val (cols, rows) = Settings.grid(dx, dy, settings.termTop, settings.termBottom)
-            grid.text = "Terminal size: $cols × $rows characters"
+            grid.text = "The terminal: $cols × $rows characters"
         }
-        glasses.addView(slider("Eye overlap (dx)", 0, 320, settings.dx, { "$it px" }, { showGrid(it, settings.dy) }) {
+        glasses.addView(slider("Depth (eye overlap)", 0, 320, settings.dx, { "$it px" }, { showGrid(it, settings.dy) }) {
             settings.dx = it
             restart()
         })
-        glasses.addView(slider("Vertical alignment (dy)", -64, 64, settings.dy, { "$it px" }, { showGrid(settings.dx, it) }) {
+        glasses.addView(slider("Vertical alignment", -64, 64, settings.dy, { "$it px" }, { showGrid(settings.dx, it) }) {
             settings.dy = it
             restart()
         })
@@ -70,10 +59,9 @@ class SettingsActivity : Activity() {
         if (BuildConfig.DEBUG) glasses.addToggle(toggle("Debug: show with the glasses folded", null, settings.ignoreWorn) {
             settings.ignoreWorn = it
         })
-        page.addView(glasses)
 
-        val touch = card("TouchBar", "Hold means a press of half a second. Gestures work while the glasses show " +
-            "something. Next and previous go through Home's sources.")
+        val touch = page.section("TouchBar", "set_touch", "touch",
+            hint = "Hold is a press of half a second. Next and previous go through the sources.")
         for (arm in intArrayOf(1, 0)) for ((gesture, name) in Settings.GESTURES) {
             val side = if (arm == 1) "Right" else "Left"
             touch.addView(choiceRow("$side $name", Settings.ACTIONS[settings.gestureAction(arm, gesture)] ?: "") { shown ->
@@ -89,105 +77,9 @@ class SettingsActivity : Activity() {
                     .show()
             })
         }
-        page.addView(touch)
 
-        val phone = card("Phone screen", "Its look, place and speed are on the Screen tab; these are the rest.")
-        phone.addToggle(toggle("Dark in the charging case", "A lit panel slows charging", settings.screenHideCase) {
-            settings.screenHideCase = it
-        })
-        phone.addToggle(toggle("Dark when folded", "Uses the arms' wear guess, which can be wrong", settings.screenHideFolded) {
-            settings.screenHideFolded = it
-        })
-        phone.rule()
-        phone.addView(text("Some apps, Termux among them, are blank in screen sharing: Android 15+ hides apps with " +
-            "password-style input. Developer options, \"Disable screen share protections\" shows them, along with " +
-            "notifications and one-time codes, in every screen share.", 12.5f, Ui.FAINT))
-        phone.addView(button("Open Developer options") {
-            runCatching { startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
-        })
-        page.addView(phone)
-
-        val server = card("Server in use", "Editing ${settings.active()?.name ?: "the server"}: SSH, then mosh. Add " +
-            "servers and switch on the main screen (Terminal tab, Home).")
-        server.addView(text("Termux on this phone: run examples/ssh/termux/scouter.sh in Termux once, then tap its preset.",
-            12.5f, Ui.FAINT))
-        server.addView(chipRow(
-            chip("Termux on this phone", false) { preset(Termux.HOST, Termux.PORT.toString(), Termux.USER, "tmux new -A -s main") },
-            chip("Claude in Ubuntu", false) { preset(Termux.HOST, Termux.PORT.toString(), "root", "bash -ic claude") },
-            chip("Ubuntu shell", false) { preset(Termux.HOST, Termux.PORT.toString(), "root", "") },
-            chip("tmux main", false) { commandField.setText("tmux new -A -s main") },
-        ))
-        hostField = editable("Host", settings.host, "an address, or a Tailscale IP") { settings.host = it.trim() }
-        portField = editable("Port", settings.port.toString(), "22", numeric = true) { s ->
-            s.toIntOrNull()?.takeIf { it in 1..65535 }?.let { settings.port = it }
-        }
-        userField = editable("User", settings.user, "") { settings.user = it.trim() }
-        commandField = editable("Command", settings.command, "empty: the login shell") { settings.command = it }
-        for (f in listOf(hostField, portField, userField, commandField)) server.addField(f)
-        server.addField(editable("mosh UDP ports", settings.moshPorts, "e.g. 60000:60009 (empty: mosh's default)") {
-            if (it.isBlank() || Regex("\\d{1,5}(:\\d{1,5})?").matches(it.trim())) settings.moshPorts = it.trim()
-        })
-        server.rule()
-        keyState = text("", 13f, Ui.MUTED)
-        server.addView(keyState)
-        server.addView(button("Create a key on this phone") {
-            if (Vault(this).has(Vault.SSH_KEY)) {
-                dialog()
-                    .setTitle("Replace the key?")
-                    .setMessage("Servers that have the old key will need the new one installed.")
-                    .setPositiveButton("Replace") { _, _ -> createKey() }
-                    .setNegativeButton("Cancel", null)
-                    .show()
-            } else createKey()
-        })
-        serverPassword = field("Server password (used once, never saved)", "", "password", secret = true)
-        server.addField(serverPassword)
-        server.addView(button("Install the key on the server") {
-            install(hostField.text.toString().trim(), portField.text.toString().toIntOrNull() ?: settings.port,
-                userField.text.toString().trim())
-        })
-        server.addView(button("Copy the public key") {
-            val line = Vault(this).text(Vault.SSH_PUBLIC) ?: Vault(this).let { v -> runCatching { Bootstrap.publicKey(v) }.getOrNull() }
-            if (line == null) keyState.text = "No key yet: Create a key on this phone first."
-            else {
-                getSystemService(android.content.ClipboardManager::class.java)
-                    .setPrimaryClip(android.content.ClipData.newPlainText("Vox public key", line))
-                keyState.text = "Public key copied: paste it into Termux (scouter key)."
-            }
-        })
-        server.addView(button("Share the public key") {
-            val line = Vault(this).text(Vault.SSH_PUBLIC)
-            if (line == null) keyState.text = "No key made on this phone yet."
-            else startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
-                .putExtra(Intent.EXTRA_TEXT, line), "Public key"))
-        })
-        server.addView(button("Import a key file (OpenSSH)") {
-            @Suppress("DEPRECATION")
-            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), PICK)
-        })
-        pasted = field("Or paste a private key", "", "-----BEGIN … PRIVATE KEY-----", lines = 4)
-        server.addField(pasted)
-        passphrase = field("Its passphrase (if it has one)", "", "", secret = true)
-        server.addField(passphrase)
-        server.addView(button("Save the pasted key") { save(pasted.text.toString().toByteArray()) })
-        server.addView(button("Forget this server's host key") {
-            Bootstrap.forget(Vault(this), "${settings.host}:${settings.port}")
-            showKey()
-        })
-        page.addView(server)
-
-        val termux = card("Termux")
-        termuxState = text("", 13f, Ui.MUTED)
-        termux.addView(termuxState)
-        if (Termux.hasRunCommand(this)) {
-            termux.addView(button("Allow running commands in Termux") { requestPermissions(arrayOf(Termux.PERMISSION), ASK) })
-            termux.addView(button("Set up Termux for the glasses") { setUpTermux() })
-        }
-        page.addView(termux)
-
-        val hot = card("Keyboard shortcuts", "A keyboard paired with the phone: Alt+← / → this phone or the laptop " +
-            "(the same kind), Alt+↑ / ↓ terminal or screen, Alt+1…9 Home's source of that number, Alt+0 the display " +
-            "off / on.")
+        val hot = page.section("Keyboard and trackpad", "set_keys", "keyboard",
+            hint = "A keyboard paired with the phone: Alt+arrows walk the sources, Alt+1…9 picks one, Alt+0 the display.")
         hot.addToggle(toggle("Alt shortcuts", "Off: Alt with these keys reaches the app in front", settings.hotkeys) {
             settings.hotkeys = it
         })
@@ -196,21 +88,107 @@ class SettingsActivity : Activity() {
         hot.addView(button("Turn them on in every app (Accessibility)") {
             runCatching { startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         })
-        hot.addView(text("In Accessibility, Installed apps (or Downloaded apps), Vox keyboard shortcuts: on. It only " +
-            "filters key presses; it reads nothing on the screen. If Android says the setting is restricted: Apps, " +
-            "Vox, ⋮, Allow restricted settings, then try again.", 12.5f, Ui.FAINT))
-        page.addView(hot)
-
-        val keys = card("Keyboard and keyer")
-        keys.addToggle(toggle("Use a keyboard paired with this phone", "The terminal runs while this app is open", settings.keyboard) {
+        hot.addView(text("Accessibility, Installed apps, Vox keyboard shortcuts: on. It only filters keys and the " +
+            "trackpad; it reads nothing on the screen. If Android says the setting is restricted: Apps, Vox, ⋮, Allow " +
+            "restricted settings.", 12f, Ui.FAINT).apply { setPadding(0, dp(6), 0, 0) })
+        hot.addToggle(toggle("Trackpad on the glasses", "While they show the terminal, a trackpad or mouse moves their " +
+            "pointer (tap: click, two fingers: right click and scroll)", settings.trackpad) {
+            settings.trackpad = it
+            restart()
+        })
+        hot.addView(slider("Trackpad speed", 1, 10, settings.trackpadSpeed, { "$it" }) { v -> settings.trackpadSpeed = v })
+        hot.addToggle(toggle("Keyboard mode", "A paired keyboard types into the terminal while this app is open", settings.keyboard) {
             settings.keyboard = it
         })
+        hot.addView(subhead("keyer"))
         val keyer = editable("keyer address (bonded; empty: none)", settings.keyer, "") { settings.keyer = it.trim().uppercase() }
-        keys.addField(keyer)
-        keys.addView(button("Use the bonded keyer") {
+        hot.addField(keyer)
+        hot.addView(chipRow(chip("Use the bonded keyer", false) {
             bondedKeyer()?.let { keyer.setText(it) } ?: run { keyer.error = "no bonded keyer: pair it in Android's Bluetooth settings" }
+        }))
+
+        val key = page.section("SSH key", "set_key", "key", hint = "The phone's own key: the private half never leaves it.")
+        keyState = text("", 13f, Ui.MUTED)
+        key.addView(keyState)
+        key.addView(chipRow(
+            chip("Create a key", false) {
+                if (Vault(this).has(Vault.SSH_KEY)) {
+                    dialog()
+                        .setTitle("Replace the key?")
+                        .setMessage("Servers that have the old key will need the new one installed.")
+                        .setPositiveButton("Replace") { _, _ -> createKey() }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                } else createKey()
+            },
+            chip("Copy the public key", false) {
+                val line = Vault(this).text(Vault.SSH_PUBLIC) ?: Vault(this).let { v -> runCatching { Bootstrap.publicKey(v) }.getOrNull() }
+                if (line == null) keyState.text = "No key yet: create one first."
+                else {
+                    getSystemService(android.content.ClipboardManager::class.java)
+                        .setPrimaryClip(android.content.ClipData.newPlainText("Vox public key", line))
+                    keyState.text = "Public key copied: paste it into Termux (scouter key)."
+                }
+            },
+            chip("Share", false) {
+                val line = Vault(this).text(Vault.SSH_PUBLIC)
+                if (line == null) keyState.text = "No key made on this phone yet."
+                else startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
+                    .putExtra(Intent.EXTRA_TEXT, line), "Public key"))
+            },
+        ))
+        key.addView(subhead("Install it on ${settings.active()?.name ?: "the server in use"}"))
+        serverPassword = field("Its password (used once, never saved)", "", "password", secret = true)
+        key.addField(serverPassword)
+        key.addView(button("Install the key") {
+            val s = settings.active()
+            if (s == null) keyState.text = "Add a server first (Terminal tab)."
+            else install(s.host, s.port, s.user)
         })
-        page.addView(keys)
+        key.addView(subhead("Or use a key you have"))
+        key.addView(chipRow(chip("Import a key file (OpenSSH)", false) {
+            @Suppress("DEPRECATION")
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), PICK)
+        }))
+        pasted = field("Or paste a private key", "", "-----BEGIN … PRIVATE KEY-----", lines = 4)
+        key.addField(pasted)
+        passphrase = field("Its passphrase (if it has one)", "", "", secret = true)
+        key.addField(passphrase)
+        key.addView(button("Save the pasted key") { save(pasted.text.toString().toByteArray()) })
+
+        val pins = page.section("Shortcuts", "set_shortcuts", "spark",
+            hint = "On your home screen. Long-pressing the Vox icon shows them too; Quick Settings has a \"Next source\" tile.")
+        val chips = settings.sources().map { (k, name) -> chip("+ $name", false) { pin(k, name) } } +
+            chip("+ Next source", false) { pin(Shortcuts.NEXT, "Next source") } +
+            chip("+ Display off / on", false) { pin(Shortcuts.DISPLAY, "Display off / on") }
+        for (row in chips.chunked(2)) pins.addView(chipRow(*row.toTypedArray()))
+
+        val termux = page.section("Termux", "set_termux", "terminal")
+        termuxState = text("", 13f, Ui.MUTED)
+        termux.addView(termuxState)
+        if (Termux.hasRunCommand(this)) {
+            termux.addView(button("Allow running commands in Termux") { requestPermissions(arrayOf(Termux.PERMISSION), ASK) })
+            termux.addView(button("Set up Termux for the glasses") { setUpTermux() })
+        }
+
+        val access = page.section("Access", "set_access", "lock")
+        permissions = text("", 13.5f, Ui.MUTED)
+        access.addView(permissions)
+        access.addView(button("Allow Bluetooth and notifications") { requestPermissions(ScouterService.PERMISSIONS.toTypedArray(), ASK) })
+        access.addView(button("Let it run in the background") { unrestricted() })
+        access.addView(button("Allow reading notifications (the dashboard)") {
+            runCatching { startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+        })
+
+        val trouble = page.section("Troubleshooting", "set_trouble", "info")
+        trouble.addView(text("Some apps, Termux among them, are blank in screen sharing: Android 15+ hides apps with " +
+            "password-style input. Developer options, \"Disable screen share protections\" shows them (and notifications " +
+            "and one-time codes) in every screen share.", 12.5f, Ui.FAINT))
+        trouble.addView(button("Open Developer options") {
+            runCatching { startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
+        })
+        diagnostics = text("", 11.5f, Ui.FAINT, Ui.MONO).apply { setPadding(0, dp(10), 0, 0) }
+        trouble.addView(diagnostics)
 
         page.addView(text("Vox ${BuildConfig.VERSION_NAME} · ${Native.version()}", 12f, Ui.FAINT).apply {
             setPadding(dp(4), dp(4), dp(4), 0)
@@ -218,18 +196,15 @@ class SettingsActivity : Activity() {
         showKey()
     }
 
+    private fun pin(key: String, name: String) {
+        if (!Shortcuts.pin(this, key, name)) keyState.text = "This home screen can't add shortcuts: long-press the Vox icon instead."
+    }
+
     // A text field that saves when the screen is left.
     private fun editable(label: String, value: String, hint: String, numeric: Boolean = false, set: (String) -> Unit): EditText {
         val e = field(label, value, hint, numeric)
         fields += e to set
         return e
-    }
-
-    private fun preset(host: String, port: String, user: String, command: String) {
-        hostField.setText(host)
-        portField.setText(port)
-        userField.setText(user)
-        commandField.setText(command)
     }
 
     // Glasses settings changed: a running session picks them up (the glasses connect again if needed).
@@ -273,6 +248,7 @@ class SettingsActivity : Activity() {
             requestPermissions(ScouterService.PERMISSIONS.toTypedArray(), ASK)
         }
         showGlasses()
+        showDiagnostics()
         hotState.text = if (Hotkeys.everywhere(this)) "In every app: on" else "In every app: off (only while Vox is in front)"
         connect.isChecked = settings.glassesAllowed
         connect.isEnabled = settings.left.isNotEmpty() && settings.right.isNotEmpty()
@@ -288,6 +264,16 @@ class SettingsActivity : Activity() {
     private val listener: () -> Unit = {
         showTermux()
         showGlasses()
+        showDiagnostics()
+    }
+
+    // The session's raw state, for reports.
+    private fun showDiagnostics() {
+        val exempt = getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+        diagnostics.text = (if (exempt) "" else "battery optimised · ") +
+            "glasses ${Session.glasses} (L ${Session.left} R ${Session.right}" + (if (Session.shown) ", shown" else "") +
+            ") · screen ${Session.screen} (${Session.screenFrames} frames) · mosh ${Session.mosh} · keyer ${Session.keyer}" +
+            (if (Session.termux.isNotEmpty()) " · Termux ${Session.termux}" else "")
     }
 
     private fun showTermux() {
@@ -303,8 +289,8 @@ class SettingsActivity : Activity() {
         }
     }
 
-    // Termux as the server: this phone's key (made now if there is none; an imported key is used as it is),
-    // the server's fields, then Termux's setup (TermuxResult reports).
+    // Termux as the server: this phone's key (made now if there is none; an imported key is used as it is), a saved
+    // server for it (127.0.0.1:8022), then Termux's setup (TermuxResult reports).
     private fun setUpTermux() {
         Termux.problem(this)?.let {
             termuxState.text = it
@@ -320,14 +306,11 @@ class SettingsActivity : Activity() {
                     termuxState.text = "no key: ${it.message}"
                     return@runOnUiThread
                 }
-                hostField.setText(Termux.HOST)
-                portField.setText(Termux.PORT.toString())
-                userField.setText(Termux.USER)
-                if (commandField.text.isBlank()) commandField.setText(Termux.CLAUDE)
-                settings.host = Termux.HOST
-                settings.port = Termux.PORT
-                settings.user = Termux.USER
-                settings.command = commandField.text.toString()
+                val old = settings.servers().firstOrNull { it.host == Termux.HOST && it.port == Termux.PORT }
+                val s = Settings.Server(old?.id ?: Settings.newServerId(), old?.name ?: "Phone", Termux.HOST, Termux.PORT,
+                    Termux.USER, old?.command?.ifEmpty { null } ?: Termux.CLAUDE, old?.moshPorts ?: "")
+                settings.putServer(s)
+                settings.useServer(s.id)
                 showKey()
                 runCatching { Termux.setUp(this, key) }.getOrElse { it.message }?.let { termuxState.text = "not set up: $it" }
             }
@@ -336,13 +319,12 @@ class SettingsActivity : Activity() {
 
     // Without Bluetooth the app neither links nor runs its service (Android 14+ requires it for a connectedDevice
     // service); without notifications its state does not show.
-    // Without Bluetooth the app neither links nor runs its service (Android 14+ requires it for a connectedDevice
-    // service); without notifications its state does not show.
     private fun showPermissions() {
         val missing = ScouterService.missing(this)
         permissions.text = if (missing.isEmpty()) "Bluetooth and notifications: allowed." else
             "Needed: Bluetooth (the glasses, keyer and the app's service) and notifications (its state). If Android no " +
-                "longer asks: Android's Settings, Apps, Vox, Permissions."
+                "longer asks: Android's Settings, Apps, Vox, Permissions." +
+                (if (LookUp.allowed(this)) "" else "\nNotification access (the dashboard's notifications): not allowed yet.")
     }
 
     override fun onRequestPermissionsResult(request: Int, permissions: Array<out String>, results: IntArray) {
@@ -355,10 +337,7 @@ class SettingsActivity : Activity() {
 
     private var asked = false
     private lateinit var termuxState: TextView
-    private lateinit var hostField: EditText
-    private lateinit var portField: EditText
-    private lateinit var userField: EditText
-    private lateinit var commandField: EditText
+    private lateinit var diagnostics: TextView
     private lateinit var permissions: TextView
     private lateinit var glassesState: TextView
     private lateinit var connect: Switch
@@ -395,12 +374,9 @@ class SettingsActivity : Activity() {
     // confirmed first, as for every connection.
     private fun install(host: String, port: Int, user: String) {
         val vault = Vault(this)
-        val line = vault.text(Vault.SSH_PUBLIC) ?: return run { keyState.text = "create a key on this phone first (1.)" }
+        val line = vault.text(Vault.SSH_PUBLIC) ?: return run { keyState.text = "create a key on this phone first" }
         val password = serverPassword.text.toString()
-        if (host.isEmpty() || user.isEmpty() || password.isEmpty()) return run { keyState.text = "fill in host, user and the password" }
-        settings.host = host
-        settings.port = port
-        settings.user = user
+        if (host.isEmpty() || user.isEmpty() || password.isEmpty()) return run { keyState.text = "type the server's password first" }
         keyState.text = "installing the key on $user@$host…"
         Thread {
             val message = try {

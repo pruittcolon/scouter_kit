@@ -78,9 +78,17 @@ the old one), so run tmux on the server (command `tmux new -A -s main`) to keep 
 
 ## Sources and switching
 
-The main screen has tabs: **Home** (one button per source, the display, brightness, shortcuts), **Screen**
-(the preview of what the glasses get, size and speed, place, look), **Terminal** (its preview, its place on the
-glasses, the saved servers) and **Settings**.
+The main screen has tabs with icons: **Glasses** (what the glasses show, live: the terminal in the panel's green
+or the screen's picture, the source's name and each arm's battery over it; the sources as a grid, the machines
+across and terminal above screen, the way Alt+arrows walk them, each tile with its state; round switches for
+the display, *Always visible*, voice and the pointer; brightness; a banner with its button for anything that
+needs the user; the power button stops everything or starts again), **Screen** (the picture the glasses get,
+sharing, then *Look*, *Place*, *Speed and detail* and *Going dark*), **Terminal** (the terminal and its tabs as
+chips: tap to show, hold to close; the touchpad; the servers, each with its state; *On the glasses*, *Look-up
+view*, *Keys*), **Voice** (the microphone, the speech model, your commands) and **Settings** (*Glasses*,
+*TouchBar*, *Keyboard and trackpad*, *SSH key*, *Shortcuts*, *Termux*, *Access*, *Troubleshooting*). Sections
+fold under their titles and stay as they were left. A server is added and edited in one dialog (with presets for
+this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
 
 - **Sources**, in order: each saved server's terminal, the phone's screen, and each other server's screen. One
   tap on Home switches; the launcher's shortcuts (long-press Vox), pinned home-screen shortcuts, the Quick
@@ -102,7 +110,7 @@ glasses, the saved servers) and **Settings**.
   there (looked for in `~/.local/bin`, `~/bin` and `/usr/local/bin` too), which must write baseline JPEG images one after another to stdout (each the whole desktop inside
   WIDTH x HEIGHT) until stdout closes. They go through the same pipeline as the phone's screen. The width asked
   for is on the Screen tab (640, 960, 1280).
-- **Transitions** (*Transitions*, Terminal tab, on by default; `native/fx.hpp`, `Fx.kt`): a switch plays on the
+- **Transitions** (*Transitions*, Terminal tab, *On the glasses*, on by default; `native/fx.hpp`, `Fx.kt`): a switch plays on the
   glasses in about half a second. The old picture goes the moment it is asked for (about 0.15 s), a label says
   where the glasses are going ("LAPTOP // TERMINAL"), and the new picture comes in once its pixels are on the
   arms (about 0.3 s). Each way of switching has its own: Alt+Left / Right (and next / previous) a data stream, a
@@ -167,7 +175,7 @@ glasses, the saved servers) and **Settings**.
   middle, to click through and type. A right click on one with its own Reply (messages) writes a quick reply on
   the dashboard instead: typed (VoxKeys takes the keys meanwhile) or said (Alt+Space), Enter sends it through the
   notification (Android's RemoteInput), Escape cancels.
-- **A mouse or a keyboard's trackpad** paired with the phone (*Keyboard trackpad on the glasses*, Terminal tab, on
+- **A mouse or a keyboard's trackpad** paired with the phone (*Trackpad on the glasses*, Settings, *Keyboard and trackpad*, on
   by default; VoxKeys, Android 15+): while the glasses show the terminal (or a card) and it shows on an eye, VoxKeys
   takes the trackpad's events from the phone's apps and they drive the glasses' pointer: it glides a cell at a time
   (fractions kept, quicker strokes go further; *Trackpad speed*), goes up onto the dashboard and there a place at a

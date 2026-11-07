@@ -17,34 +17,45 @@ import java.io.File
 
 private const val SCREEN_REQUEST = 7 // the screen-sharing consent
 
-// Vox's main screen, in tabs: Home (what the glasses show: one button per source, the display, brightness,
-// shortcuts), Screen (the preview of what the glasses get, size and speed, place, look) and Terminal (its
-// preview, its place on the glasses, the saved servers); Settings opens the rest. The session runs until Stop,
-// with no keyer needed (keyer and keyboard mode still work as before).
+// Vox's main screen, in tabs with icons: Glasses (what they show, live; the sources as a grid that Alt+arrows
+// walk; the display, always visible, voice and the pointer; brightness), Screen (the picture the glasses get and
+// how it looks), Terminal (the terminal, its tabs, the touchpad, the servers), Voice; Settings opens the rest.
+// Rarely used settings fold away in sections. The session runs until the power button stops it.
 class MainActivity : Activity() {
-    private lateinit var status: TextView
     private lateinit var terminal: TerminalView
-    private lateinit var headline: TextView
-    private lateinit var detail: TextView
-    private lateinit var pills: LinearLayout
-    private lateinit var leftGauge: BatteryGauge
-    private lateinit var rightGauge: BatteryGauge
-    private lateinit var sourcesBox: LinearLayout
-    private lateinit var pinsBox: LinearLayout
+    private lateinit var homeTerminal: TerminalView
+    private lateinit var homePicture: PreviewView
+    private lateinit var glasses: GlassesView
+    private lateinit var linkPill: TextView
+    private lateinit var powerDisc: FrameLayout
+    private lateinit var powerIcon: IconView
+    private var powerShown: Boolean? = null
+    private var sharingShown: Boolean? = null
+    private lateinit var statusLine: TextView
+    private lateinit var bannerBox: LinearLayout
+    private var bannerKey = ""
+    private lateinit var gridHolder: FrameLayout
+    private var gridKey = ""
+    private val gridTiles = mutableListOf<Triple<String?, GridTile, String>>()
+    private lateinit var displayAction: RoundAction
+    private lateinit var alwaysAction: RoundAction
+    private lateinit var voiceAction: RoundAction
+    private lateinit var pointerAction: RoundAction
     private lateinit var serversBox: LinearLayout
-    private val sourceTiles = mutableListOf<Pair<String, Tile>>()
-    private var offTile: Tile? = null
-    private lateinit var stopSharing: View
-    private lateinit var batterySwitch: Switch
-    private lateinit var forceSwitch: Switch
-    private lateinit var homeForce: Switch
-    private lateinit var notesState: TextView
+    private lateinit var tabStrip: LinearLayout
+    private var tabStripKey: String? = null
     private lateinit var tabsState: TextView
+    private lateinit var batterySwitch: Switch
+    private lateinit var notesState: TextView
     private lateinit var dashPreview: android.widget.ImageView
+    private lateinit var shareChip: TextView
     private lateinit var voiceState: TextView
     private lateinit var voiceModel: TextView
-    private lateinit var voiceListen: TextView
-    private lateinit var downloadButton: View
+    private lateinit var modelButton: TextView
+    private lateinit var micDisc: FrameLayout
+    private lateinit var micIcon: IconView
+    private lateinit var micHalo: View
+    private var haloAnim: android.animation.Animator? = null
     private lateinit var commandsBox: LinearLayout
     private lateinit var heardText: TextView
     // While the speech model downloads: its progress on the Voice tab.
@@ -58,7 +69,7 @@ class MainActivity : Activity() {
     private lateinit var previewText: TextView
     private lateinit var content: FrameLayout
     private val pages = mutableListOf<View>()
-    private val tabLabels = mutableListOf<TextView>()
+    private val tabItems = mutableListOf<Triple<FrameLayout, IconView, TextView>>()
     private var tab = 0
     private var resumed = false
     private var checked: String? = null // the last "Check the glasses"
@@ -66,6 +77,7 @@ class MainActivity : Activity() {
     private val previewListener: () -> Unit = {
         runOnUiThread {
             previewView.refresh()
+            homePicture.refresh()
             previewLine()
         }
     }
@@ -95,7 +107,7 @@ class MainActivity : Activity() {
         pages += terminalPage(settings)
         pages += voicePage(settings)
         for (p in pages) content.addView(p, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        selectTab(getPreferences(MODE_PRIVATE).getInt("tab", 0))
+        selectTab(getPreferences(MODE_PRIVATE).getInt("tab", 0), animate = false)
         handle(intent)
     }
 
@@ -103,7 +115,7 @@ class MainActivity : Activity() {
     private fun scrollPage(): Pair<ScrollView, LinearLayout> {
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(20), dp(18), dp(28))
+            setPadding(dp(18), dp(18), dp(18), dp(28))
         }
         val scroll = ScrollView(this).apply {
             setBackgroundColor(Ui.BG)
@@ -113,21 +125,29 @@ class MainActivity : Activity() {
         return scroll to column
     }
 
-    // The tabs at the bottom; Settings opens its own screen.
+    // The tabs at the bottom: an icon in a pill (lit when chosen) and its name; Settings opens its own screen.
     private fun tabBar(): View {
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Ui.SURFACE)
-            setPadding(dp(8), dp(6), dp(8), dp(8))
+            setPadding(dp(6), dp(8), dp(6), dp(10))
         }
-        for ((i, name) in listOf("Home", "Screen", "Terminal", "Voice", "Settings").withIndex()) {
-            val t = text(name, 12.5f, Ui.MUTED, Ui.BOLD).apply {
-                gravity = Gravity.CENTER
-                setPadding(0, dp(11), 0, dp(11))
+        val items = listOf("glasses" to "Glasses", "screen" to "Screen", "terminal" to "Terminal", "mic" to "Voice", "gear" to "Settings")
+        for ((i, item) in items.withIndex()) {
+            val (icon, name) = item
+            val cell = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
                 setOnClickListener { if (i == 4) startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) else selectTab(i) }
             }
-            tabLabels += t
-            bar.addView(t, lp(0, weight = 1f).apply { if (i > 0) leftMargin = dp(6) })
+            val pill = FrameLayout(this)
+            val glyph = IconView(this, icon, 22, Ui.MUTED)
+            pill.addView(glyph, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+            cell.addView(pill, LinearLayout.LayoutParams(dp(58), dp(32)))
+            val label = text(name, 11.5f, Ui.MUTED, Ui.BOLD).apply { gravity = Gravity.CENTER }
+            cell.addView(label, lp(ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
+            tabItems += Triple(pill, glyph, label)
+            bar.addView(cell, lp(0, weight = 1f))
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -136,176 +156,176 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun selectTab(i: Int) {
+    private fun selectTab(i: Int, animate: Boolean = true) {
+        val was = tab
         tab = i.coerceIn(0, pages.size - 1)
         for ((k, p) in pages.withIndex()) p.visibility = if (k == tab) View.VISIBLE else View.GONE
-        for ((k, t) in tabLabels.withIndex()) {
+        if (animate && was != tab) pages[tab].apply {
+            alpha = 0f
+            translationY = dp(10).toFloat()
+            animate().alpha(1f).translationY(0f).setDuration(180).start()
+        }
+        for ((k, item) in tabItems.withIndex()) {
+            val (pill, glyph, label) = item
             val on = k == tab
-            t.setTextColor(if (on) Ui.ON_ACCENT else Ui.MUTED)
-            t.background = if (on) accentGradient(dp(14).toFloat()) else ripple(rounded(0, dp(14).toFloat()), dp(14).toFloat())
+            pill.background = if (on) accentGradient(dp(16).toFloat()) else null
+            glyph.color = if (on) Ui.ON_ACCENT else Ui.MUTED
+            label.setTextColor(if (on) Ui.TEXT else Ui.MUTED)
         }
         getPreferences(MODE_PRIVATE).edit().putInt("tab", tab).apply()
-        // The preview is made only while its tab shows.
-        Preview.wanted = resumed && tab == 1 && Settings(this).screenPreview
+        wantPreview()
         if (tab == 1) previewView.refresh()
     }
 
+    // The screen's picture is made only while a tab shows it (Screen, or Glasses while a screen is on them).
+    private fun wantPreview() {
+        Preview.wanted = resumed && (tab == 1 || (tab == 0 && Session.showing == Settings.SCREEN))
+    }
+
+    // ------------------------------------------------ Glasses (home)
+
     private fun homePage(settings: Settings): View {
         val (scroll, page) = scrollPage()
-        page.addView(header("Vox", "Your glasses: phone and laptop, terminal and screen"))
-        val hero = card()
-        headline = text("", 23f, Ui.TEXT, Ui.BLACK).apply { letterSpacing = -0.01f }
-        detail = text("", 13.5f, Ui.MUTED).apply { setPadding(0, dp(4), 0, dp(10)) }
-        pills = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        hero.addView(headline)
-        hero.addView(detail)
-        val gauges = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        leftGauge = BatteryGauge(this, "Left arm")
-        rightGauge = BatteryGauge(this, "Right arm")
-        gauges.addView(leftGauge, lp(0, weight = 1f).apply { rightMargin = dp(10) })
-        gauges.addView(rightGauge, lp(0, weight = 1f).apply { leftMargin = dp(10) })
-        hero.addView(gauges, lp().apply { bottomMargin = dp(10) })
-        hero.addView(android.widget.HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(pills)
-        })
-        page.addView(hero)
+        // The name, the glasses' link, and the power: start, or stop everything.
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), 0, 0, 0)
+        }
+        top.addView(text("Vox", 30f, Ui.TEXT, Ui.BLACK).apply { letterSpacing = -0.02f }, lp(0, weight = 1f))
+        linkPill = statusPill("Glasses", Ui.FAINT)
+        top.addView(linkPill, lp(ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(10) })
+        powerDisc = FrameLayout(this).apply { setOnClickListener { power() } }
+        powerIcon = IconView(this, "power", 22, Ui.TEXT)
+        powerDisc.addView(powerIcon, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+        top.addView(powerDisc, LinearLayout.LayoutParams(dp(44), dp(44)))
+        page.addView(top)
 
-        val on = card("On the glasses", "One tap switches. Shortcuts and the TouchBar do the same from anywhere.")
-        sourcesBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        on.addView(sourcesBox)
-        page.addView(on)
+        // What the glasses show, live.
+        homeTerminal = TerminalView(this).apply {
+            tint = GLASS
+            interactive = false
+            fit = true
+        }
+        homePicture = PreviewView(this)
+        glasses = GlassesView(this, homeTerminal, homePicture).apply {
+            setOnClickListener { selectTab(if (Session.showing == Settings.SCREEN) 1 else 2) }
+        }
+        page.addView(glasses, lp().apply { topMargin = dp(16) })
+        statusLine = text("", 13f, Ui.MUTED).apply { setPadding(dp(4), dp(10), dp(4), 0) }
+        page.addView(statusLine)
+        bannerBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        page.addView(bannerBox)
 
-        val quick = card()
-        quick.addView(slider("Brightness", 0, 42, settings.brightness, { "${it * 100 / 42}%" }) { v ->
+        // The sources as a grid: the machines across, terminal above screen (as Alt+arrows walk it).
+        val head = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(22), dp(4), dp(10))
+        }
+        head.addView(text("SWITCH", 11.5f, Ui.MUTED, Ui.BOLD).apply { letterSpacing = 0.14f }, lp(0, weight = 1f))
+        head.addView(text("Alt + ← → ↑ ↓", 12f, Ui.FAINT, Ui.BOLD))
+        page.addView(head)
+        gridHolder = FrameLayout(this)
+        page.addView(gridHolder)
+
+        // The everyday switches.
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(22), 0, dp(4))
+        }
+        displayAction = RoundAction(this, "power", "Display") { choose(OFF) }
+        alwaysAction = RoundAction(this, "eye", "Always on") {
+            val s = Settings(this)
+            s.phoneForce = !s.phoneForce
+            if (ScouterService.running) ScouterService.send(this)
+            show()
+        }
+        voiceAction = RoundAction(this, "mic", "Voice") { ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "listen") }
+        pointerAction = RoundAction(this, "pointer", "Pointer") {
+            ScouterService.send(this, ScouterService.ACTION_POINTER, "cmd" to "toggle")
+        }
+        for (a in listOf(displayAction, alwaysAction, voiceAction, pointerAction)) actions.addView(a, lp(0, weight = 1f))
+        page.addView(actions)
+
+        val light = card()
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        row.addView(IconView(this, "sun", 22, Ui.ACCENT), lp(ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(12) })
+        row.addView(slider("Brightness", 0, 42, settings.brightness, { "${it * 100 / 42}%" }) { v ->
             settings.brightness = v
             Thread { Native.brightness(v) }.start()
-        })
-        homeForce = toggle("Always visible", "Off: the terminal shows only when you look up", settings.phoneForce) {
-            settings.phoneForce = it
-            if (ScouterService.running) ScouterService.send(this)
-        }
-        quick.addToggle(homeForce)
-        quick.addView(button("Listen for a voice command") {
-            ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "listen")
-        })
-        quick.addView(button("Stop everything", DANGER) {
-            note = null
-            ScouterService.send(this, ScouterService.ACTION_STOP)
-        })
-        page.addView(quick)
-
-        val keys = card("Shortcuts", "Keyboard: Alt+← / → phone or laptop, Alt+↑ / ↓ terminal or screen, Alt+1…9 a " +
-            "source, Alt+0 display off / on (everywhere once turned on in Settings, Keyboard shortcuts). Glasses: hold " +
-            "the left TouchBar for the next source, double-tap it for the one before, hold the right one for display " +
-            "off. Long-press the Vox icon, or add these to your home screen; Quick Settings: the \"Next source\" tile.")
-        pinsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        keys.addView(pinsBox)
-        page.addView(keys)
-        status = text("", 11.5f, Ui.FAINT, Ui.MONO).apply { setPadding(dp(4), dp(4), dp(4), 0) }
-        page.addView(status)
+        }, lp(0, weight = 1f))
+        light.addView(row)
+        page.addView(light, lp().apply { topMargin = dp(14) })
         return scroll
     }
 
+    // ------------------------------------------------ Screen
+
     private fun screenPage(settings: Settings): View {
         val (scroll, page) = scrollPage()
-        page.addView(header("Screen", "What the glasses get, and how"))
-        val shown = card("Preview", "What the glasses get (it stays out of the screen sharing itself).")
-        previewView = PreviewView(this).apply {
-            white = settings.previewWhite
-            visibility = if (settings.screenPreview) View.VISIBLE else View.GONE
-        }
-        shown.addView(previewView, lp().apply { topMargin = dp(4) })
-        previewText = text("", 12.5f, Ui.MUTED).apply { setPadding(0, dp(8), 0, dp(4)) }
+        page.addView(header("Screen", "The picture the glasses get, and its look"))
+        val shown = card()
+        previewView = PreviewView(this).apply { white = settings.previewWhite }
+        shown.addView(previewView)
+        previewText = text("", 12.5f, Ui.MUTED).apply { setPadding(0, dp(10), 0, dp(4)) }
         shown.addView(previewText)
+        shareChip = chip("Share the phone's screen", true) {
+            if (Session.capturing) ScouterService.send(this, ScouterService.ACTION_STOP_SHARING) else shareScreen()
+        }
         lateinit var colour: TextView
         colour = chip(if (settings.previewWhite) "Panel green" else "White", false) {
             settings.previewWhite = !settings.previewWhite
             previewView.white = settings.previewWhite
             colour.text = if (settings.previewWhite) "Panel green" else "White"
         }
-        lateinit var hide: TextView
-        hide = chip(if (settings.screenPreview) "Hide preview" else "Show preview", false) {
-            settings.screenPreview = !settings.screenPreview
-            Preview.wanted = resumed && tab == 1 && settings.screenPreview
-            previewView.visibility = if (settings.screenPreview) View.VISIBLE else View.GONE
-            hide.text = if (settings.screenPreview) "Hide preview" else "Show preview"
-        }
-        shown.addView(chipRow(chip("Check the glasses", false) { checkGlasses() }, colour, hide))
-        stopSharing = button("Stop sharing the phone's screen") { ScouterService.send(this, ScouterService.ACTION_STOP_SHARING) }
-        shown.addView(stopSharing)
+        shown.addView(chipRow(shareChip, colour, chip("Check the glasses", false) { checkGlasses() }))
         page.addView(shown)
 
-        val size = card("Size and speed", "Less to send is faster on the glasses and lighter on both batteries.")
-        size.addView(text("Greys", 13f, Ui.MUTED, Ui.BOLD).apply { setPadding(0, dp(4), 0, 0) })
-        size.addView(segmented(listOf("2" to "B&W · fast", "4" to "4", "8" to "8", "16" to "16"),
-            settings.screenLevels.toString()) { settings.screenLevels = it.toInt() })
-        size.addView(text("Detail", 13f, Ui.MUTED, Ui.BOLD).apply { setPadding(0, dp(8), 0, 0) })
-        size.addView(segmented(listOf("0" to "Auto", "1" to "Full", "2" to "½", "3" to "⅓", "4" to "¼"),
-            settings.screenDetail.toString()) { settings.screenDetail = it.toInt() })
-        size.addView(slider("Auto: a moving frame at most", 1, 32, settings.screenBudget, { "$it KB" },
-            { settings.screenBudget = it }) { settings.screenBudget = it })
-        size.addView(slider("Frames a second at most", 1, 30, settings.screenFps, { "$it" }) { settings.screenFps = it })
-        size.addView(text("Laptop screen: pixels asked for", 13f, Ui.MUTED, Ui.BOLD).apply { setPadding(0, dp(8), 0, 0) })
-        size.addView(segmented(listOf("640" to "640", "960" to "960", "1280" to "1280"), settings.remoteWidth.toString()) {
-            settings.remoteWidth = it.toInt()
-        })
-        page.addView(size)
-
-        val where = card("Place", "Where it shows: drag to move, drag the corner to resize, double-tap to fill.")
-        where.addView(segmented(listOf(Settings.FIT to "Fit", Settings.FILL to "Fill", Settings.STRETCH to "Stretch"), settings.screenFit) {
-            settings.screenFit = it
-        })
-        val (cols, rows) = 640 - kotlin.math.abs(settings.dx) to 480 - kotlin.math.abs(settings.dy)
-        val editor = LayoutEditor(this, cols.toFloat() / rows, settings.screenOutX, settings.screenOutY, settings.screenOutW,
-            settings.screenOutH, { x, y, w, h -> place(x, y, w, h) }) { x, y, w, h -> place(x, y, w, h) }
-        where.addView(editor, lp().apply { topMargin = dp(6) })
-        where.addView(chipRow(
-            chip("Full", false) { editor.set(0, 0, 100, 100) },
-            chip("Left half", false) { editor.set(0, 0, 50, 100) },
-            chip("Right half", false) { editor.set(50, 0, 50, 100) },
-            chip("Top half", false) { editor.set(0, 0, 100, 50) },
-            chip("Bottom half", false) { editor.set(0, 50, 100, 50) },
-            chip("Small, centred", false) { editor.set(25, 25, 50, 50) },
-        ))
-        where.addView(slider("Zoom", 100, 400, settings.screenZoom, { String.format(java.util.Locale.US, "%.1f×", it / 100f) },
-            { settings.screenZoom = it }) { settings.screenZoom = it })
-        where.addView(slider("Pan across", 0, 100, settings.screenPanX, { "$it%" }, { settings.screenPanX = it }) { settings.screenPanX = it })
-        where.addView(slider("Pan down", 0, 100, settings.screenPanY, { "$it%" }, { settings.screenPanY = it }) { settings.screenPanY = it })
-        where.addView(segmented(listOf("0" to "Upright", "90" to "↻ 90°", "180" to "180°", "270" to "↺ 90°"),
-            settings.screenRotate.toString()) { settings.screenRotate = it.toInt() })
-        page.addView(where)
-
-        val look = card("Look", "Black is see-through on the glasses.")
+        // The look: presets, then the two sliders that matter most; the rest folded.
+        val look = page.section("Look", "screen_look", "contrast", open = true, hint = "Black is see-through on the glasses.")
         lateinit var invertBar: android.widget.SeekBar
         lateinit var gammaBar: android.widget.SeekBar
         lateinit var contrastBar: android.widget.SeekBar
         lateinit var thresholdBar: android.widget.SeekBar
         fun bar(v: View): android.widget.SeekBar = (v as LinearLayout).getChildAt(1) as android.widget.SeekBar
-        fun lookPreset(invert: Int, gamma: Int, contrast: Int, threshold: Int) {
-            settings.screenInvertPct = invert
-            settings.screenGamma = gamma
-            settings.screenContrast = contrast
-            settings.screenThreshold = threshold
-            invertBar.progress = invert
-            gammaBar.progress = gamma
-            contrastBar.progress = contrast
-            thresholdBar.progress = threshold
+        val presets = listOf(
+            "Dark mode" to intArrayOf(100, 100, 60, 128), "Soft" to intArrayOf(70, 110, 40, 128),
+            "As on the phone" to intArrayOf(0, 100, 0, 128), "High contrast" to intArrayOf(100, 140, 100, 150),
+            "Bright text" to intArrayOf(100, 70, 80, 100))
+        val presetChips = mutableListOf<TextView>()
+        fun markPreset() = presets.forEachIndexed { i, (_, v) ->
+            val on = settings.screenInvertPct == v[0] && settings.screenGamma == v[1] && settings.screenContrast == v[2] &&
+                settings.screenThreshold == v[3]
+            val r = dp(18).toFloat()
+            presetChips[i].background = ripple(if (on) accentGradient(r) else rounded(Ui.RAISED, r, dp(1), Ui.STROKE), r)
+            presetChips[i].setTextColor(if (on) Ui.ON_ACCENT else Ui.TEXT)
         }
-        look.addView(chipRow(
-            chip("Dark mode", false) { lookPreset(100, 100, 60, 128) },
-            chip("Soft", false) { lookPreset(70, 110, 40, 128) },
-            chip("As on the phone", false) { lookPreset(0, 100, 0, 128) },
-            chip("High contrast", false) { lookPreset(100, 140, 100, 150) },
-            chip("Bright text", false) { lookPreset(100, 70, 80, 100) },
-        ))
+        fun lookPreset(v: IntArray) {
+            settings.screenInvertPct = v[0]
+            settings.screenGamma = v[1]
+            settings.screenContrast = v[2]
+            settings.screenThreshold = v[3]
+            invertBar.progress = v[0]
+            gammaBar.progress = v[1]
+            contrastBar.progress = v[2]
+            thresholdBar.progress = v[3]
+            markPreset()
+        }
+        for ((name, v) in presets) presetChips += chip(name, false) { lookPreset(v) }
+        look.addView(chipRow(*presetChips.toTypedArray()))
         val invertRow = slider("Invert", 0, 100, settings.screenInvertPct, { "$it%" }, { settings.screenInvertPct = it }) {
             settings.screenInvertPct = it
+            markPreset()
         }
         invertBar = bar(invertRow)
         look.addView(invertRow)
         val contrastRow = slider("Contrast boost", 0, 100, settings.screenContrast, { "$it%" }, { settings.screenContrast = it }) {
             settings.screenContrast = it
+            markPreset()
         }
         contrastBar = bar(contrastRow)
         look.addView(contrastRow)
@@ -319,11 +339,17 @@ class MainActivity : Activity() {
                 it > 105 -> "darker " + String.format(java.util.Locale.US, "%.2f", it / 100f)
                 else -> "as is"
             }
-        }, { settings.screenGamma = it }) { settings.screenGamma = it }
+        }, { settings.screenGamma = it }) {
+            settings.screenGamma = it
+            markPreset()
+        }
         gammaBar = bar(gammaRow)
         more.addView(gammaRow)
         val thresholdRow = slider("Black & white cut-off", 10, 245, settings.screenThreshold, { "$it" },
-            { settings.screenThreshold = it }) { settings.screenThreshold = it }
+            { settings.screenThreshold = it }) {
+            settings.screenThreshold = it
+            markPreset()
+        }
         thresholdBar = bar(thresholdRow)
         more.addView(thresholdRow)
         more.addToggle(toggle("Sharpen", "Crisper text", settings.screenSharpen) { settings.screenSharpen = it })
@@ -334,64 +360,95 @@ class MainActivity : Activity() {
             settings.screenSteady = it
         })
         lateinit var moreChip: TextView
-        moreChip = chip("More look settings", false) {
+        moreChip = chip("More", false) {
+            android.transition.TransitionManager.beginDelayedTransition(page)
             more.visibility = if (more.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-            moreChip.text = if (more.visibility == View.VISIBLE) "Fewer look settings" else "More look settings"
+            moreChip.text = if (more.visibility == View.VISIBLE) "Less" else "More"
         }
         look.addView(chipRow(moreChip))
         look.addView(more)
-        look.addToggle(toggle("Dark while the phone is locked", "With the phone's screen on the glasses", settings.offWhenLocked) {
+        markPreset()
+
+        val where = page.section("Place", "screen_place", "place",
+            hint = "Where it shows: drag to move, drag the corner to resize, double-tap to fill.")
+        where.addView(segmented(listOf(Settings.FIT to "Fit", Settings.FILL to "Fill", Settings.STRETCH to "Stretch"), settings.screenFit) {
+            settings.screenFit = it
+        })
+        val (cols, rows) = 640 - kotlin.math.abs(settings.dx) to 480 - kotlin.math.abs(settings.dy)
+        val editor = LayoutEditor(this, cols.toFloat() / rows, settings.screenOutX, settings.screenOutY, settings.screenOutW,
+            settings.screenOutH, { x, y, w, h -> place(x, y, w, h) }) { x, y, w, h -> place(x, y, w, h) }
+        where.addView(editor, lp().apply { topMargin = dp(6) })
+        where.addView(chipRow(
+            chip("Full", false) { editor.set(0, 0, 100, 100) },
+            chip("Left half", false) { editor.set(0, 0, 50, 100) },
+            chip("Right half", false) { editor.set(50, 0, 50, 100) },
+            chip("Centre", false) { editor.set(25, 25, 50, 50) },
+        ))
+        where.addView(slider("Zoom", 100, 400, settings.screenZoom, { String.format(java.util.Locale.US, "%.1f×", it / 100f) },
+            { settings.screenZoom = it }) { settings.screenZoom = it })
+        where.addView(slider("Pan across", 0, 100, settings.screenPanX, { "$it%" }, { settings.screenPanX = it }) { settings.screenPanX = it })
+        where.addView(slider("Pan down", 0, 100, settings.screenPanY, { "$it%" }, { settings.screenPanY = it }) { settings.screenPanY = it })
+        where.addView(segmented(listOf("0" to "Upright", "90" to "↻ 90°", "180" to "180°", "270" to "↺ 90°"),
+            settings.screenRotate.toString()) { settings.screenRotate = it.toInt() })
+
+        val size = page.section("Speed and detail", "screen_speed", "speed",
+            hint = "Less to send is faster on the glasses and lighter on both batteries.")
+        size.addView(subhead("Greys"))
+        size.addView(segmented(listOf("2" to "B&W · fast", "4" to "4", "8" to "8", "16" to "16"),
+            settings.screenLevels.toString()) { settings.screenLevels = it.toInt() })
+        size.addView(subhead("Detail"))
+        size.addView(segmented(listOf("0" to "Auto", "1" to "Full", "2" to "½", "3" to "⅓", "4" to "¼"),
+            settings.screenDetail.toString()) { settings.screenDetail = it.toInt() })
+        size.addView(slider("Auto: a moving frame at most", 1, 32, settings.screenBudget, { "$it KB" },
+            { settings.screenBudget = it }) { settings.screenBudget = it })
+        size.addView(slider("Frames a second at most", 1, 30, settings.screenFps, { "$it" }) { settings.screenFps = it })
+        size.addView(subhead("Laptop screen: pixels asked for"))
+        size.addView(segmented(listOf("640" to "640", "960" to "960", "1280" to "1280"), settings.remoteWidth.toString()) {
+            settings.remoteWidth = it.toInt()
+        })
+
+        val dark = page.section("Going dark", "screen_dark", "dark")
+        dark.addToggle(toggle("While the phone is locked", "With the phone's screen on the glasses", settings.offWhenLocked) {
             settings.offWhenLocked = it
         })
-        page.addView(look)
+        dark.addToggle(toggle("In the charging case", "A lit panel slows charging", settings.screenHideCase) {
+            settings.screenHideCase = it
+        })
+        dark.addToggle(toggle("When folded", "Uses the arms' wear guess, which can be wrong", settings.screenHideFolded) {
+            settings.screenHideFolded = it
+        })
         return scroll
     }
 
+    // ------------------------------------------------ Terminal
+
     private fun terminalPage(settings: Settings): View {
         val (scroll, page) = scrollPage()
-        page.addView(header("Terminal", "Where it comes from, and where it sits"))
-        val got = card("What the glasses get")
+        page.addView(header("Terminal", "Your servers, its tabs and the pointer"))
+        val got = card()
         terminal = TerminalView(this)
-        got.addView(clipFrame(terminal, 260))
+        got.addView(clipFrame(terminal, 240))
+        // Its tabs (tmux windows): tap one to show it, hold to close it; + a new one; Claude's and Cursor's.
+        tabStrip = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        got.addView(android.widget.HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(tabStrip)
+        }, lp().apply { topMargin = dp(10) })
+        tabsState = text("", 12f, Ui.FAINT).apply { setPadding(dp(2), dp(6), 0, 0) }
+        got.addView(tabsState)
         page.addView(got)
 
-        val point = card("Pointer and tabs", "A pointer on the glasses' terminal, like a mouse, and tabs (tmux windows). " +
-            "Keyboard: Alt+M the pointer, then arrows (Shift: faster), Enter or Space to click, Shift+Enter a right " +
-            "click, Page Up / Down to scroll, Escape to end it; Alt+T a new tab, Alt+[ / ] the tab before / after, " +
-            "Alt+W closes the tab shown. Voice: \"pointer\", \"click\", \"new tab\", \"next tab\", \"tab 2\", " +
-            "\"Claude tab\", \"Cursor tab\".")
-        point.addView(Touchpad(this), lp().apply { topMargin = dp(4); bottomMargin = dp(8) })
-        point.addToggle(toggle("Keyboard trackpad on the glasses", "While the glasses show the terminal, a trackpad or " +
-            "mouse paired with the phone moves this pointer (tap: click, two fingers: right click and scroll); on the " +
-            "phone's screen it is the phone's pointer. Needs Vox's keyboard shortcuts on (Accessibility).", settings.trackpad) {
-            settings.trackpad = it
-            if (ScouterService.running) ScouterService.send(this)
-        })
-        point.addView(slider("Trackpad speed", 1, 10, settings.trackpadSpeed, { "$it" }) { v -> settings.trackpadSpeed = v })
-        fun pointerCmd(cmd: String) = ScouterService.send(this, ScouterService.ACTION_POINTER, "cmd" to cmd)
-        fun tab(action: String) = ScouterService.send(this, ScouterService.ACTION_TABS, "tab" to action)
-        point.addView(chipRow(chip("Pointer on / off", false) { pointerCmd("toggle") }, chip("Click", false) { pointerCmd("click") },
-            chip("Right click", false) { pointerCmd("right") }, chip("Scroll up", false) { pointerCmd("up") },
-            chip("Scroll down", false) { pointerCmd("down") }))
-        point.addView(chipRow(chip("+ Tab", false) { tab("new") }, chip("Claude", false) { tab("claude") },
-            chip("Cursor", false) { tab("cursor") }, chip("◀ Tab", false) { tab("prev") }, chip("Tab ▶", false) { tab("next") },
-            chip("Close tab", false) { tab("close") }))
-        tabsState = text("", 12.5f, Ui.FAINT)
-        point.addView(tabsState)
-        point.addToggle(toggle("Mouse in tmux", "The pointer's clicks and scrolling reach tmux (tabs, panes, history)", settings.tmuxMouse) {
-            settings.tmuxMouse = it
-            tab(if (it) "mouse" else "mouse_off")
-        })
+        val point = card("Touchpad")
+        point.addView(Touchpad(this), lp().apply { topMargin = dp(2) })
         page.addView(point)
 
-        val servers = card("Servers", "Saved once and kept with the app's updates. The terminal comes from the one in " +
-            "use; Home switches between them.")
+        val servers = page.section("Servers", "term_servers", "server", open = true,
+            hint = "Switch on the Glasses tab. Tap one to edit it.")
         serversBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         servers.addView(serversBox)
         servers.addView(button("Add a server") { editServer(null) })
-        page.addView(servers)
 
-        val sits = card("On the glasses")
+        val sits = page.section("On the glasses", "term_glasses", "glasses")
         fun margins() {
             val (top, bottom) = settings.termTop to settings.termBottom
             Thread { Native.terminalMargins(top, bottom) }.start()
@@ -408,30 +465,22 @@ class MainActivity : Activity() {
             settings.termBottom = v
             margins()
         })
-        sits.addView(slider("Depth", 0, 320, settings.dx, { "$it · picture ${640 - it} px wide" }) { v ->
-            // The eyes' horizontal offset: the picture seems nearer or farther. The glasses reconnect to apply it.
-            settings.dx = v
-            if (ScouterService.running) ScouterService.send(this)
-        })
-        sits.addView(text("The spaces move the terminal where the display is easier to see (fewer rows); depth moves " +
-            "it nearer or farther (the glasses reconnect for a moment).", 12f, Ui.FAINT))
-        forceSwitch = toggle("Always visible", "Off: the terminal shows only when you look up", settings.phoneForce) {
-            settings.phoneForce = it
-            if (ScouterService.running) ScouterService.send(this)
-        }
-        sits.addToggle(forceSwitch)
         batterySwitch = toggle("Battery icons", "Each eye's battery level beside the terminal", settings.battery) {
             settings.battery = it
             Thread { Native.setBattery(it) }.start()
         }
         sits.addToggle(batterySwitch)
-        page.addView(sits)
+        sits.addToggle(toggle("Mouse in tmux", "The pointer's clicks and scrolling reach tmux (tabs, panes, history)", settings.tmuxMouse) {
+            settings.tmuxMouse = it
+            tab(if (it) "mouse" else "mouse_off")
+        })
+        sits.addToggle(toggle("Transitions", "A half-second animation on the glasses when you switch", settings.animations) {
+            settings.animations = it
+            lookUpChanged()
+        })
 
-        val view = card("Look-up view", "What you see when you look up: the terminal fades in, under a header with " +
-            "the time, date, the glasses' batteries and your newest notification.")
-        fun lookUpChanged() {
-            if (ScouterService.running) ScouterService.send(this, ScouterService.ACTION_LOOK_UP)
-        }
+        val view = page.section("Look-up view", "term_lookup", "eye",
+            hint = "The strip above the terminal: time, batteries, notifications and the tabs.")
         dashPreview = android.widget.ImageView(this).apply {
             adjustViewBounds = true
             scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
@@ -454,60 +503,114 @@ class MainActivity : Activity() {
             settings.fadeMs = v
             lookUpChanged()
         })
-        view.addToggle(toggle("Transitions", "A half-second animation on the glasses when you switch: Alt+arrows, " +
-            "tabs, the display", settings.animations) {
-            settings.animations = it
-            lookUpChanged()
-        })
-        view.addToggle(toggle("Time, date and batteries", "The clock, the date, each arm's battery", settings.lookUpClock) {
+        view.addToggle(toggle("Time, date and batteries", null, settings.lookUpClock) {
             settings.lookUpClock = it
             showDash()
             lookUpChanged()
         })
-        view.addToggle(toggle("Phone notifications", "The newest one, and how many there are", settings.lookUpNotifications) {
+        view.addToggle(toggle("Phone notifications", "The newest three; the pointer opens them", settings.lookUpNotifications) {
             settings.lookUpNotifications = it
             showDash()
             lookUpChanged()
         })
         notesState = text("", 12.5f, Ui.FAINT)
         view.addView(notesState)
-        view.addView(button("Allow Vox to read notifications") {
-            runCatching { startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
-        })
-        page.addView(view)
+
+        val keys = page.section("Keys", "term_keys", "keyboard")
+        keys.addView(text("Alt+M the pointer, then arrows (Shift: faster), Enter or Space to click, Shift+Enter a right " +
+            "click, Page Up / Down to scroll, Escape to end it. Alt+T a new tab, Alt+[ / ] the tab before / after, Alt+W " +
+            "closes the tab shown. Voice: \"pointer\", \"click\", \"new tab\", \"next tab\", \"tab 2\", \"Claude tab\".",
+            13f, Ui.MUTED))
         if (BuildConfig.FLAVOR == "emulated") page.addView(PanelView(this))
         return scroll
     }
 
+    private fun tab(action: String) = ScouterService.send(this, ScouterService.ACTION_TABS, "tab" to action)
+
+    private fun lookUpChanged() {
+        if (ScouterService.running) ScouterService.send(this, ScouterService.ACTION_LOOK_UP)
+    }
+
+    // The tab strip again when the tabs changed.
+    private fun buildTabStrip() {
+        val list = Session.tabList
+        val key = list.joinToString("|") { "${it.index}:${it.name}:${it.active}" }
+        if (key == tabStripKey) return
+        tabStripKey = key
+        tabStrip.removeAllViews()
+        fun add(v: View) = tabStrip.addView(v, lp(ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(8) })
+        for (t in list) add(chip("${t.index}  ${t.name}", t.active) { tab("select:${t.index}") }.apply {
+            setOnLongClickListener {
+                tab("close:${t.index}")
+                true
+            }
+        })
+        add(chip("+", false) { tab("new") })
+        add(chip("Claude", false) { tab("claude") })
+        add(chip("Cursor", false) { tab("cursor") })
+    }
+
+    // ------------------------------------------------ Voice
+
     private fun voicePage(settings: Settings): View {
         val (scroll, page) = scrollPage()
-        page.addView(header("Voice", "Commands by voice, through the glasses' microphone"))
+        page.addView(header("Voice", "Commands through the glasses' microphone"))
         val now = card()
-        voiceState = text("", 15.5f, Ui.TEXT, Ui.BOLD)
+        val stage = FrameLayout(this)
+        micHalo = View(this).apply {
+            background = accentGradient(dp(60).toFloat())
+            alpha = 0f
+        }
+        stage.addView(micHalo, FrameLayout.LayoutParams(dp(120), dp(120), Gravity.CENTER))
+        micDisc = FrameLayout(this).apply {
+            setOnClickListener { ScouterService.send(this@MainActivity, ScouterService.ACTION_VOICE, "mode" to "listen") }
+        }
+        micIcon = IconView(this, "mic", 40, Ui.TEXT)
+        micDisc.addView(micIcon, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+        stage.addView(micDisc, FrameLayout.LayoutParams(dp(96), dp(96), Gravity.CENTER))
+        now.addView(stage, lp(h = dp(132)))
+        voiceState = text("", 17f, Ui.TEXT, Ui.BOLD).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(6), 0, 0)
+        }
         now.addView(voiceState)
-        voiceListen = button("Listen", PRIMARY) { ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "listen") }
-        now.addView(voiceListen)
-        now.addView(text("Or double-tap the right TouchBar, or Alt+Space on a keyboard. Say a command; the top of the " +
-            "glasses shows what was heard and what it did, then the band goes.", 12.5f, Ui.FAINT).apply { setPadding(0, dp(8), 0, 0) })
+        now.addView(text("Tap, double-tap the right TouchBar, or Alt+Space.", 12.5f, Ui.FAINT).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(4), 0, dp(4))
+        })
         page.addView(now)
 
-        val model = card("Speech model", "NVIDIA Parakeet TDT 0.6B v2 (English), on this phone, offline: " +
-            "${VoiceModel.bytes / 1_000_000} MB, downloaded once.")
-        voiceModel = text("", 13.5f, Ui.MUTED)
-        model.addView(voiceModel)
-        downloadButton = button("Download the speech model", PRIMARY) { download() }
-        model.addView(downloadButton)
-        model.addView(button("Delete it") {
-            dialog().setTitle("Delete the speech model?").setMessage("Voice commands need it; you can download it again.")
+        val model = card()
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        row.addView(IconView(this, "download", 22, Ui.ACCENT), lp(ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(12) })
+        val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        texts.addView(text("Speech model", 15f, Ui.TEXT, Ui.BOLD))
+        voiceModel = text("", 12.5f, Ui.MUTED)
+        texts.addView(voiceModel)
+        row.addView(texts, lp(0, weight = 1f))
+        modelButton = chip("Download", true) {
+            if (VoiceModel.ready(this)) dialog().setTitle("Delete the speech model?")
+                .setMessage("Voice commands need it; you can download it again.")
                 .setPositiveButton("Delete") { _, _ ->
                     VoiceModel.delete(this)
                     showVoice()
                 }
                 .setNegativeButton("Cancel", null).show()
-        })
+            else download()
+        }
+        row.addView(modelButton)
+        model.addView(row)
         page.addView(model)
 
-        val how = card("How it listens")
+        val cmds = page.section("Your commands", "voice_cmds", "list", open = true)
+        commandsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        cmds.addView(commandsBox)
+        cmds.addView(button("Add a command") { addCommand() })
+
+        val how = page.section("How it listens", "voice_how", "mic")
         how.addToggle(toggle("Realtime words", "The words show while you speak (more of the phone's CPU)", settings.voiceRealtime) {
             settings.voiceRealtime = it
         })
@@ -516,23 +619,17 @@ class MainActivity : Activity() {
             settings.voiceAlways = it
             ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "always")
         })
-        how.addToggle(toggle("Show on the glasses", "A band at the top while you use voice, gone a few seconds after", settings.voiceBand) {
+        how.addToggle(toggle("Show on the glasses", "A band at the top while you use voice", settings.voiceBand) {
             settings.voiceBand = it
         })
         how.addView(slider("The band stays", 1, 15, settings.voiceBandSecs, { "$it s" }) { settings.voiceBandSecs = it })
-        page.addView(how)
 
-        val cmds = card("Commands", VoiceCommands.HELP)
-        cmds.addView(text("Your own", 13f, Ui.MUTED, Ui.BOLD).apply { setPadding(0, dp(6), 0, dp(4)) })
-        commandsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        cmds.addView(commandsBox)
-        cmds.addView(button("Add a command") { addCommand() })
-        page.addView(cmds)
+        val say = page.section("What you can say", "voice_help", "info")
+        say.addView(text(VoiceCommands.HELP, 13f, Ui.MUTED))
 
-        val got = card("Heard")
+        val got = page.section("Heard", "voice_heard", "list")
         heardText = text("", 13f, Ui.MUTED)
         got.addView(heardText)
-        page.addView(got)
         return scroll
     }
 
@@ -551,19 +648,430 @@ class MainActivity : Activity() {
     private fun showVoice() {
         if (!::voiceState.isInitialized) return
         fun mb(b: Long) = "${b / 1_000_000} MB"
+        val ready = VoiceModel.ready(this)
         voiceModel.text = when {
             !VoiceModel.available -> "This build has no speech engine."
             VoiceModel.progress >= 0 -> "Downloading… ${mb(VoiceModel.progress)} of ${mb(VoiceModel.bytes)}"
-            VoiceModel.ready(this) -> "Ready (${mb(VoiceModel.bytes)} on this phone)."
+            ready -> "Parakeet, on this phone, offline · ${mb(VoiceModel.bytes)}"
             VoiceModel.problem != null -> "Not downloaded: ${VoiceModel.problem}"
-            else -> "Not downloaded yet (${mb(VoiceModel.bytes)}; Wi-Fi is best)."
+            else -> "Not downloaded yet · ${mb(VoiceModel.bytes)}, Wi-Fi is best"
         }
-        downloadButton.visibility = if (VoiceModel.available && !VoiceModel.ready(this) && VoiceModel.progress < 0) View.VISIBLE else View.GONE
+        modelButton.visibility = if (VoiceModel.available && VoiceModel.progress < 0) View.VISIBLE else View.GONE
+        modelButton.text = if (ready) "Delete" else "Download"
+        val r = dp(18).toFloat()
+        modelButton.background = ripple(if (ready) rounded(Ui.RAISED, r, dp(1), Ui.STROKE) else accentGradient(r), r)
+        modelButton.setTextColor(if (ready) Ui.TEXT else Ui.ON_ACCENT)
         val said = Session.voice.replace(ScouterService.MIC, "").trim()
-        voiceState.text = (if (Session.listening) said.ifEmpty { "Listening…" } else said.ifEmpty { "Not listening" }) +
+        voiceState.text = (if (Session.listening) said.ifEmpty { "Listening…" } else said.ifEmpty { "Tap to speak" }) +
             if (Session.dictating) " · dictating" else ""
-        voiceListen.text = if (Session.listening) "Stop listening" else "Listen"
+        val listening = Session.listening
+        if (micDisc.background == null || listening != (haloAnim != null)) {
+            val d = dp(48).toFloat()
+            micDisc.background = ripple(if (listening) accentGradient(d) else rounded(Ui.RAISED, d, dp(1), Ui.STROKE), d)
+            micIcon.color = if (listening) Ui.ON_ACCENT else Ui.TEXT
+        }
+        if (listening && haloAnim == null) {
+            val sx = android.animation.ObjectAnimator.ofFloat(micHalo, View.SCALE_X, 0.8f, 1.15f)
+            val sy = android.animation.ObjectAnimator.ofFloat(micHalo, View.SCALE_Y, 0.8f, 1.15f)
+            val a = android.animation.ObjectAnimator.ofFloat(micHalo, View.ALPHA, 0.45f, 0f)
+            for (o in listOf(sx, sy, a)) {
+                o.repeatCount = android.animation.ValueAnimator.INFINITE
+                o.duration = 1100
+            }
+            haloAnim = android.animation.AnimatorSet().apply {
+                playTogether(sx, sy, a)
+                start()
+            }
+        } else if (!listening && haloAnim != null) {
+            haloAnim?.cancel()
+            haloAnim = null
+            micHalo.alpha = 0f
+        }
         heardText.text = Session.heard.joinToString("\n").ifEmpty { "Nothing yet." }
+    }
+
+    // ------------------------------------------------ the sources grid
+
+    // A machine on the grid: its terminal and its screen (null: it has none).
+    private class Machine(val name: String, val icon: String, val term: String?, val screen: String?)
+
+    // The machines as Alt+arrows walk them (Settings.move): this phone (its own server's terminal, its screen),
+    // then each other server; another server on this phone gets a column with its terminal only.
+    private fun machines(settings: Settings): List<Machine> {
+        val l = settings.servers()
+        val local = l.filter { it.local }
+        val out = mutableListOf(Machine("Phone", "phone", local.firstOrNull()?.let { "term:${it.id}" }, Settings.PHONE))
+        for (s in local.drop(1)) out += Machine(s.name, "phone", "term:${s.id}", null)
+        for (s in l.filter { !it.local }) out += Machine(s.name, "laptop", "term:${s.id}", "screen:${s.id}")
+        return out
+    }
+
+    // Home's grid again (when the servers changed): a column per machine, terminal above screen; up to two fill
+    // the width, more scroll across.
+    private fun buildSources() {
+        val settings = Settings(this)
+        val list = machines(settings)
+        val key = list.joinToString("|") { "${it.name}/${it.term}/${it.screen}" }
+        if (key == gridKey) return
+        gridKey = key
+        gridTiles.clear()
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val fill = list.size <= 2
+        for ((i, m) in list.withIndex()) {
+            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val head = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(4), 0, 0, dp(8))
+            }
+            head.addView(IconView(this, m.icon, 15, Ui.MUTED), lp(ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(6) })
+            head.addView(text(m.name.uppercase(), 11.5f, Ui.MUTED, Ui.BOLD).apply { letterSpacing = 0.1f; maxLines = 1 })
+            col.addView(head)
+            val term = GridTile(this, "terminal", "Terminal") { if (m.term != null) choose(m.term) else editServer(null, local = true) }
+            val screen = GridTile(this, "screen", "Screen") { m.screen?.let { choose(it) } }
+            col.addView(term, lp().apply { bottomMargin = dp(10) })
+            col.addView(screen, lp())
+            gridTiles += Triple(m.term, term, "Add this phone's")
+            gridTiles += Triple(m.screen, screen, "None")
+            row.addView(col, if (fill) lp(0, weight = 1f).apply { if (i > 0) leftMargin = dp(12) }
+                else lp(dp(150)).apply { if (i > 0) leftMargin = dp(12) })
+        }
+        if (list.size == 1) row.addView(addMachine(), lp(0, weight = 1f).apply { leftMargin = dp(12) })
+        gridHolder.removeAllViews()
+        if (fill) gridHolder.addView(row)
+        else gridHolder.addView(android.widget.HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(row)
+        })
+    }
+
+    // Where a laptop's column would be: adds a server.
+    private fun addMachine(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER
+        val r = dp(20).toFloat()
+        background = rounded(0, r).apply { setStroke(dp(1), Ui.STROKE, dp(5).toFloat(), dp(4).toFloat()) }
+        setPadding(dp(12), dp(20), dp(12), dp(20))
+        addView(IconView(context, "plus", 26, Ui.MUTED))
+        addView(text("Add a laptop", 13.5f, Ui.MUTED, Ui.BOLD).apply { setPadding(0, dp(8), 0, 0) })
+        setOnClickListener { editServer(null) }
+    }
+
+    // A tile's line and dot: how its source is doing.
+    private fun tileState(key: String?): Pair<String, Int> {
+        if (key == null) return "—" to 0
+        val id = key.substringAfter(':')
+        return when {
+            key == Settings.PHONE -> if (Session.capturing) "Shared" to Ui.GOOD else "Tap to share" to 0
+            key.startsWith("screen:") -> if (Session.remote == id) "Streaming" to Ui.GOOD else "Over SSH" to 0
+            else -> when (val st = Session.terms[id] ?: "off") {
+                "connected" -> "Connected" to Ui.GOOD
+                "starting", "connecting" -> "Connecting…" to Ui.WARN
+                "off" -> "Ready" to 0
+                "ended" -> "Ended" to Ui.FAINT
+                else -> if (st.startsWith("no contact")) "No contact" to Ui.WARN else "Can't connect" to Ui.BAD
+            }
+        }
+    }
+
+    // ------------------------------------------------ servers
+
+    // The Terminal tab's list: each saved server with its state, the one in use marked; a tap edits it.
+    private fun buildServers() {
+        val settings = Settings(this)
+        serversBox.removeAllViews()
+        val active = settings.active()?.id
+        for (s in settings.servers()) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(4), dp(10), dp(4), dp(10))
+                background = ripple(rounded(0, dp(14).toFloat()), dp(14).toFloat())
+                setOnClickListener { editServer(s) }
+            }
+            row.addView(IconView(this, if (s.local) "phone" else "laptop", 22, Ui.MUTED), lp(ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(12) })
+            val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            texts.addView(text(s.name + if (s.id == active) "  · in use" else "", 15.5f, Ui.TEXT, Ui.BOLD))
+            texts.addView(text(s.address + if (s.command.isNotEmpty()) " · ${s.command}" else "", 12.5f, Ui.MUTED).apply { maxLines = 1 })
+            row.addView(texts, lp(0, weight = 1f).apply { rightMargin = dp(8) })
+            val (state, dot) = tileState("term:${s.id}")
+            row.addView(text(state, 12f, if (dot != 0) dot else Ui.FAINT, Ui.BOLD))
+            serversBox.addView(row)
+        }
+        if (settings.servers().isEmpty()) serversBox.addView(text("No server yet: add one. For this phone's own terminal, " +
+            "run scouter.sh in Termux, then add it with \"This phone\".", 12.5f, Ui.FAINT))
+    }
+
+    // Add (null) or change a saved server: presets for this phone, the fields, mosh's ports; Delete and Forget its
+    // host key from here too.
+    private fun editServer(s: Settings.Server?, local: Boolean = false) {
+        val settings = Settings(this)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(4), dp(20), dp(8))
+        }
+        val name = field("Name", s?.name ?: if (local) "Phone" else "", "Laptop")
+        val host = field("Host", s?.host ?: if (local) Termux.HOST else "", "an address, a Tailscale IP or name")
+        val port = field("Port", (s?.port ?: if (local) Termux.PORT else 22).toString(), "22", numeric = true)
+        val user = field("User", s?.user ?: if (local) "root" else "", "")
+        val command = field("Command", s?.command ?: if (local) "bash -ic claude" else "", "empty: the login shell; tmux new -A -s main")
+        val ports = field("mosh UDP ports", s?.moshPorts ?: "", "e.g. 60000:60009 (empty: mosh's default)")
+        fun preset(n: String, h: String, p: Int, u: String, c: String) {
+            if (name.text.isBlank()) name.setText(n)
+            host.setText(h)
+            port.setText(p.toString())
+            user.setText(u)
+            command.setText(c)
+        }
+        box.addView(subhead("This phone"))
+        box.addView(chipRow(
+            chip("Claude in Ubuntu", false) { preset("Phone", Termux.HOST, Termux.PORT, "root", "bash -ic claude") },
+            chip("Ubuntu shell", false) { preset("Phone", Termux.HOST, Termux.PORT, "root", "") },
+            chip("Termux", false) { preset("Phone", Termux.HOST, Termux.PORT, Termux.USER, "tmux new -A -s main") },
+        ))
+        for (f in listOf(name, host, port, user, command, ports)) box.addField(f)
+        if (s != null) box.addView(chipRow(chip("Forget its host key", false) {
+            Bootstrap.forget(Vault(this), "${s.host}:${s.port}")
+            note = "${s.name}: its host key is asked for again at the next connection."
+            show()
+        }).apply { (layoutParams as? LinearLayout.LayoutParams)?.topMargin = dp(12) })
+        val d = dialog()
+            .setTitle(if (s == null) "Add a server" else "Edit ${s.name}")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Save") { _, _ ->
+                val h = host.text.toString().trim()
+                val u = user.text.toString().trim()
+                if (h.isEmpty() || u.isEmpty()) {
+                    note = "A server needs a host and a user."
+                    return@setPositiveButton show()
+                }
+                val mp = ports.text.toString().trim().takeIf { it.isEmpty() || Regex("\\d{1,5}(:\\d{1,5})?").matches(it) }
+                    ?: s?.moshPorts ?: ""
+                val saved = Settings.Server(s?.id ?: Settings.newServerId(), name.text.toString().trim().ifEmpty { h }, h,
+                    port.text.toString().toIntOrNull()?.takeIf { it in 1..65535 } ?: 22, u, command.text.toString().trim(), mp)
+                settings.putServer(saved)
+                buildServers()
+                buildSources()
+                if (saved.id == settings.active()?.id && ScouterService.running) ScouterService.send(this)
+            }
+            .setNegativeButton("Cancel", null)
+        if (s != null) d.setNeutralButton("Delete") { _, _ ->
+            dialog()
+                .setTitle("Delete ${s.name}?")
+                .setMessage(s.address)
+                .setPositiveButton("Delete") { _, _ ->
+                    settings.removeServer(s.id)
+                    buildServers()
+                    buildSources()
+                    if (ScouterService.running) ScouterService.send(this)
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+        d.show()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (BuildConfig.DEBUG) importTestKey()
+        resumed = true
+        Session.listeners += listener
+        Session.foreground = true
+        Preview.listener = previewListener
+        gridKey = ""
+        buildSources()
+        buildServers()
+        buildCommands()
+        if (VoiceModel.progress >= 0) content.post(modelTicker)
+        selectTab(tab, animate = false)
+        val keyboard = Settings(this).keyboard
+        // Keyboard mode: the keys come only while this screen is in front, so it stays on (dimmed by Android).
+        if (keyboard) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Settings may have changed; and while Android has not said whether keyer is near (the app new or
+        // restarted), the service tries keyer's link. In keyboard mode this screen in front starts the session.
+        // Start by itself: the app open is enough.
+        val auto = Settings(this).startsByItself()
+        if (auto || keyboard || ScouterService.running || Session.near == null || BuildConfig.FLAVOR == "emulated") ScouterService.send(this)
+        associate()
+        show()
+    }
+
+    // The power button: stops everything (after asking) while it runs, else starts with the source last chosen.
+    private fun power() {
+        if (ScouterService.running && Session.showing.isNotEmpty()) {
+            dialog().setTitle("Stop everything?")
+                .setMessage("The glasses let go and the terminals go quiet until you start again.")
+                .setPositiveButton("Stop") { _, _ ->
+                    note = null
+                    ScouterService.send(this, ScouterService.ACTION_STOP)
+                }
+                .setNegativeButton("Cancel", null).show()
+            return
+        }
+        val settings = Settings(this)
+        val key = settings.source.ifEmpty { settings.active()?.let { "term:${it.id}" } ?: "" }
+        if (key.isEmpty()) return editServer(null)
+        choose(key)
+    }
+
+    // ------------------------------------------------ the state
+
+    private fun show() {
+        val settings = Settings(this)
+        val running = ScouterService.running && Session.showing.isNotEmpty()
+        if (running) startingAt = 0L
+        val starting = !running && startingAt > 0 && android.os.SystemClock.elapsedRealtime() - startingAt < 45000
+        val active = settings.active()
+        val remoteShown = Session.screenSource.startsWith("screen:")
+        val both = Session.left && Session.right
+
+        // The top bar: the glasses' link and the power.
+        val linkDot = when {
+            running && both -> Ui.GOOD
+            running && Session.glasses == "connecting" || starting -> Ui.WARN
+            running -> Ui.BAD
+            else -> Ui.FAINT
+        }
+        setPill(linkPill, when {
+            running && both -> "Connected"
+            running && Session.glasses == "ready" -> "One arm"
+            running || starting -> "Connecting"
+            else -> "Off"
+        }, linkDot)
+        if (running != powerShown) {
+            powerShown = running
+            val r = dp(22).toFloat()
+            powerDisc.background = ripple(if (running) accentGradient(r) else rounded(Ui.RAISED, r, dp(1), Ui.STROKE), r)
+            powerIcon.color = if (running) Ui.ON_ACCENT else Ui.TEXT
+        }
+
+        // The glasses, live.
+        val mode = when {
+            !running -> GlassesView.SHOW_TERMINAL
+            Session.showing == Settings.SCREEN -> GlassesView.SHOW_SCREEN
+            else -> GlassesView.SHOW_TERMINAL
+        }
+        val title = when {
+            !running -> "Vox"
+            Session.showing == Settings.SCREEN -> if (remoteShown) Session.source else "Phone · screen"
+            else -> Session.source.ifEmpty { "${active?.name ?: "Terminal"} · terminal" }
+        }
+        val message = when {
+            starting -> "Starting…"
+            !running -> "Tap a source to start"
+            Session.blank -> "Display off"
+            Session.showing == Settings.TERMINAL && !Session.shown && !settings.phoneForce -> "Look up to see it"
+            else -> ""
+        }
+        val b = Session.battery
+        glasses.set(mode, title, message, if (running && !Session.blank) linkDot else Ui.FAINT, b.getOrElse(0) { -1 },
+            b.getOrElse(1) { -1 }, b.getOrElse(2) { 0 } == 1, b.getOrElse(3) { 0 } == 1, running && both)
+        wantPreview()
+
+        // One line of what goes on.
+        val parts = mutableListOf<String>()
+        if (running) {
+            parts += if (Session.showing == Settings.SCREEN) {
+                "Screen " + if (Session.screen == "on") String.format(java.util.Locale.US, "%.1f fps", Session.screenFps) else Session.screen
+            } else "${active?.name ?: "Terminal"}: ${Session.mosh}"
+            if (Session.pointer) parts += "pointer on"
+            if (Session.listening) parts += "listening"
+        }
+        statusLine.text = parts.joinToString(" · ")
+        statusLine.visibility = if (parts.isEmpty()) View.GONE else View.VISIBLE
+
+        // What needs the user, with the button that fixes it.
+        val banners = mutableListOf<Triple<String, String, Pair<String, () -> Unit>?>>()
+        val permitted = ScouterService.missing(this).isEmpty()
+        val openSettings = "Settings" to { startActivity(Intent(this, SettingsActivity::class.java)) }
+        if (!permitted) banners += Triple("lock", "Vox needs Bluetooth and notifications.", openSettings)
+        else if (!ScouterService.bluetoothOn(this)) banners += Triple("info", "Bluetooth is off: Vox waits for it.", null)
+        if (settings.left.isEmpty() || settings.right.isEmpty())
+            banners += Triple("glasses", "Pair your glasses (in the open case).", "Pair" to { startActivity(Intent(this, PairingActivity::class.java)) })
+        if (running && Session.glasses == "ready" && !both) banners += Triple("glasses", "One arm is not connected.", null)
+        if (settings.servers().isEmpty()) banners += Triple("server", "Add a server for the terminal.", "Add" to { editServer(null) })
+        note?.let { n -> banners += Triple("info", n, "OK" to { note = null; show() }) }
+        val key = banners.joinToString("|") { it.first + it.second + (it.third?.first ?: "") }
+        if (key != bannerKey) {
+            bannerKey = key
+            android.transition.TransitionManager.beginDelayedTransition(bannerBox)
+            bannerBox.removeAllViews()
+            for ((icon, text, action) in banners)
+                bannerBox.addView(banner(icon, text, action?.first, if (icon == "info") Ui.ACCENT else Ui.WARN) { action?.second?.invoke() })
+        }
+
+        // The grid: the source on the glasses lit, each with its state.
+        val current = when {
+            !running || Session.blank -> ""
+            Session.showing == Settings.TERMINAL -> "term:${active?.id}"
+            else -> Session.screenSource.ifEmpty { Settings.PHONE }
+        }
+        for ((k, tile, empty) in gridTiles) {
+            if (k == null) {
+                tile.set(GridTile.STATE_NONE, empty, 0)
+                continue
+            }
+            val (sub, dot) = tileState(k)
+            tile.set(if (k == current) GridTile.STATE_ON else GridTile.STATE_IDLE, sub, dot)
+        }
+
+        // The everyday switches.
+        displayAction.set(running && !Session.blank, if (Session.blank) "Display off" else "Display")
+        alwaysAction.set(settings.phoneForce, if (settings.phoneForce) "Always on" else "Look up")
+        voiceAction.set(Session.listening, if (Session.listening) "Listening" else "Voice")
+        pointerAction.set(Session.pointer)
+
+        // The other tabs.
+        val sharing = Session.capturing
+        if (sharing != sharingShown) {
+            sharingShown = sharing
+            shareChip.text = if (sharing) "Stop sharing" else "Share the phone's screen"
+            val cr = dp(18).toFloat()
+            shareChip.background = ripple(if (sharing) rounded(0x1FF87171, cr, dp(1), 0x66F87171) else accentGradient(cr), cr)
+            shareChip.setTextColor(if (sharing) Ui.BAD else Ui.ON_ACCENT)
+        }
+        if (batterySwitch.isChecked != settings.battery) batterySwitch.isChecked = settings.battery
+        showDash()
+        buildTabStrip()
+        tabsState.text = when {
+            Session.tabs.isNotEmpty() -> Session.tabs
+            Session.tabList.isEmpty() -> "Tabs are the tmux windows of the server in use."
+            else -> "Tap a tab to show it, hold it to close it."
+        }
+        notesState.text = if (LookUp.allowed(this)) "Notification access: allowed (${LookUp.notes.size} now)." else
+            "Notification access: not allowed yet (Settings, Access)."
+        showVoice()
+        previewLine()
+        Native.snapshot()?.let {
+            val s = TerminalView.parse(it)
+            terminal.screen = s
+            homeTerminal.screen = s
+        }
+        title(terminal.screen?.title?.ifEmpty { null } ?: getString(R.string.app_name))
+        val fingerprint = Session.unknownHost
+        if (fingerprint != null && fingerprint != asked) {
+            asked = fingerprint
+            dialog()
+                .setTitle("Trust this server?")
+                .setCancelable(false) // Trust or Cancel, not a stray touch
+                .setMessage("${active?.name ?: settings.host} (${settings.host}:${settings.port})\n$fingerprint\n\nOn the " +
+                    "server, ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub shows its fingerprint.")
+                .setPositiveButton("Trust") { _, _ -> ScouterService.send(this, ScouterService.ACTION_TRUST, "fingerprint" to fingerprint) }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+    }
+
+    private fun title(t: String) {
+        title = t
+    }
+
+    // A status pill's dot and word.
+    private fun setPill(pill: TextView, label: String, dot: Int) {
+        val span = android.text.SpannableString("●  $label")
+        span.setSpan(android.text.style.ForegroundColorSpan(dot), 0, 1, 0)
+        pill.text = span
     }
 
     private fun download() {
@@ -646,51 +1154,6 @@ class MainActivity : Activity() {
             .show()
     }
 
-    // Home's buttons, one per source (Settings.sources) and the display, two a row; and the shortcuts to add.
-    private fun buildSources() {
-        val settings = Settings(this)
-        sourcesBox.removeAllViews()
-        sourceTiles.clear()
-        val keys = settings.sources().map { it.first } + OFF
-        for (row in keys.chunked(2)) {
-            val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            for ((i, key) in row.withIndex()) {
-                val (title, sub) = label(settings, key)
-                val tile = Tile(this, title, sub) { choose(key) }
-                line.addView(tile, lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { if (i > 0) leftMargin = dp(10) })
-                if (key == OFF) offTile = tile else sourceTiles += key to tile
-            }
-            // The filler as tall as the button: a wrap-content child would make LinearLayout measure the row
-            // without its match-parent button (height 0).
-            if (row.size == 1) line.addView(View(this), lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { leftMargin = dp(10) })
-            sourcesBox.addView(line, lp().apply { bottomMargin = dp(10) })
-        }
-        if (settings.servers().isEmpty()) sourcesBox.addView(chipRow(chip("Add a server for the terminal", false) { selectTab(2) }))
-        pinsBox.removeAllViews()
-        val pins = settings.sources().map { (key, name) -> chip("+ $name", false) { pin(key, name) } } +
-            chip("+ Next source", false) { pin(Shortcuts.NEXT, "Next source") } +
-            chip("+ Display off / on", false) { pin(Shortcuts.DISPLAY, "Display off / on") }
-        for (row in pins.chunked(2)) pinsBox.addView(chipRow(*row.toTypedArray()))
-    }
-
-    // A source button's title and the line under it.
-    private fun label(settings: Settings, key: String): Pair<String, String> {
-        val server = settings.servers().firstOrNull { it.id == key.substringAfter(":") }
-        return when {
-            key == OFF -> "Display" to if (Session.blank) "Off · tap for on" else "Off, link kept"
-            key == Settings.PHONE -> "Phone" to if (Session.capturing) "Screen · shared" else "Screen"
-            key.startsWith("term:") -> (server?.name ?: "Server") to "Terminal"
-            else -> (server?.name ?: "Server") to "Screen"
-        }
-    }
-
-    private fun pin(key: String, name: String) {
-        if (!Shortcuts.pin(this, key, name)) {
-            note = "This home screen can't add shortcuts: long-press the Vox icon instead."
-            show()
-        }
-    }
-
     // A source on the glasses; the phone's screen asks Android first while it is not shared.
     private fun choose(key: String) {
         if (key == OFF) return toggleDisplay()
@@ -700,101 +1163,6 @@ class MainActivity : Activity() {
         if (key == Settings.PHONE && !(Session.capturing && ScouterService.running)) return shareScreen()
         startingAt = android.os.SystemClock.elapsedRealtime()
         ScouterService.send(this, ScouterService.ACTION_SOURCE, Shortcuts.EXTRA to key)
-        show()
-    }
-
-    // The Terminal tab's list: each saved server, the one in use marked.
-    private fun buildServers() {
-        val settings = Settings(this)
-        serversBox.removeAllViews()
-        val active = settings.active()?.id
-        for (s in settings.servers()) {
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, dp(8), 0, dp(8))
-            }
-            val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            texts.addView(text(s.name + if (s.id == active) "  · in use" else "", 15.5f, Ui.TEXT, Ui.BOLD))
-            texts.addView(text(s.address + if (s.command.isNotEmpty()) " · ${s.command}" else "", 12.5f, Ui.MUTED))
-            row.addView(texts, lp(0, weight = 1f).apply { rightMargin = dp(8) })
-            row.addView(chip("Edit", false) { editServer(s) })
-            serversBox.addView(row)
-        }
-        if (settings.servers().isEmpty()) serversBox.addView(text("No server yet: add one, or run scouter.sh in Termux " +
-            "and use Settings, Terminal server.", 12.5f, Ui.FAINT))
-    }
-
-    // Add (null) or change a saved server; Delete from here too.
-    private fun editServer(s: Settings.Server?) {
-        val settings = Settings(this)
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(4), dp(20), dp(8))
-        }
-        val name = field("Name", s?.name ?: "", "Laptop")
-        val host = field("Host", s?.host ?: "", "an address, a Tailscale IP or name")
-        val port = field("Port", (s?.port ?: 22).toString(), "22", numeric = true)
-        val user = field("User", s?.user ?: "", "")
-        val command = field("Command", s?.command ?: "", "empty: the login shell; tmux new -A -s main")
-        for (f in listOf(name, host, port, user, command)) box.addField(f)
-        val d = dialog()
-            .setTitle(if (s == null) "Add a server" else "Edit ${s.name}")
-            .setView(ScrollView(this).apply { addView(box) })
-            .setPositiveButton("Save") { _, _ ->
-                val h = host.text.toString().trim()
-                val u = user.text.toString().trim()
-                if (h.isEmpty() || u.isEmpty()) {
-                    note = "A server needs a host and a user."
-                    return@setPositiveButton show()
-                }
-                val saved = Settings.Server(s?.id ?: Settings.newServerId(), name.text.toString().trim().ifEmpty { h }, h,
-                    port.text.toString().toIntOrNull()?.takeIf { it in 1..65535 } ?: 22, u, command.text.toString().trim(),
-                    s?.moshPorts ?: "")
-                settings.putServer(saved)
-                buildServers()
-                buildSources()
-                if (saved.id == settings.active()?.id && ScouterService.running) ScouterService.send(this)
-            }
-            .setNegativeButton("Cancel", null)
-        if (s != null) d.setNeutralButton("Delete") { _, _ ->
-            dialog()
-                .setTitle("Delete ${s.name}?")
-                .setMessage(s.address)
-                .setPositiveButton("Delete") { _, _ ->
-                    settings.removeServer(s.id)
-                    buildServers()
-                    buildSources()
-                    if (ScouterService.running) ScouterService.send(this)
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
-        }
-        d.show()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        if (BuildConfig.DEBUG) importTestKey()
-        resumed = true
-        Session.listeners += listener
-        Session.foreground = true
-        Preview.listener = previewListener
-        buildSources()
-        buildServers()
-        buildCommands()
-        if (VoiceModel.progress >= 0) content.post(modelTicker)
-        selectTab(tab)
-        val keyboard = Settings(this).keyboard
-        // Keyboard mode: the keys come only while this screen is in front, so it stays on (dimmed by Android).
-        if (keyboard) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        // Settings may have changed; and while Android has not said whether keyer is near (the app new or
-        // restarted), the service tries keyer's link. In keyboard mode this screen in front starts the session.
-        // Start by itself: the app open is enough.
-        val auto = Settings(this).startsByItself()
-        if (auto || keyboard || ScouterService.running || Session.near == null || BuildConfig.FLAVOR == "emulated") ScouterService.send(this)
-        associate()
         show()
     }
 
@@ -994,7 +1362,7 @@ class MainActivity : Activity() {
             else -> "¼ detail"
         }
         val line = when {
-            !Session.capturing && Session.remote.isEmpty() -> "Nothing shared yet: tap Phone (screen) or a laptop's screen on Home."
+            !Session.capturing && Session.remote.isEmpty() -> "Nothing shared yet: share the phone's screen, or pick a laptop's screen on the Glasses tab."
             !has -> "Waiting for the first picture…"
             sent -> "On the glasses now · $approx${size(st[1])} a frame · $approx${size(st[2])}/s · $detail"
             else -> "Not on the glasses (${Session.screen}): what they would show"
@@ -1016,108 +1384,7 @@ class MainActivity : Activity() {
     }
 
     private var note: String? = null // the last control's problem
-    private var startingAt = 0L // a mode was tapped: "Starting…" until the session shows (or 45 s)
-
-    // R3: in Doze the network waits for maintenance windows unless the app is exempt (keyer's association
-    // exempts it).
-    private fun exempt() = getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
-
-    private fun show() {
-        val settings = Settings(this)
-        val running = ScouterService.running && Session.showing.isNotEmpty()
-        if (running) startingAt = 0L
-        val starting = !running && startingAt > 0 && android.os.SystemClock.elapsedRealtime() - startingAt < 45000
-        val active = settings.active()
-        val remoteShown = Session.screenSource.startsWith("screen:")
-        headline.text = when {
-            starting -> "Starting…"
-            !running -> "Ready when you are"
-            Session.blank -> "Display off"
-            Session.showing == Settings.SCREEN -> if (remoteShown) "${Session.source.substringBefore(" ·")} screen on the glasses"
-                else "Phone screen on the glasses"
-            else -> "${active?.name ?: "The"} terminal on the glasses"
-        }
-        val permitted = ScouterService.missing(this).isEmpty()
-        val lines = mutableListOf<String>()
-        if (!permitted) lines += "Allow Bluetooth and notifications in Settings."
-        else if (!ScouterService.bluetoothOn(this)) lines += "Bluetooth is off: the app waits for it."
-        if (settings.left.isEmpty() || settings.right.isEmpty()) lines += "Pair the glasses in Settings, Glasses."
-        else if (running) lines += when (Session.glasses) {
-            "ready" -> "Glasses connected" + (if (Session.left && Session.right) "" else " (one arm down)")
-            "connecting" -> "Connecting to the glasses…"
-            else -> "Glasses: ${Session.glasses}"
-        }
-        if (running && Session.showing == Settings.TERMINAL)
-            lines += "Terminal (${active?.address ?: "no server"}): " + Session.mosh.replaceFirstChar { it.uppercase() }
-        if (Session.capturing || remoteShown || Session.screen.startsWith("stopped") || Session.screen.startsWith("error") ||
-            Session.screen.contains("screen"))
-            lines += "Screen: ${Session.screen}" + if (Session.screen == "on")
-                String.format(java.util.Locale.US, " · %.1f fps", Session.screenFps) else ""
-        if (Session.blank) lines += "Turn it back on here, in the notification, or with your TouchBar gesture."
-        if (Session.gesture.isNotEmpty()) lines += "Last gesture: ${Session.gesture}"
-        if (starting) lines += "Connecting to the glasses and the server…"
-        note?.let { lines += it }
-        detail.text = lines.joinToString("\n").ifEmpty { "Pick what the glasses show." }
-
-        pills.removeAllViews()
-        fun pill(label: String, dot: Int) = pills.addView(statusPill(label, dot), lp(ViewGroup.LayoutParams.WRAP_CONTENT)
-            .apply { rightMargin = dp(8) })
-        val b = Session.battery
-        leftGauge.set(b.getOrElse(0) { -1 }, b.getOrElse(2) { 0 } == 1, running && Session.left)
-        rightGauge.set(b.getOrElse(1) { -1 }, b.getOrElse(3) { 0 } == 1, running && Session.right)
-        pill("Glasses", when {
-            running && Session.left && Session.right -> Ui.GOOD
-            running && Session.glasses == "connecting" -> Ui.WARN
-            running -> Ui.BAD
-            else -> Ui.FAINT
-        })
-        pill("SSH", when {
-            Session.mosh == "connected" -> Ui.GOOD
-            Session.mosh.startsWith("error") || Session.mosh.startsWith("no contact") -> Ui.BAD
-            Session.mosh == "off" -> Ui.FAINT
-            else -> Ui.WARN
-        })
-        pill(if (Session.capturing) "Sharing" else "Screen", if (Session.capturing) Ui.ACCENT else Ui.FAINT)
-
-        // The source on the glasses, lit.
-        val current = when {
-            !running || Session.blank -> ""
-            Session.showing == Settings.TERMINAL -> "term:${active?.id}"
-            else -> Session.screenSource.ifEmpty { Settings.PHONE }
-        }
-        for ((key, tile) in sourceTiles) tile.select(key == current, label(settings, key).second)
-        offTile?.select(Session.blank, label(settings, OFF).second)
-        stopSharing.visibility = if (Session.capturing) View.VISIBLE else View.GONE
-        if (batterySwitch.isChecked != settings.battery) batterySwitch.isChecked = settings.battery
-        if (forceSwitch.isChecked != settings.phoneForce) forceSwitch.isChecked = settings.phoneForce
-        if (homeForce.isChecked != settings.phoneForce) homeForce.isChecked = settings.phoneForce
-        showDash()
-        tabsState.text = (if (Session.pointer) "Pointer: on. " else "Pointer: off. ") + Session.tabs
-        notesState.text = if (LookUp.allowed(this)) "Notification access: allowed (${LookUp.notes.size} now)." else
-            "Notification access: not allowed yet. If Android says it is restricted: Apps, Vox, ⋮, Allow restricted " +
-                "settings, then try again."
-        showVoice()
-
-        status.text = (if (exempt()) "" else "battery optimised · ") +
-            "glasses ${Session.glasses} (L ${Session.left} R ${Session.right}" + (if (Session.shown) ", shown" else "") +
-            ") · screen ${Session.screen} (${Session.screenFrames} frames) · mosh ${Session.mosh} · keyer ${Session.keyer}" +
-            (companion?.let { " · companion: $it" } ?: "") + (if (Session.termux.isNotEmpty()) " · Termux ${Session.termux}" else "")
-        previewLine()
-        Native.snapshot()?.let { terminal.screen = TerminalView.parse(it) }
-        title = terminal.screen?.title?.ifEmpty { null } ?: getString(R.string.app_name)
-        val fingerprint = Session.unknownHost
-        if (fingerprint != null && fingerprint != asked) {
-            asked = fingerprint
-            dialog()
-                .setTitle("Trust this server?")
-                .setCancelable(false) // Trust or Cancel, not a stray touch
-                .setMessage("${active?.name ?: settings.host} (${settings.host}:${settings.port})\n$fingerprint\n\nOn the " +
-                    "server, ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub shows its fingerprint.")
-                .setPositiveButton("Trust") { _, _ -> ScouterService.send(this, ScouterService.ACTION_TRUST, "fingerprint" to fingerprint) }
-                .setNegativeButton("Cancel", null)
-                .show()
-        }
-    }
+    private var startingAt = 0L // a source was tapped: "Starting…" until the session shows (or 45 s)
 
     // Debug builds: a key placed with `adb shell run-as PACKAGE` in files/import_key (and import_passphrase)
     // goes into the vault, for tests without the file picker.
@@ -1133,6 +1400,7 @@ class MainActivity : Activity() {
 
     companion object {
         const val EXTRA_SHARE = "share" // a shortcut: ask for the phone's screen
-        private const val OFF = "off"   // Home's display button
+        private const val OFF = "off"   // the display's switch
+        private const val GLASS = 0xFF3CFF78.toInt() // the panel's green, for the glasses' view
     }
 }

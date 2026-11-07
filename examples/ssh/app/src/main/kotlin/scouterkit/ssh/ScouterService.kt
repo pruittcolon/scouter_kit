@@ -65,6 +65,7 @@ object Session {
     @Volatile var replyDraft = ""
     @Volatile var replyStatus = ""
     @Volatile var tabList = listOf<Tabs.Tab>() // the terminal's tabs (tmux windows), for the dashboard
+    @Volatile var terms: Map<String, String> = emptyMap() // each terminal's state by server id (Term.status)
     @Volatile var heard = listOf<String>() // the last phrases, newest first
     // The devices Android reports near (ScouterCompanionService: keyer); null: unknown (none reported since the
     // process started, Bluetooth was off since, or keyer's link did not come after the last report).
@@ -902,6 +903,7 @@ class ScouterService : Service() {
         keyer?.let { Session.keyer = it }
         screen?.let { Session.screen = it }
         Session.capturing = this.screen != null
+        Session.terms = terms.mapValues { it.value.status }
         Session.showing = if (ended || !active()) "" else settings.show
         GlassesTile.refresh(this)
         SourceTile.refresh(this)
