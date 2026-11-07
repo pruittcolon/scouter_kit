@@ -1343,6 +1343,15 @@ class ScouterService : Service() {
             hit.action.startsWith("media:") -> if (what == "click") {
                 if (!Media.control(hit.action.removePrefix("media:"))) Session.tabs = "nothing plays"
             }
+            hit.action.startsWith("timer:") -> {
+                if (what == "right") Timer.reset()
+                else if (what == "click") when (hit.action.removePrefix("timer:")) {
+                    "minus" -> Timer.add(-60_000L)
+                    "plus" -> Timer.add(60_000L)
+                    else -> Timer.toggle()
+                }
+                dash()
+            }
             hit.action == "phone" -> if (what == "click") {
                 barLeave()
                 phoneScreen()
@@ -1648,6 +1657,7 @@ class ScouterService : Service() {
     private fun header() {
         if (ended) return
         if (Media.now == null) Media.start(this) // notification access may have come since
+        Weather.refresh(settings) { work.post { dash() } } // every 30 minutes
         Native.lookUpHeader(LookUp.lines(this, settings))
         dash()
     }
@@ -1828,6 +1838,14 @@ class ScouterService : Service() {
             VoiceCommands.TAB -> tabs(m.arg)
             VoiceCommands.POINTER -> pointer(m.arg)
             VoiceCommands.MEDIA -> if (!Media.control(m.arg)) voiceSay("Nothing is playing (Vox needs notification access)")
+            VoiceCommands.TIMER -> {
+                when (m.arg) {
+                    "toggle" -> Timer.toggle()
+                    "reset" -> Timer.reset()
+                    else -> Timer.set((m.arg.toLongOrNull() ?: 300L) * 1000)
+                }
+                dash()
+            }
         }
         Session.changed()
     }
@@ -1881,13 +1899,17 @@ class ScouterService : Service() {
         if (show == Settings.TERMINAL) header()
     }
 
-    // What plays: the dashboard again each second while it plays and shows (its progress line).
+    // Each second: a timer that ends says so; the dashboard again while what it shows moves (what plays, the timer).
     private val mediaTick = object : Runnable {
         override fun run() {
             work.postDelayed(this, 1000)
-            val now = Media.now ?: return
-            if (!now.playing || settings.dashRows == 0 || !Session.shown || settings.show != Settings.TERMINAL) return
-            if (Dashboard.layout(settings).widgets.any { it.type == Dashboard.MEDIA }) dash()
+            if (Timer.ended()) {
+                voiceSay("\u23F0 Time's up")
+                dash()
+            }
+            if (settings.dashRows == 0 || !Session.shown || settings.show != Settings.TERMINAL) return
+            val types = Dashboard.layout(settings).widgets.map { it.type }
+            if ((Media.now?.playing == true && Dashboard.MEDIA in types) || (Timer.running && Dashboard.TIMER in types)) dash()
         }
     }
 

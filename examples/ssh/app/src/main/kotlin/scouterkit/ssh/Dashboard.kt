@@ -45,21 +45,26 @@ object Dashboard {
     private val CONDENSED: Typeface = Typeface.create("sans-serif-condensed", Typeface.NORMAL)
 
     // The styles, and the widgets a layout is made of (NOTES and MEDIA share the room the others leave, by weight).
-    val STYLES = listOf("classic" to "Classic", "media" to "Media", "everything" to "Everything", "focus" to "Focus",
-        "minimal" to "Minimal", "custom" to "Your own")
+    val STYLES = listOf("classic" to "Classic", "day" to "Day", "media" to "Media", "everything" to "Everything",
+        "focus" to "Focus", "minimal" to "Minimal", "custom" to "Your own")
     const val CLOCK = "clock"
     const val NOTES = "notes"
     const val MEDIA = "media"
     const val BATTERY = "battery"
     const val PHONE = "phone"
+    const val WEATHER = "weather"
+    const val CALENDAR = "calendar"
+    const val TIMER = "timer"
     val WIDGETS = listOf(CLOCK to "Clock and date", NOTES to "Notifications", MEDIA to "Now playing",
-        BATTERY to "Glasses' batteries", PHONE to "Phone's battery")
-    private val FLEX = setOf(NOTES, MEDIA)
+        WEATHER to "Weather", CALENDAR to "Calendar", TIMER to "Timer", BATTERY to "Glasses' batteries",
+        PHONE to "Phone's battery")
+    val FLEX = setOf(NOTES, MEDIA, CALENDAR)
 
     class Widget(val type: String, val weight: Int = 1)
     class Layout(val tabs: Boolean, val widgets: List<Widget>)
 
     fun layout(settings: Settings, style: String = settings.dashStyle): Layout = when (style) {
+        "day" -> Layout(true, listOf(Widget(CLOCK), Widget(WEATHER), Widget(CALENDAR), Widget(BATTERY)))
         "media" -> Layout(true, listOf(Widget(CLOCK), Widget(MEDIA), Widget(BATTERY)))
         "everything" -> Layout(true, listOf(Widget(CLOCK), Widget(NOTES), Widget(MEDIA), Widget(BATTERY)))
         "focus" -> Layout(false, listOf(Widget(CLOCK), Widget(NOTES, 2)))
@@ -234,6 +239,9 @@ object Dashboard {
                 PHONE -> phoneBattery(context, c, r, line, fill)
                 NOTES -> notes(c, r, hits, hover, mark, fill, settings)
                 MEDIA -> media(c, r, hits, hover, mark, fill, line)
+                WEATHER -> weather(c, r, line)
+                CALENDAR -> calendar(context, c, r)
+                TIMER -> timer(c, r, hits, hover, mark, fill, line)
             }
             x += ww + gap
         }
@@ -279,7 +287,174 @@ object Dashboard {
             pct.measureText("100%+") + 4f + 30f + 4f + letter.measureText("L")
         }
         PHONE -> paint(rowH * 0.2f, 13, MEDIUM).measureText("100%") + 30f + 8f
+        WEATHER -> {
+            val n = Weather.now
+            val big = paint(rowH * 0.42f, 15, THIN)
+            val small = paint(rowH * 0.15f, 9, CONDENSED, 0.12f)
+            val words = if (n == null) "WEATHER" else Weather.word(n.code).uppercase(Locale.getDefault())
+            rowH * 0.5f + 6f + maxOf(big.measureText(if (n == null) "—" else "${n.temp}°"), minOf(small.measureText(words), rowH * 1.6f),
+                small.measureText("H 100° L 100°"))
+        }
+        TIMER -> maxOf(paint(rowH * 0.36f, 15, THIN).measureText("00:00"), minOf(rowH * 0.42f, 22f) * 3 + 8f)
         else -> 0f
+    }
+
+    // The weather: its icon, the temperature large, the sky in words, the day's high and low.
+    private fun weather(c: Canvas, r: RectF, line: Paint) {
+        val rowH = r.height()
+        val n = Weather.now
+        val side = rowH * 0.5f
+        val icon = RectF(r.left, r.top + rowH * 0.12f, r.left + side, r.top + rowH * 0.12f + side)
+        skyIcon(c, icon, if (n == null) "cloud" else Weather.icon(n.code), line)
+        val tx = icon.right + 6f
+        val big = paint(rowH * 0.42f, 15, THIN).apply { setShadowLayer(3f, 0f, 0f, grey(4)) }
+        val small = paint(rowH * 0.15f, 9, CONDENSED, 0.12f)
+        if (n == null) {
+            c.drawText("—", tx, r.top + rowH * 0.5f, big)
+            c.drawText(TextUtils.ellipsize(Weather.problem.ifEmpty { "WEATHER" }.uppercase(Locale.getDefault()), small,
+                r.right - r.left, TextUtils.TruncateAt.END).toString(), r.left, r.top + rowH * 0.9f, small)
+            return
+        }
+        c.drawText("${n.temp}°", tx, r.top + rowH * 0.5f, big)
+        c.drawText(TextUtils.ellipsize(Weather.word(n.code).uppercase(Locale.getDefault()), small, r.width(), TextUtils.TruncateAt.END).toString(),
+            r.left, r.top + rowH * 0.74f, small)
+        c.drawText("H ${n.high}° L ${n.low}°", r.left, r.top + rowH * 0.94f, paint(rowH * 0.15f, 7, CONDENSED, 0.1f))
+    }
+
+    // A sky in lines: sun, a sun behind a cloud, cloud, fog, rain, snow, storm.
+    private fun skyIcon(c: Canvas, b: RectF, kind: String, line: Paint) {
+        val p = Paint(line).apply { strokeWidth = maxOf(1.2f, b.width() / 16f); strokeCap = Paint.Cap.ROUND; color = grey(14) }
+        val s = b.width()
+        fun sun(cx: Float, cy: Float, rr: Float) {
+            c.drawCircle(cx, cy, rr, p)
+            for (i in 0 until 8) {
+                val a = Math.toRadians(i * 45.0)
+                c.drawLine(cx + (rr + s * 0.07f) * Math.cos(a).toFloat(), cy + (rr + s * 0.07f) * Math.sin(a).toFloat(),
+                    cx + (rr + s * 0.16f) * Math.cos(a).toFloat(), cy + (rr + s * 0.16f) * Math.sin(a).toFloat(), p)
+            }
+        }
+        fun cloud(top: Float) {
+            val path = Path()
+            val l = b.left + s * 0.1f
+            val rr = b.left + s * 0.9f
+            val bottom = top + s * 0.38f
+            path.moveTo(l + s * 0.08f, bottom)
+            path.lineTo(rr - s * 0.06f, bottom)
+            path.quadTo(rr + s * 0.04f, bottom - s * 0.18f, rr - s * 0.14f, top + s * 0.1f)
+            path.quadTo(rr - s * 0.28f, top - s * 0.12f, b.centerX() - s * 0.02f, top + s * 0.04f)
+            path.quadTo(l + s * 0.1f, top - s * 0.02f, l + s * 0.12f, top + s * 0.2f)
+            path.quadTo(l - s * 0.06f, top + s * 0.26f, l + s * 0.08f, bottom)
+            c.drawPath(path, Paint().apply { isAntiAlias = true; color = Color.BLACK }) // hides a sun behind it
+            c.drawPath(path, p)
+        }
+        when (kind) {
+            "sun" -> sun(b.centerX(), b.centerY(), s * 0.2f)
+            "partly" -> {
+                sun(b.left + s * 0.62f, b.top + s * 0.3f, s * 0.14f)
+                cloud(b.top + s * 0.42f)
+            }
+            "fog" -> for (i in 0 until 4) {
+                val y = b.top + s * (0.25f + i * 0.17f)
+                c.drawLine(b.left + s * (0.1f + (i % 2) * 0.08f), y, b.right - s * (0.1f + ((i + 1) % 2) * 0.08f), y, p)
+            }
+            "rain", "snow", "storm" -> {
+                cloud(b.top + s * 0.12f)
+                val y0 = b.top + s * 0.62f
+                for (i in 0 until 3) {
+                    val x = b.left + s * (0.28f + i * 0.22f)
+                    when (kind) {
+                        "rain" -> c.drawLine(x, y0, x - s * 0.06f, y0 + s * 0.22f, p)
+                        "snow" -> c.drawCircle(x, y0 + s * 0.12f, s * 0.03f, p)
+                        else -> if (i == 1) {
+                            val bolt = Path().apply {
+                                moveTo(x + s * 0.04f, y0)
+                                lineTo(x - s * 0.06f, y0 + s * 0.16f)
+                                lineTo(x + s * 0.03f, y0 + s * 0.16f)
+                                lineTo(x - s * 0.05f, y0 + s * 0.34f)
+                            }
+                            c.drawPath(bolt, p)
+                        }
+                    }
+                }
+            }
+            else -> cloud(b.top + s * 0.3f)
+        }
+    }
+
+    // The next events: the time (or "all day", "tomorrow 9:30") dim, the title bright.
+    private fun calendar(context: Context, c: Canvas, r: RectF) {
+        val rowH = r.height()
+        if (r.width() < 60f) return
+        val small = paint(rowH * 0.15f, 9, CONDENSED, 0.15f)
+        val title = paint(rowH * 0.19f, 15, MEDIUM)
+        val time = paint(rowH * 0.17f, 10, CONDENSED)
+        val lineH = rowH / 3f
+        if (!Agenda.allowed(context)) {
+            c.drawText("CALENDAR", r.left, r.top + lineH * 0.62f, small)
+            c.drawText("Allow it in Vox", r.left, r.top + lineH * 1.62f, paint(rowH * 0.19f, 8, LIGHT))
+            return
+        }
+        val events = Agenda.next(context)
+        if (events.isEmpty()) {
+            c.drawText("CALENDAR", r.left, r.top + lineH * 0.62f, small)
+            c.drawText("Nothing coming up", r.left, r.top + lineH * 1.62f, paint(rowH * 0.19f, 8, LIGHT))
+            return
+        }
+        val h24 = android.text.format.DateFormat.is24HourFormat(context)
+        val fmt = SimpleDateFormat(if (h24) "H:mm" else "h:mm", Locale.getDefault())
+        val today = java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_YEAR)
+        val timeW = time.measureText("TMRW 10:00") + 6f
+        for ((i, e) in events.take(3).withIndex()) {
+            val y = r.top + lineH * (i + 0.66f)
+            val day = java.util.Calendar.getInstance().apply { timeInMillis = e.begin }.get(java.util.Calendar.DAY_OF_YEAR)
+            val whenText = (if (day != today) "TMRW " else "") + if (e.allDay) "ALL DAY" else fmt.format(Date(e.begin))
+            c.drawText(whenText, r.left, y, time)
+            c.drawText(TextUtils.ellipsize(e.title.ifBlank { "(no title)" }, title, r.width() - timeW, TextUtils.TruncateAt.END).toString(),
+                r.left + timeW, y, title)
+        }
+    }
+
+    // The timer: the time left large, a line that empties, and −1 min, start / pause, +1 min for the pointer.
+    private fun timer(c: Canvas, r: RectF, hits: MutableList<Hit>, hover: String?, mark: Paint, fill: Paint, line: Paint) {
+        val rowH = r.height()
+        val left = Timer.remaining()
+        val big = paint(rowH * 0.36f, if (Timer.running) 15 else 11, THIN)
+        c.drawText(if (left > 0 || Timer.running) Timer.text(left) else "TIMER", r.left, r.top + rowH * 0.38f,
+            if (left > 0 || Timer.running) big else paint(rowH * 0.16f, 9, CONDENSED, 0.15f))
+        if (Timer.total > 0) {
+            val py = r.top + rowH * 0.48f
+            line.color = grey(3)
+            c.drawLine(r.left, py, r.right, py, line)
+            fill.color = grey(13)
+            c.drawRect(r.left, py - 1f, r.left + r.width() * (left.toFloat() / Timer.total).coerceIn(0f, 1f), py + 1f, fill)
+        }
+        val bs = minOf(rowH * 0.42f, 22f)
+        val by = r.top + rowH * 0.56f
+        for ((i, name) in listOf("minus", "toggle", "plus").withIndex()) {
+            val b = RectF(r.left + i * (bs + 4f), by, r.left + i * (bs + 4f) + bs, by + bs)
+            val action = "timer:$name"
+            val on = hover == action
+            if (on) {
+                fill.color = grey(14)
+                c.drawRoundRect(b, 4f, 4f, fill)
+            } else {
+                line.color = grey(6)
+                c.drawRoundRect(b, 4f, 4f, line)
+            }
+            val ink = grey(if (on) 0 else 14)
+            when (name) {
+                "toggle" -> glyph(c, b, if (Timer.running) "pause" else "play", ink)
+                else -> {
+                    val sign = paint(bs * 0.5f, 0, MEDIUM).apply {
+                        color = ink
+                        textAlign = Paint.Align.CENTER
+                    }
+                    c.drawText(if (name == "plus") "+1" else "−1", b.centerX(), b.centerY() + sign.textSize * 0.36f, sign)
+                }
+            }
+            hits += Hit(b.left, b.right, action, by, by + bs)
+            if (on) hovered(c, b, mark, fill)
+        }
     }
 
     private fun clockTexts(context: Context): Triple<String, String, String> {

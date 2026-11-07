@@ -158,9 +158,17 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
 - **Styles and your own** (*Look-up screen*, Terminal tab; `Dashboard.STYLES`): *Classic* (the tab bar; clock,
   notifications, batteries), *Media* (clock, now playing, batteries), *Everything*, *Focus* (no tab bar; clock and
   wide notifications), *Minimal* (clock, the phone's and the glasses' batteries), and *Your own*: the tab bar on or
-  off and the widgets (clock and date, notifications, now playing, the glasses' batteries, the phone's battery) on
+  off and the widgets (clock and date, notifications, now playing, weather, calendar, timer, the glasses' batteries,
+  the phone's battery) on
   or off, in your order, notifications and now playing ×1 to ×3 wide (`Settings.dashLayout`, JSON). Each style shows
   as a picture in the glasses' green; voice and a quick reply take the widest widget's place while in use.
+- **Weather, calendar, timer** (`Widgets.kt`): the weather from Open-Meteo (no account or key) for the city typed
+  on the Terminal tab (looked up once, then asked every 30 minutes; °F or °C by the phone's country unless set):
+  an icon, the temperature, the sky in words, the day's high and low. The calendar: the next events of the phone's
+  calendars over 36 hours (READ_CALENDAR, asked for on the Terminal tab), each with its time. The timer: the time
+  left with a line that empties, −1 min, start / pause and +1 min for the pointer (a right click resets it); voice
+  "timer 5 minutes", "set a timer for ten minutes", "pause the timer", "stop the timer"; when it ends the glasses
+  say "Time's up". *Day* shows clock, weather, calendar and batteries.
 - **Now playing** (`Media.kt`): the phone's media sessions (Spotify, YouTube, podcast and video players), listed to
   Vox's notification listener: the app, the title, the artist, the cover in the glasses' greys and a progress line
   (redrawn each second while it plays and shows), with before, play / pause and next as places the pointer clicks.

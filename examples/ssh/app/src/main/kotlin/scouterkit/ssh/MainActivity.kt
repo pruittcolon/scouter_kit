@@ -49,6 +49,9 @@ class MainActivity : Activity() {
     private lateinit var notesState: TextView
     private lateinit var dashPreview: android.widget.ImageView
     private lateinit var styleRow: LinearLayout
+    private lateinit var weatherState: TextView
+    private lateinit var calendarState: TextView
+    private lateinit var calendarButton: View
     private lateinit var layoutBox: LinearLayout
     private lateinit var shareChip: TextView
     private lateinit var lookTitle: TextView
@@ -564,6 +567,34 @@ class MainActivity : Activity() {
         }, lp().apply { topMargin = dp(4) })
         layoutBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         view.addView(layoutBox)
+
+        // The widgets' own settings: the weather's city and units, the calendar's permission.
+        view.addView(subhead("Weather"))
+        val city = field("City", settings.weatherCity, "e.g. Chicago")
+        fun saveCity() {
+            val v = city.text.toString().trim()
+            if (v == settings.weatherCity) return
+            settings.weatherCity = v
+            weatherState.text = "Looking up the weather…"
+            Weather.refresh(settings, force = true) { runOnUiThread { show(); lookUpChanged() } }
+        }
+        city.imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+        city.setOnEditorActionListener { _, _, _ -> saveCity(); false }
+        city.setOnFocusChangeListener { _, has -> if (!has) saveCity() }
+        view.addField(city)
+        view.addView(segmented(listOf("" to "Auto", "f" to "°F", "c" to "°C"), settings.weatherUnit) {
+            settings.weatherUnit = it
+            Weather.refresh(settings, force = true) { runOnUiThread { show(); lookUpChanged() } }
+        })
+        weatherState = text("", 12.5f, Ui.FAINT)
+        view.addView(weatherState)
+        view.addView(subhead("Calendar"))
+        calendarState = text("", 12.5f, Ui.FAINT)
+        view.addView(calendarState)
+        calendarButton = button("Allow the calendar") {
+            requestPermissions(arrayOf(android.Manifest.permission.READ_CALENDAR), CALENDAR_REQUEST)
+        }
+        view.addView(calendarButton)
         view.addView(subhead("Size and fade"))
         view.addToggle(toggle("Graphical dashboard", "Off: the header as two lines of text", settings.dashboard) {
             settings.dashboard = it
@@ -1237,6 +1268,11 @@ class MainActivity : Activity() {
             Session.tabList.isEmpty() -> "Tabs are the tmux windows of the server in use."
             else -> "Tap a tab to show it, hold it to close it."
         }
+        weatherState.text = Weather.now?.let { "${it.temp}° ${Weather.word(it.code).lowercase()} in ${it.place} · from Open-Meteo, every 30 minutes" }
+            ?: Weather.problem.ifEmpty { "Type a city for the weather widget." }
+        val calendar = Agenda.allowed(this)
+        calendarState.text = if (calendar) "Allowed: the next events of the phone's calendars." else "The calendar widget needs access to read your calendars."
+        calendarButton.visibility = if (calendar) View.GONE else View.VISIBLE
         notesState.text = if (LookUp.allowed(this)) "Notification access: allowed (${LookUp.notes.size} now)." else
             "Notification access: not allowed yet (Settings, Access)."
         showVoice()
@@ -1379,6 +1415,15 @@ class MainActivity : Activity() {
         startingAt = android.os.SystemClock.elapsedRealtime()
         ScouterService.send(this, ScouterService.ACTION_SOURCE, Shortcuts.EXTRA to key)
         show()
+    }
+
+    override fun onRequestPermissionsResult(request: Int, permissions: Array<out String>, results: IntArray) {
+        super.onRequestPermissionsResult(request, permissions, results)
+        if (request == CALENDAR_REQUEST) {
+            buildStyles()
+            lookUpChanged()
+            show()
+        }
     }
 
     override fun onPause() {
@@ -1617,5 +1662,6 @@ class MainActivity : Activity() {
         const val EXTRA_SHARE = "share" // a shortcut: ask for the phone's screen
         private const val OFF = "off"   // the display's switch
         private const val GLASS = 0xFF3CFF78.toInt() // the panel's green, for the glasses' view
+        private const val CALENDAR_REQUEST = 9
     }
 }

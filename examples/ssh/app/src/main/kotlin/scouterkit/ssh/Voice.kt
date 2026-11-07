@@ -293,6 +293,7 @@ object VoiceCommands {
     const val TAB = "tab" // arg: a tab action (Tabs.command)
     const val POINTER = "pointer" // arg: a pointer command (toggle, click, right, up, down)
     const val MEDIA = "media" // arg: toggle, next, prev (what plays on the phone)
+    const val TIMER = "timer" // arg: SECONDS (set and start), toggle, reset
 
     // For the custom commands' editor: what a command can do (SOURCE is picked from the sources).
     val CHOICES = linkedMapOf(NEXT to "Next source", PREV to "Previous source", UP to "Terminal (this machine)",
@@ -303,7 +304,8 @@ object VoiceCommands {
         DICTATE_OFF to "Stop dictating", STOP to "Stop listening", "tab:new" to "New tab", "tab:next" to "Next tab",
         "tab:prev" to "Previous tab", "tab:close" to "Close the tab", "tab:claude" to "Claude's tab", "tab:cursor" to "Cursor's tab",
         "pointer:toggle" to "Pointer on / off", "pointer:click" to "Click", "media:toggle" to "Play / pause",
-        "media:next" to "Next song", "media:prev" to "Previous song")
+        "media:next" to "Next song", "media:prev" to "Previous song", "timer:toggle" to "Pause / go on with the timer",
+        "timer:reset" to "Stop the timer")
 
     // What the built-in commands are, for the Voice tab.
     const val HELP = "Next · Back · Phone terminal · Laptop terminal · Phone screen · Laptop screen (any saved server's " +
@@ -311,7 +313,7 @@ object VoiceCommands {
         "Type … · Run … (types it and Enter) · Claude … (types it and Enter) · Enter · Escape · Tab · Control C · Up · " +
         "Down · Dictate (everything you say is typed; \"send\" presses Enter, \"stop dictating\" ends it) · Stop listening · " +
         "New tab · Next tab · Previous tab · Tab 2 · Close tab · Claude tab · Cursor tab · Pointer · Click · Right click · " +
-        "Scroll up / down · Play · Pause · Next song · Previous song"
+        "Scroll up / down · Play · Pause · Next song · Previous song · Timer 5 minutes · Pause the timer · Stop the timer"
 
     fun normalize(s: String) = s.lowercase(Locale.US).replace(Regex("[^a-z0-9 ]"), " ").replace(Regex("\\s+"), " ").trim()
 
@@ -328,6 +330,7 @@ object VoiceCommands {
         TAB -> CHOICES["tab:$arg"] ?: "tab $arg"
         POINTER -> CHOICES["pointer:$arg"] ?: "pointer $arg"
         MEDIA -> CHOICES["media:$arg"] ?: "media $arg"
+        TIMER -> CHOICES["timer:$arg"] ?: arg.toLongOrNull()?.let { "timer ${Timer.text(it * 1000)}" } ?: "timer $arg"
         RUN -> "run \"$arg\""
         KEY -> arg
         else -> CHOICES[action] ?: action
@@ -342,6 +345,7 @@ object VoiceCommands {
                 c.action.startsWith("tab:") -> TAB to c.action.removePrefix("tab:")
                 c.action.startsWith("pointer:") -> POINTER to c.action.removePrefix("pointer:")
                 c.action.startsWith("media:") -> MEDIA to c.action.removePrefix("media:")
+                c.action.startsWith("timer:") -> TIMER to c.action.removePrefix("timer:")
                 else -> c.action to c.arg
             }
             return Match(action, arg, label(settings, action, arg))
@@ -387,6 +391,19 @@ object VoiceCommands {
         val media = listOf("play|pause|play music|pause music|resume|stop the music|play pause" to "toggle",
             "next song|next track|skip|skip song|next video" to "next", "previous song|previous track|last song|go back a song" to "prev")
         for ((words, cmd) in media) if (t in words.split("|")) return m(MEDIA, cmd)
+        // A timer: "timer 5 minutes", "set a timer for ten minutes", "5 minute timer", "timer 30 seconds".
+        val count = listOf("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+            "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty")
+        fun amount(w: String): Int? = w.toIntOrNull() ?: count.indexOf(w).takeIf { it >= 0 }
+            ?: mapOf("thirty" to 30, "forty" to 40, "forty five" to 45, "fifty" to 50, "sixty" to 60, "half an" to 30, "a" to 1, "an" to 1)[w]
+        Regex("^(?:set |start )?(?:a )?timer (?:for )?(\\w+(?: five)?) (minute|minutes|second|seconds|hour|hours)$").find(t)?.let { r ->
+            amount(r.groupValues[1])?.let { n -> return m(TIMER, (n * when (r.groupValues[2].first()) { 's' -> 1; 'h' -> 3600; else -> 60 }).toString()) }
+        }
+        Regex("^(?:set |start )?(?:a |an )?(\\w+) (minute|second|hour) timer$").find(t)?.let { r ->
+            amount(r.groupValues[1])?.let { n -> return m(TIMER, (n * when (r.groupValues[2].first()) { 's' -> 1; 'h' -> 3600; else -> 60 }).toString()) }
+        }
+        if (t in listOf("pause the timer", "pause timer", "resume the timer", "resume timer", "start the timer")) return m(TIMER, "toggle")
+        if (t in listOf("stop the timer", "stop timer", "cancel the timer", "cancel timer", "reset the timer", "reset timer")) return m(TIMER, "reset")
         // "<name> terminal" / "<name> screen" (show / open / go to / switch to the …).
         Regex("^(?:show |open |go to |switch to )?(?:the |my )?(.+?) (terminal|screen)$").find(t)?.let { r ->
             val name = r.groupValues[1]

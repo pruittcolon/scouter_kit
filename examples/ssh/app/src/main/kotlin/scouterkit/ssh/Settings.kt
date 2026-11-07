@@ -156,6 +156,11 @@ class Settings(context: Context) {
     // The dashboard's style (Dashboard.STYLES) and the user's own layout (Dashboard.custom).
     var dashStyle: String by Text("dash_style", "classic")
     var dashLayout: String by Text("dash_layout", "")
+    // The dashboard's weather: the city, "c" or "f" (empty: by the phone's country), and the city's place as looked up
+    // ("CITY|lat|lon|name").
+    var weatherCity: String by Text("weather_city", "")
+    var weatherUnit: String by Text("weather_unit", "")
+    var weatherPlace: String by Text("weather_place", "")
     // The dashboard's height on the glasses, 0 without it (even, as the native side takes it).
     val dashRows get() = if (dashboard) dashHeight.coerceIn(56, 140) and 1.inv() else 0
     var lookUpClock: Boolean
