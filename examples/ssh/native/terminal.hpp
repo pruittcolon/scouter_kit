@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "base/scouter_kit.hpp"
+#include "fx.hpp"
 #include "g1/scouter_kit_g1.hpp"
 #include "mosh_client.hpp"
 
@@ -30,6 +31,13 @@ namespace ssh {
 // the font at 2x in a 1 px white frame on black.
 class GlassesTerminal {
 public:
+  // The terminal's fonts on the arms, kept from one run to the next (Stop's keep_fonts, Config::fonts): a terminal
+  // that starts again uploads none. blob: the size of the font blob they came from.
+  struct Fonts {
+    scouter_kit::Font *font = nullptr, *batt = nullptr;
+    std::set<uint32_t> loaded;
+    size_t blob = 0;
+  };
   struct Config {
     int dx = 100, dy = 9, angle = 20;
     bool ignore_worn = false; // debug: without PanelPolicy, to show with the glasses folded on the table
@@ -45,13 +53,28 @@ public:
     int fade_ms = 400;
     // The dashboard above the terminal (SetDash), this many pixels high (0: none); the terminal gets fewer rows.
     int dash_h = 0;
+    // The transitions (Reveal); none: every screen shows at once.
+    std::shared_ptr<Fx> fx;
+    // Fonts kept from an earlier run: taken (cleared) when they fit this font blob; else left for the caller.
+    Fonts *fonts = nullptr;
   };
   // After g1::Init. `font`: a font blob (departure_mono_nerd.skf); `changed` runs when visibility changes.
   bool Start(const Config &, std::vector<uint8_t> font, std::function<void()> changed, std::string *error);
   // keep: the program and its last screen stay on the arms, which show them by themselves when the head
-  // looks up (keyer off: the phone lets go); wForce and wPeer are cleared first.
-  void Stop(bool keep = false);
+  // looks up (keyer off: the phone lets go); wForce and wPeer are cleared first. keep_fonts: the fonts stay on
+  // the arms, handed over there, for the next run.
+  void Stop(bool keep = false, Fonts *keep_fonts = nullptr);
   void Show(std::shared_ptr<const Snapshot>); // a new screen, from any thread
+  // The next screen comes with a transition (an Fx style) instead of at once: the arms render it and hold it
+  // until both have it, then it is revealed; with_dash: the dashboard with it (it shows nothing new meanwhile).
+  // A screen pending now is dropped (it is the old one). Before Start: the first screen. Lapses after 4 s.
+  void Reveal(int style, bool with_dash);
+  // A transition's out took the picture away (with the dashboard or not): unless a screen is revealed within
+  // 1.5 s, the last one is drawn again.
+  void Wiped(bool with_dash);
+  // Where the terminal shows on each eye (with the dashboard above it, or not), and its picture on the arms.
+  Fx::Region FxRegion(bool with_dash) const;
+  Fx::Source FxSource(bool with_dash) const;
   void Force(bool on);
   // The dashboard's picture: 4 bpp (the high nibble the left pixel), dash_w() / 2 bytes a row, dash_h() rows.
   // Each arm gets the rows that changed (in its memory); it draws them while the terminal shows, and with it
@@ -105,10 +128,12 @@ private:
   void SyncPeers(int from);
   void Restart(int arm);
   void WriteWord(int arm, int word, uint32_t value);
+  void SetHold(uint32_t hold);
   std::vector<Row> Rows(const Snapshot &);
   std::vector<uint8_t> Encode(const Cell *cells, int n);
   uint32_t Glyph(uint32_t cp);
   bool LoadGlyphs(const std::set<uint32_t> &chars);
+  void Adopt(scouter_kit::Font *font, const std::set<uint32_t> &chars);
   bool Grow();
 
   Geometry geo_{};
@@ -145,6 +170,17 @@ private:
   int64_t inflight_us_ = 0;
   std::array<bool, 2> done_{};
   bool notify_ = false; // visibility changed: call changed_ outside the lock
+  // Transitions: the one asked for (Reveal), and the frame held for it on the arms until both have it.
+  std::shared_ptr<Fx> fx_;
+  int reveal_style_ = 0;
+  bool reveal_dash_ = false;
+  int64_t reveal_until_ = 0;
+  uint32_t held_frame_ = 0;
+  int held_style_ = 0;
+  bool held_dash_ = false;
+  uint32_t hold_sent_ = 0; // wHold as the arms have it
+  int64_t wiped_until_ = 0; // Wiped: when the last screen is drawn again (0: not wiped)
+  bool wiped_dash_ = false;
 
   std::thread thread_;
   std::array<std::thread, 2> event_threads_;

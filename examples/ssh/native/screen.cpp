@@ -24,6 +24,20 @@ constexpr uint32_t kRecordMax = 65536; // the largest record sent; a larger chan
 constexpr uint32_t kHeader = 12;       // due time, frame number, record size
 constexpr int kQueued = 4;             // commands not yet sent on an arm's link: more, and a frame is skipped
 
+std::mutex g_spare_mutex;
+std::function<void()> g_spare; // SetSpare
+
+// Arena for the mirror: what others keep for later first (the terminal's fonts), then every font and picture.
+void Spare() {
+  std::function<void()> release;
+  {
+    std::lock_guard<std::mutex> lock(g_spare_mutex);
+    release = g_spare;
+  }
+  if (release) release();
+  sk::UnloadAll();
+}
+
 void Put32(std::vector<uint8_t> &v, size_t at, uint32_t x) {
   v[at] = uint8_t(x);
   v[at + 1] = uint8_t(x >> 8);
@@ -31,6 +45,11 @@ void Put32(std::vector<uint8_t> &v, size_t at, uint32_t x) {
   v[at + 3] = uint8_t(x >> 24);
 }
 } // namespace
+
+void SetSpare(std::function<void()> release) {
+  std::lock_guard<std::mutex> lock(g_spare_mutex);
+  g_spare = std::move(release);
+}
 
 void Luma(const uint8_t *rgba, int w, int h, int stride, std::vector<uint8_t> *out) {
   out->resize(size_t(w) * h);
@@ -357,7 +376,7 @@ bool ScreenMirror::Path(int levels) {
     pic_ = &sk::gray::CreateBitmap(w_, h_);
     if (!pic_->contents.data) {
       // Fonts or pictures nobody uses now (the terminal has stopped): once more without them.
-      sk::UnloadAll();
+      Spare();
       pic_ = &sk::gray::CreateBitmap(w_, h_);
     }
     if (!pic_->contents.data) {
@@ -387,7 +406,7 @@ bool ScreenMirror::StartVideo() {
   uint32_t size = kCode + v.stride * uint32_t(h_) + g1::kVideoState + 8 + kHeader + kRecordMax;
   v.base = g1::Alloc(size);
   if (v.base < 0) {
-    sk::UnloadAll();
+    Spare();
     v.base = g1::Alloc(size);
   }
   if (v.base < 0) {
@@ -410,6 +429,12 @@ bool ScreenMirror::StartVideo() {
     p.Video(p.Const(v.bitmap), p.Const(v.stride), p.Const(uint32_t(w_)), p.Const(uint32_t(h_)), p.Const(uint32_t(px)),
             p.Const(uint32_t(py)), p.Const(15), p.Const(v.buf + kHeader), g1::ArenaWord(v.buf / 4 + 2), p.Const(v.state));
     p.Ret();
+    // The same with the picture off the panel: only the bitmap changes (a transition reveals it).
+    g1::Address hidden = p.Here();
+    p.SleepUntil(g1::ArenaWord(v.buf / 4));
+    p.Video(p.Const(v.bitmap), p.Const(v.stride), p.Const(uint32_t(w_)), p.Const(uint32_t(h_)), p.Const(640),
+            p.Const(uint32_t(py)), p.Const(15), p.Const(v.buf + kHeader), g1::ArenaWord(v.buf / 4 + 2), p.Const(v.state));
+    p.Ret();
     std::string why;
     if (!p.Valid(&why)) {
       error_ = "the VIDEO code: " + why;
@@ -421,6 +446,7 @@ bool ScreenMirror::StartVideo() {
       return false;
     }
     v.call[size_t(i)] = at;
+    v.hidden[size_t(i)] = hidden;
     v.epochs[size_t(i)] = arm.GetState().epoch_changes;
   }
   v.enc = std::make_unique<g1::VideoEncoder>(w_, h_);
@@ -464,6 +490,8 @@ bool ScreenMirror::SendVideo(size_t max_bytes) {
   // The record's time on the link at about 40 KB/s (2M PHY, short intervals); an arm that gets it later draws it
   // as soon as it is in, so a short lead only costs the eyes' sync on large changes, a long one the frame rate.
   int64_t lead = std::min<int64_t>(v.lead + int64_t(rec.size()) * 1000000 / 40000, 1000000);
+  // A transition asked for: this one decoded off the panel, then revealed from the bitmap.
+  bool reveal = reveal_style_ && fx_ && g1::NowUs() < reveal_until_;
   std::vector<uint8_t> msg(kHeader + rec.size());
   Put32(msg, 4, v.k);
   Put32(msg, 8, uint32_t(rec.size()));
@@ -473,8 +501,14 @@ bool ScreenMirror::SendVideo(size_t max_bytes) {
     if (!arm.GetState().present) continue;
     Put32(msg, 0, arm.DeviceTime(lead));
     arm.WriteArena(v.buf, msg);
-    arm.Call(v.call[size_t(i)]);
+    arm.Call(reveal ? v.hidden[size_t(i)] : v.call[size_t(i)]);
   }
+  if (reveal) {
+    // The decode takes up to about 40 ms for a whole picture (VM.md §3.7).
+    fx_->In(Fx::Style(reveal_style_), Region(), Fx::Source{v.bitmap, v.stride, 1}, g1::NowUs() + lead + 40000);
+    LOG("screen: revealed (%d)", reveal_style_);
+  }
+  reveal_style_ = 0;
   v.redraw = false;
   v.k++;
   v.sent = int(msg.size());
@@ -493,6 +527,39 @@ void ScreenMirror::Count(int bytes, int detail) {
     window_us_ = now;
     window_bytes_ = 0;
   }
+}
+
+void ScreenMirror::Reveal(int style, std::shared_ptr<Fx> fx) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  reveal_style_ = style;
+  fx_ = std::move(fx);
+  reveal_until_ = g1::NowUs() + 4000000;
+}
+
+void ScreenMirror::Wiped() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  prev_.clear();
+  last_base_.clear();
+  video_.redraw = true;
+  if (levels_ == 16 && pic_) { // the library's picture of the display: black, so the next frame goes whole
+    sk::gray::Clear();
+    sk::Flush();
+  }
+}
+
+Fx::Region ScreenMirror::FxRegion() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return Region();
+}
+
+// mutex_ held.
+Fx::Region ScreenMirror::Region() const {
+  Fx::Region r;
+  r.w = w_;
+  r.h = h_;
+  r.at[0] = {x_ - std::max(0, -dx_), y_ + std::max(0, -dy_)};
+  r.at[1] = {x_ - std::max(0, dx_), y_ + std::max(0, dy_)};
+  return r;
 }
 
 ScreenMirror::Stats ScreenMirror::stats() {
@@ -652,7 +719,8 @@ int ScreenMirror::Frame(const uint8_t *rgba, int w, int h, int stride, const Scr
     return kBusy;
   }
 
-  // Greys: the library uploads the changed pixels (4 bits each).
+  // Greys: the library uploads the changed pixels (4 bits each); a transition's reveal is left out.
+  reveal_style_ = 0;
   int n = std::clamp(o.detail, 1, 4);
   Finish(base_, w_, c, o, n, &frame_);
   if (o.steady && o.levels != 4 && o.levels != 8 && prev_.size() == frame_.size())

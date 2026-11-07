@@ -292,6 +292,70 @@ int main(int argc, char **argv) {
   dashed.SetDash(pic); // cleared while shown
   CHECK(WaitFor([&] { return lit_in(0, x + 10, dy0 + 20, x + 110, dy0 + 60) == 0; }));
   dashed.Stop();
+
+  // Transitions (Fx): a terminal that starts with one shows its first screen (with the dashboard) through the
+  // reveal; then a switch reveals the next screen (the terminal only, the dashboard staying). Afterwards both
+  // eyes hold exactly what the terminal would have drawn.
+  auto fx = std::make_shared<ssh::Fx>();
+  CHECK(fx->Start(&error));
+  ssh::GlassesTerminal::Config fc{100, 9, 20, true};
+  fc.dash_h = 80;
+  fc.fx = fx;
+  ssh::GlassesTerminal moving;
+  moving.Reveal(ssh::Fx::kDown, true); // before Start: its first screen
+  CHECK(moving.Start(fc, font, [] {}, &error));
+  for (int yy = 20; yy < 60; yy++)
+    for (int xx = 10; xx < 110; xx++) pic[size_t(yy) * (dw / 2) + xx / 2] |= uint8_t(xx % 2 ? 0x0F : 0xF0);
+  moving.SetDash(pic);
+  moving.Show(Screen(77, drows, "revealed"));
+  int64_t sent = fx->busy_until();
+  moving.Force(true);
+  CHECK(WaitFor([&] { return fx->busy_until() != sent; }));
+  CHECK(WaitFor([&] { return g1::NowUs() > fx->busy_until() + 150000; }));
+  CHECK(lit_in(0, x + 10, dy0 + 20, x + 110, dy0 + 60) == 4000); // the dashboard came with it
+  CHECK(SameArea(x, dy0, x - 100, dy0 + 9, dw, 80 + drows * 14));
+  std::string mcheck = moving.Check();
+  if (mcheck.rfind("ok", 0) != 0) std::printf("revealed: %s", mcheck.c_str());
+  CHECK(mcheck.rfind("ok", 0) == 0);
+  sent = fx->busy_until();
+  fx->Out(ssh::Fx::kRight, moving.FxRegion(false));
+  moving.Reveal(ssh::Fx::kRight, false);
+  moving.Show(Screen(77, drows, "the next one, with more text on its first row"));
+  CHECK(WaitFor([&] { return fx->busy_until() != sent; }));
+  sent = fx->busy_until();
+  CHECK(WaitFor([&] { return fx->busy_until() != sent; })); // the out, then the reveal
+  CHECK(WaitFor([&] { return g1::NowUs() > fx->busy_until() + 150000; }));
+  mcheck = moving.Check();
+  if (mcheck.rfind("ok", 0) != 0) std::printf("switched: %s", mcheck.c_str());
+  CHECK(mcheck.rfind("ok", 0) == 0);
+  CHECK(SameArea(x, dy0, x - 100, dy0 + 9, dw, 80 + drows * 14));
+  CHECK(lit_in(0, x + 10, dy0 + 20, x + 110, dy0 + 60) == 4000); // the dashboard stayed
+  // Afterwards a screen draws at once again.
+  moving.Show(Screen(77, drows, "at once"));
+  std::this_thread::sleep_for(std::chrono::milliseconds(400));
+  mcheck = moving.Check();
+  CHECK(mcheck.rfind("ok", 0) == 0);
+  // Its fonts kept on the arms (a screen shows meanwhile): the next run takes them and uploads none, and
+  // draws as before.
+  ssh::GlassesTerminal::Fonts kept;
+  moving.Stop(false, &kept);
+  CHECK(kept.font && kept.batt && !kept.loaded.empty());
+  int free_kept = scouter_kit::free_memory;
+  ssh::GlassesTerminal again;
+  fc.fonts = &kept;
+  fc.fx = nullptr;
+  CHECK(again.Start(fc, font, [] {}, &error));
+  CHECK(!kept.font && !kept.batt); // taken
+  again.Show(Screen(77, drows, "fonts kept"));
+  again.Force(true);
+  CHECK(WaitFor([&] { return again.Shown() && PanelProp(0) != 0; }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(600));
+  std::string kcheck = again.Check();
+  if (kcheck.rfind("ok", 0) != 0) std::printf("fonts kept: %s", kcheck.c_str());
+  CHECK(kcheck.rfind("ok", 0) == 0);
+  CHECK(free_kept - scouter_kit::free_memory < 160000); // the layout only (about 145 KB): no second font (27 KB)
+  again.Stop();
+  fx->Stop();
   g1::Deinit();
   std::printf("%s (%d failures)\n", failures ? "FAILED" : "all tests passed", failures);
   return failures ? 1 : 0;

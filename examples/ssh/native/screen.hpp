@@ -2,12 +2,14 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 
 #include "base/scouter_kit.hpp"
+#include "fx.hpp"
 #include "g1/scouter_kit_g1.hpp"
 
 namespace ssh {
@@ -44,6 +46,10 @@ struct ScreenOptions {
   // and height; -1: none. Drawn on the phone's picture first, so it follows rotate, zoom and pan.
   int cursor_x = -1, cursor_y = -1;
 };
+
+// What the mirror may take back when the arms' arena runs short (the terminal's kept fonts): called, with no lock
+// of the mirror's held, before it unloads every font and picture as a last resort.
+void SetSpare(std::function<void()> release);
 
 // The pointer (o.cursor_*) drawn on a w x h luma picture that becomes a pw x ph one on the glasses.
 void Cursor(std::vector<uint8_t> *luma, int w, int h, const ScreenOptions &o, int pw, int ph);
@@ -119,6 +125,13 @@ public:
   int frames();
   // Why the panels are off, or empty: "in the case" or "folded"; or the last error.
   std::string why();
+  // The next picture comes with a transition (an Fx style): decoded on the arms without drawing, then revealed
+  // (the black and white path; 16 greys show at once). Lapses after 4 s.
+  void Reveal(int style, std::shared_ptr<Fx> fx);
+  // A transition's out took the picture away: the next frame is sent whole (also an unchanged one).
+  void Wiped();
+  // Where the picture shows on each eye (after Start).
+  Fx::Region FxRegion();
 
   // What was sent: frames, the last frame's bytes, bytes a second (over about 2 s), the last detail, frames
   // skipped while the link was busy, the picture's w, h, x, y, the path's levels (0 none), panels off (1).
@@ -141,6 +154,7 @@ private:
   bool StartVideo();
   int VideoReady();                                    // kShown when a record may go, else kBusy or kSame
   bool SendVideo(size_t max_bytes);                    // frame_ as a record: false when larger than max_bytes
+  Fx::Region Region() const;
   void Count(int bytes, int detail);
 
   std::mutex mutex_;
@@ -157,6 +171,9 @@ private:
   std::string hide_why_, error_;
   int frames_ = 0;
   int seen_ = 0; // frames handed in
+  std::shared_ptr<Fx> fx_; // a transition asked for (Reveal)
+  int reveal_style_ = 0;
+  int64_t reveal_until_ = 0;
   Stats stats_;
   int64_t window_us_ = 0;
   int window_bytes_ = 0;
@@ -165,7 +182,7 @@ private:
   struct Video {
     int64_t base = -1;
     uint32_t code = 0, bitmap = 0, state = 0, buf = 0, stride = 0, size = 0;
-    std::array<uint32_t, 2> call{}, epochs{};
+    std::array<uint32_t, 2> call{}, hidden{}, epochs{}; // hidden: decodes without drawing (for a reveal)
     std::unique_ptr<scouter_kit::g1::VideoEncoder> enc;
     std::vector<uint8_t> pix;
     uint32_t k = 0;

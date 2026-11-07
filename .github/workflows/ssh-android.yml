@@ -61,12 +61,12 @@ jobs:
       - name: Speech engine for voice commands (sherpa-onnx 1.13.8, checked by SHA-256)
         run: examples/ssh/native/third_party/fetch_sherpa.sh examples/ssh/native/third_party/sherpa
 
-      - name: Native host tests (screen mirror and terminal on emulated arms, keys)
+      - name: Native host tests (screen mirror, terminal and transitions on emulated arms, keys)
         working-directory: examples/ssh
         run: |
           cmake -S native -B /tmp/host -G Ninja -DTHIRD_PARTY_DIR="$PWD/native/third_party/out" > /dev/null
           cmake --build /tmp/host
-          ctest --test-dir /tmp/host --output-on-failure -R '^(screen|terminal|keys)$'
+          ctest --test-dir /tmp/host --output-on-failure -R '^(screen|terminal|keys|fx)$'
 
       - name: mosh client test (informational)
         continue-on-error: true

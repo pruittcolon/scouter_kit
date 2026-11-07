@@ -198,6 +198,25 @@ int main() {
   CHECK(WaitFor([&] { return m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown; }, 10000));
   CHECK(WaitFor([] { return Lit(1, 300, 209, 380, 289) == 0 && Lit(1, 0, 9, 80, 89) > 5500; }));
 
+  // A transition: the old picture goes (out), the next one is decoded off the panel and revealed from the
+  // bitmap: the square at its new place on both eyes, nothing else lit; the frame after it draws at once.
+  auto fx = std::make_shared<ssh::Fx>();
+  CHECK(fx->Start(&error));
+  fx->Out(ssh::Fx::kRight, m.FxRegion());
+  m.Reveal(ssh::Fx::kRight, fx);
+  phone = Phone(540, 471, 300, 200, 80, 80, stride);
+  CHECK(WaitFor([&] { return m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown; }, 10000));
+  int64_t until = fx->busy_until();
+  CHECK(until > g1::NowUs());
+  CHECK(WaitFor([&] { return g1::NowUs() > until + 150000; }));
+  CHECK(Lit(0, 400, 200, 480, 280) > 5500 && Lit(1, 300, 209, 380, 289) > 5500);
+  CHECK(Lit(1, 0, 9, 80, 89) == 0);
+  CHECK(Lit(0) - Lit(0, 400, 200, 480, 280) < 400 && Lit(1) - Lit(1, 300, 209, 380, 289) < 400);
+  phone = Phone(540, 471, 0, 0, 80, 80, stride);
+  CHECK(WaitFor([&] { return m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown; }, 10000));
+  CHECK(WaitFor([] { return Lit(1, 300, 209, 380, 289) == 0 && Lit(1, 0, 9, 80, 89) > 5500; }));
+  CHECK(fx->busy_until() == until); // no reveal for it
+
   // Auto detail: noise does not fit a 1 KB budget at every pixel, so it goes coarser (kLater, sent at a coarser
   // detail); the same frame again (nothing moved) goes at every pixel.
   opt.detail = 0;
@@ -272,6 +291,7 @@ int main() {
   }
 
   m.Stop();
+  fx->Stop();
   CHECK(WaitFor([] { return Lit(0) == 0 && Lit(1) == 0; }));
   CHECK(m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kStopped);
   g1::Deinit();

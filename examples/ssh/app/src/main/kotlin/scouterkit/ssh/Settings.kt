@@ -123,6 +123,16 @@ class Settings(context: Context) {
     // The look-up view (LookUp): the fade when the terminal comes and goes (ms, 0: none), and the header above the
     // terminal with the time, date and batteries, and the newest phone notification.
     var fadeMs: Int by Number("fade_ms", 400)
+    // A trackpad (a mouse, a Bluetooth keyboard's touchpad) drives the glasses' pointer while they show the terminal,
+    // and how fast (1 ... 10).
+    var trackpad: Boolean
+        get() = prefs.getBoolean("trackpad", true)
+        set(v) = prefs.edit().putBoolean("trackpad", v).apply()
+    var trackpadSpeed: Int by Number("trackpad_speed", 5)
+    // Transitions on the glasses when the source changes (Fx.kt).
+    var animations: Boolean
+        get() = prefs.getBoolean("animations", true)
+        set(v) = prefs.edit().putBoolean("animations", v).apply()
     // The graphical dashboard above the terminal (Dashboard) instead of the header's text lines, and its height.
     var dashboard: Boolean
         get() = prefs.getBoolean("dashboard", true)

@@ -110,7 +110,10 @@ class ScouterService : Service() {
                 if (r.images > 0 && chosen() == r.key) {
                     remoteTries = 0
                     remoteWhy = ""
-                    if (settings.show != Settings.SCREEN) render(Settings.SCREEN)
+                    if (settings.show != Settings.SCREEN) {
+                        transition(if (fxKey == r.key && fxStyle != Fx.NONE) fxStyle else Fx.JUMP, r.key)
+                        render(Settings.SCREEN)
+                    }
                 }
             }
             val remoteShown = Session.screenSource.startsWith("screen:")
@@ -214,6 +217,7 @@ class ScouterService : Service() {
         Native.onChanged = { work.post { poll() } }
         Native.onGesture = { a, g -> work.post { gesture(a, g) } }
         VoxKeys.onMouse = { x, y -> mouse(x, y) }
+        VoxKeys.onTrackpad = { kind, dx, dy -> work.post { trackpad(kind, dx, dy) } }
         LookUp.onChange = { work.post { header() } }
         work.post(headerTick)
         work.postDelayed(tabPoll, 5000)
@@ -279,7 +283,8 @@ class ScouterService : Service() {
             // ... or the phone's screen again, while it is shared.
             ACTION_VIEW_SCREEN -> work.post { source(Settings.PHONE) }
             // A source (Settings.sources), or next / prev: the app's buttons, shortcuts, the tile.
-            ACTION_SOURCE -> work.post { source(intent.getStringExtra(Shortcuts.EXTRA) ?: "") }
+            // extra "fx": how it was asked for (an arrow: "left", "right", "up", "down"), for its transition.
+            ACTION_SOURCE -> work.post { source(intent.getStringExtra(Shortcuts.EXTRA) ?: "", intent.getStringExtra("fx")) }
             ACTION_STOP_SHARING -> work.post { screenEnded("off") }
             // The display off / on (the notification, the Quick Settings tile, the app): extra "on" true/false,
             // absent: the other way.
@@ -296,6 +301,7 @@ class ScouterService : Service() {
             ACTION_TABS -> work.post { tabs(intent.getStringExtra("tab").orEmpty()) }
             // The look-up view's settings changed: the header and the fade again.
             ACTION_LOOK_UP -> work.post {
+                Native.fxEnabled(settings.animations)
                 Native.terminalFade(settings.fadeMs)
                 Native.terminalDash(settings.dashRows)
                 header()
@@ -355,6 +361,8 @@ class ScouterService : Service() {
         Session.showing = ""
         Native.onGesture = null
         VoxKeys.onMouse = null
+        VoxKeys.onTrackpad = null
+        VoxKeys.capture(false)
         work.removeCallbacks(batteryTicker)
         runCatching { unregisterReceiver(lock) }
         runCatching { unregisterReceiver(bonds) }
@@ -527,6 +535,7 @@ class ScouterService : Service() {
             { why -> work.post { lostGlasses(why) } })
         val font = assets.open("departure_mono_nerd.skf").use { it.readBytes() }
         Native.terminalMargins(settings.termTop, settings.termBottom)
+        Native.fxEnabled(settings.animations)
         Native.terminalFade(settings.fadeMs)
         Native.terminalDash(settings.dashRows)
         Native.lookUpHeader(LookUp.lines(this, settings))
@@ -905,7 +914,73 @@ class ScouterService : Service() {
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "scouter:terminal").apply { acquire() }
         if (!live) wake?.release().also { wake = null }
         if (!ended) getSystemService(NotificationManager::class.java).notify(NOTIFICATION, notification())
+        trackpadMode()
         Session.changed()
+    }
+
+    // ------------------------------------------------ the trackpad
+
+    // A trackpad or mouse paired with the phone: taken for the glasses' pointer while they show the terminal (or a
+    // card) and the user sees it; otherwise it is the phone's own pointer (on the phone's screen the glasses draw
+    // where it is).
+    private fun trackpadMode() {
+        VoxKeys.capture(!ended && settings.trackpad && glassesWith != null && !Session.blank &&
+            settings.show == Settings.TERMINAL && Session.shown)
+    }
+
+    private var glideX = 0f
+    private var glideY = 0f
+    private var glideBar = false // the pointer was on the dashboard at the last glide
+    private var swipe = 0f
+
+    // The trackpad's motion: the pointer glides a cell at a time in the terminal (fractions kept, faster strokes go
+    // further) and a place at a time on the dashboard; a tap clicks, a right click (two fingers) right-clicks, the
+    // wheel and two-finger swipes scroll. A click while the pointer is off only shows it.
+    private fun trackpad(kind: Int, dx: Float, dy: Float) {
+        when (kind) {
+            VoxKeys.Trackpad.MOVE -> glide(dx, dy)
+            VoxKeys.Trackpad.CLICK, VoxKeys.Trackpad.RIGHT -> {
+                if (!Session.pointer) return pointer("toggle")
+                pointer(if (kind == VoxKeys.Trackpad.RIGHT) "right" else "click")
+            }
+            VoxKeys.Trackpad.WHEEL -> repeat(minOf(5, kotlin.math.abs(dy).toInt().coerceAtLeast(1))) {
+                pointer(if (dy > 0) "up" else "down")
+            }
+            VoxKeys.Trackpad.SCROLL -> {
+                swipe += dy
+                val step = 28f
+                while (kotlin.math.abs(swipe) >= step) {
+                    pointer(if (swipe > 0) "up" else "down")
+                    swipe -= if (swipe > 0) step else -step
+                }
+            }
+        }
+    }
+
+    private fun glide(dx: Float, dy: Float) {
+        val onBar = pointerBar >= 0
+        if (onBar != glideBar) {
+            glideBar = onBar
+            glideX = 0f
+            glideY = 0f
+        }
+        // Speed: the setting, and a little acceleration for quick strokes.
+        val v = kotlin.math.hypot(dx, dy)
+        val k = settings.trackpadSpeed.coerceIn(1, 10) / 5f * (1f + minOf(1.5f, v / 40f))
+        glideX += dx * k
+        glideY += dy * k
+        // A cell is about 6 x 12 trackpad pixels; a place on the dashboard 30 across, 20 down.
+        val (sx, sy) = if (onBar) 30f to 20f else 6f to 12f
+        val cx = (glideX / sx).toInt()
+        val cy = (glideY / sy).toInt()
+        if (cx == 0 && cy == 0) return
+        glideX -= cx * sx
+        glideY -= cy * sy
+        if (onBar) {
+            // One place at a time, rows first (a diagonal stroke goes where it mostly points).
+            if (cy != 0 && kotlin.math.abs(cy) * sy >= kotlin.math.abs(cx) * sx) pointer("move:0:${if (cy > 0) 1 else -1}")
+            else if (cx != 0) repeat(minOf(3, kotlin.math.abs(cx))) { pointer("move:${if (cx > 0) 1 else -1}:0") }
+        } else pointer("move:$cx:$cy")
     }
 
     private fun stateLine(): String {
@@ -983,24 +1058,59 @@ class ScouterService : Service() {
     // A source on the glasses (Settings.sources): "term:ID" (that saved server's terminal), PHONE (the phone's
     // screen), "screen:ID" (that server's screen over SSH), or next / prev through them (skipping the phone's
     // screen while it is not shared).
-    private fun source(want: String) {
+    // how: the way it was asked for (an arrow, next / prev; else a jump), for the transition on the glasses.
+    private fun source(want: String, how: String? = null) {
         val key = if (want == Settings.ACTION_NEXT || want == Settings.ACTION_PREV) {
             val all = settings.sources().map { it.first }.filter { it != Settings.PHONE || screen != null }
             if (all.isEmpty()) return
             val i = all.indexOf(chosen())
             all[Math.floorMod(if (i < 0) 0 else i + if (want == Settings.ACTION_NEXT) 1 else -1, all.size)]
         } else want
-        choose(key)
+        choose(key, Fx.style(how ?: want))
+    }
+
+    // ------------------------------------------------ transitions
+
+    // The glasses go to `key` with the style's transition (Fx.kt): what shows goes now, a label says where to,
+    // and the next picture comes in. Nothing while the display is off or the glasses are not up.
+    private var fxStyle = Fx.NONE // the last switch's, for a server's screen that shows once its first image comes
+    private var fxKey = ""
+    private fun transition(style: Int, key: String, now: Boolean = false, label: Pair<String, String>? = null) {
+        if (!settings.animations || style == Fx.NONE || Session.blank || glassesWith == null) return
+        val toTerminal = when {
+            key.startsWith("term:") -> true
+            key == Settings.PHONE -> screen == null // not shared: its card
+            key.startsWith("screen:") -> remote?.key != key || (remote?.images ?: 0) == 0 // its card until an image
+            else -> true
+        }
+        val (name, kind) = label ?: fxLabel(key)
+        val l = Fx.label(name, kind)
+        Native.transition(style, l.packed, l.w, l.h, toTerminal, now)
+        fxStyle = style
+        fxKey = key
+    }
+
+    private fun fxLabel(key: String): Pair<String, String> {
+        val id = key.substringAfter(':')
+        val server = settings.servers().firstOrNull { it.id == id }
+        return when {
+            key == Settings.PHONE -> "Phone" to "screen"
+            key.startsWith("screen:") -> (server?.name ?: "Screen") to "screen"
+            else -> (server?.name ?: "Terminal") to "terminal"
+        }
     }
 
     // The user's choice (Settings.source): kept until they choose another. One that cannot show yet (a server
     // that does not answer, the phone's screen not shared) shows its card; nothing switches by itself.
-    private fun choose(key: String) {
+    private fun choose(key: String, style: Int = Fx.JUMP) {
         settings.phone = true
+        val from = chosen()
+        val fx = if (key != from || (key == Settings.PHONE && screen != null && settings.show != Settings.SCREEN)) style else Fx.NONE
         when {
             key.startsWith("term:") -> {
                 val id = key.removePrefix("term:")
                 if (settings.servers().none { it.id == id }) return
+                transition(fx, key)
                 if (settings.activeServer != id || settings.host.isEmpty()) settings.useServer(id)
                 // Chosen again: a failed one is tried at once, a silent one starts anew.
                 terms[id]?.let { if (it.status.startsWith("error")) it.retryAt = 0L else if (it.status.startsWith("no contact")) dropTerm(it) }
@@ -1011,9 +1121,10 @@ class ScouterService : Service() {
                 render(Settings.TERMINAL)
             }
             key == Settings.PHONE -> {
+                stopRemote() // first: no more of the server's pictures (one of them would come in with it)
+                transition(fx, key)
                 settings.source = key
                 lastScreen = key
-                stopRemote()
                 if (screen == null) {
                     update(screen = "not shared: tap Phone screen in the app")
                     render(Settings.TERMINAL) // its card
@@ -1024,6 +1135,7 @@ class ScouterService : Service() {
             }
             key.startsWith("screen:") -> {
                 val s = settings.servers().firstOrNull { it.id == key.removePrefix("screen:") } ?: return
+                transition(fx, key)
                 closed.remove(key)
                 settings.source = key
                 lastScreen = key
@@ -1230,7 +1342,7 @@ class ScouterService : Service() {
             startActivity(Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_SHARE, true)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }.onFailure { Log.w(TAG, "share: ${it.message}") }
-        choose(Settings.PHONE)
+        choose(Settings.PHONE, Fx.DOWN)
     }
 
     // ------------------------------------------------ notifications
@@ -1456,6 +1568,7 @@ class ScouterService : Service() {
             return
         }
         val cmd = Tabs.command(action, session) ?: return
+        tabTransition(action, s)
         Thread {
             val r = runCatching { Bootstrap(vault).runShared(s.host, s.port, s.user, cmd) }
             work.post {
@@ -1464,6 +1577,38 @@ class ScouterService : Service() {
                 fetchTabs() // the dashboard's tab bar at once
             }
         }.start()
+    }
+
+    // A tab change on the glasses: a quick stream toward the tab it goes to (its name on the label); the terminal's
+    // next screen (tmux's redraw) comes in with it.
+    private fun tabTransition(action: String, s: Settings.Server) {
+        if (settings.show != Settings.TERMINAL || chosen() != "term:${s.id}") return
+        val list = Session.tabList
+        val at = list.indexOfFirst { it.active }
+        val target = when {
+            action == "next" -> if (list.isEmpty()) null else list[Math.floorMod(at + 1, list.size)]
+            action == "prev" -> if (list.isEmpty()) null else list[Math.floorMod(at - 1, list.size)]
+            action.startsWith("select:") -> list.firstOrNull { it.index.toString() == action.removePrefix("select:") }
+            else -> null
+        }
+        val active = list.getOrNull(at)
+        val style = when {
+            action == "new" || action == "claude" || action == "cursor" -> Fx.TAB_RIGHT
+            action == "next" -> Fx.TAB_RIGHT
+            action == "prev" -> Fx.TAB_LEFT
+            // Closing the tab shown: tmux shows another.
+            action == "close" || (action.startsWith("close:") && active != null && action == "close:${active.index}") -> Fx.TAB_LEFT
+            target != null && active != null && target.index != active.index ->
+                if (list.indexOf(target) > at) Fx.TAB_RIGHT else Fx.TAB_LEFT
+            else -> Fx.NONE
+        }
+        val label = when {
+            action == "new" -> "New tab" to s.name
+            action == "claude" || action == "cursor" -> action.replaceFirstChar { it.uppercase() } to s.name
+            target != null -> "${target.index} ${target.name}" to s.name
+            else -> s.name to "tab"
+        }
+        transition(style, "term:${s.id}", now = true, label = label)
     }
 
     // ------------------------------------------------ the look-up header
@@ -1713,6 +1858,9 @@ class ScouterService : Service() {
     // The display on or off; why: for the status line.
     private fun display(on: Boolean, why: String) {
         if (!on == Session.blank) return
+        // A CRT switching off (the picture closes to a line, then a dot) or on (it opens from the middle).
+        if (settings.animations && glassesWith != null)
+            Native.transition(if (on) Fx.ON else Fx.OFF, null, 0, 0, settings.show != Settings.SCREEN, false)
         Session.blank = !on
         if (on) blankByLock = false
         Native.blank(!on)
@@ -1760,8 +1908,8 @@ class ScouterService : Service() {
             }
             // The terminal and the screen last chosen, one then the other.
             Settings.ACTION_VIEW -> if (chosen().startsWith("term:")) {
-                lastScreen.ifEmpty { if (screen != null) Settings.PHONE else "" }.takeIf { it.isNotEmpty() }?.let { choose(it) }
-            } else settings.active()?.let { choose("term:${it.id}") }
+                lastScreen.ifEmpty { if (screen != null) Settings.PHONE else "" }.takeIf { it.isNotEmpty() }?.let { choose(it, Fx.DOWN) }
+            } else settings.active()?.let { choose("term:${it.id}", Fx.UP) }
             Settings.ACTION_NEXT, Settings.ACTION_PREV -> source(action)
             Settings.ACTION_LISTEN -> listen(true)
             Settings.ACTION_TAB_NEXT -> tabs("next")
@@ -1890,7 +2038,7 @@ class ScouterService : Service() {
 
         // Never without Bluetooth permission (Settings asks for it), nor with Bluetooth off (a running service
         // ends by itself then).
-        fun send(context: Context, action: String? = null, extra: Pair<String, String>? = null) {
+        fun send(context: Context, action: String? = null, vararg extras: Pair<String, String>) {
             if (!bluetooth(context)) {
                 Log.w(TAG, "no Bluetooth permission: the service waits for Settings")
                 return
@@ -1900,7 +2048,7 @@ class ScouterService : Service() {
                 return
             }
             val intent = Intent(context, ScouterService::class.java).setAction(action)
-            extra?.let { intent.putExtra(it.first, it.second) }
+            for ((k, v) in extras) intent.putExtra(k, v)
             context.startForegroundService(intent)
         }
 

@@ -102,6 +102,24 @@ glasses, the saved servers) and **Settings**.
   there (looked for in `~/.local/bin`, `~/bin` and `/usr/local/bin` too), which must write baseline JPEG images one after another to stdout (each the whole desktop inside
   WIDTH x HEIGHT) until stdout closes. They go through the same pipeline as the phone's screen. The width asked
   for is on the Screen tab (640, 960, 1280).
+- **Transitions** (*Transitions*, Terminal tab, on by default; `native/fx.hpp`, `Fx.kt`): a switch plays on the
+  glasses in about half a second. The old picture goes the moment it is asked for (about 0.15 s), a label says
+  where the glasses are going ("LAPTOP // TERMINAL"), and the new picture comes in once its pixels are on the
+  arms (about 0.3 s). Each way of switching has its own: Alt+Left / Right (and next / previous) a data stream, a
+  neon edge in staggered bands from that side with shards of the new picture flying ahead of it; Alt+Up / Down a
+  CRT scan line with its glow from the top or the bottom, with interference lines ahead; a jump (Alt+1 ... 9, a
+  click on the dashboard, voice, a shortcut) tiles that decrypt in a random order; the tabs a quicker stream
+  toward the tab they go to; the display a CRT switching off (to a line, then a dot) and on (opening from the
+  middle). Between two terminals only the terminal moves: the dashboard stays, like a task bar.
+  How: the phone plans each animation as a list of drawing steps (8 bytes each: copy a rectangle of the new
+  picture, a black or bright bar, a neon edge's levels, the label), and stored code on each arm runs it in a host
+  packet, a frame every 22 or 28 ms from a due time both eyes share, so it is as smooth as the panel whatever the
+  link does and both eyes draw the same steps. The new picture is the terminal's area (its next screen held:
+  rendered, not drawn, until both arms have it; `wHold`) or the screen mirror's 1-bpp bitmap (its next frame
+  decoded off the panel). The 16-grey screen path shows at once after the out. If no picture comes for a switch,
+  the last one is drawn again after a while.
+- **Coming back to the terminal** from a screen or with the display on again starts its program anew but keeps its
+  fonts on the arms meanwhile (27 KB that would take about a second to send again).
 
 ## The look-up view
 
@@ -149,10 +167,15 @@ glasses, the saved servers) and **Settings**.
   middle, to click through and type. A right click on one with its own Reply (messages) writes a quick reply on
   the dashboard instead: typed (VoxKeys takes the keys meanwhile) or said (Alt+Space), Enter sends it through the
   notification (Android's RemoteInput), Escape cancels.
-- **A mouse or a keyboard's trackpad** paired with the phone moves Android's own pointer and clicks as always;
-  VoxKeys only watches it (Android 15+: observed motion event sources, never taken) and the glasses draw the
-  cursor where it is while they show the phone's screen. With the pointer on, typing goes to the phone's app:
-  Space, and Enter once something was typed; an arrow key makes the keys the cursor's again.
+- **A mouse or a keyboard's trackpad** paired with the phone (*Keyboard trackpad on the glasses*, Terminal tab, on
+  by default; VoxKeys, Android 15+): while the glasses show the terminal (or a card) and it shows on an eye, VoxKeys
+  takes the trackpad's events from the phone's apps and they drive the glasses' pointer: it glides a cell at a time
+  (fractions kept, quicker strokes go further; *Trackpad speed*), goes up onto the dashboard and there a place at a
+  time (tabs, +, PHONE, the notifications), a tap or click clicks, a two-finger tap (the secondary button)
+  right-clicks, the wheel and two-finger swipes scroll; a click while the pointer is off only shows it. On the
+  phone's screen it is Android's own pointer again, which clicks as always, and the glasses draw the cursor where
+  it is. With the pointer on, typing goes to the phone's app: Space, and Enter once something was typed; an arrow
+  key makes the keys the cursor's again.
 - **Closing**: Alt+Q closes the source shown (a terminal's connection, the phone's sharing, a server's screen) and
   the glasses go to the next one still open; a closed one stays closed until it is chosen again.
 - **Look-up only**: the left TouchBar held 3 s turns *Always visible* off (the glasses show when looking up);

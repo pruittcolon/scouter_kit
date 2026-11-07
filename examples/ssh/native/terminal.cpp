@@ -25,9 +25,11 @@ namespace ssh {
 namespace {
 
 // State words from Layout::state. The host writes wTop ... wBattFont with each frame, wForce and wPeer.
+// wHold: the host holds the frames for a transition (0 none, 1 the terminal, 2 with the dashboard): they are
+// rendered, not drawn, and the dashboard (2) waits too; the host reveals them (Fx).
 enum {
   wTop, wFull, wCurSlot, wCurX, wShowAt, wFrame, wFont, wBattFont, wNext, wShown, wForce, wPeer, wHideAt, wUp,
-  kStateWords
+  wHold, kStateWords
 };
 
 constexpr int kRecordBytes = 512; // u8 runs; each u8 x, u8 cells, u8 bg<<4|fg, u8 1: underline, u8 n, n varint bytes
@@ -186,17 +188,18 @@ int BattY(const GlassesTerminal::Geometry &g) {
   return std::clamp((480 - g.bh) / 2, g.y, std::max(g.y, g.y + g.rows * g.ch - g.bh));
 }
 
+// The dashboard's picture right above the terminal's area (one bitmap with it, for the transitions).
 GlassesTerminal::Layout MakeLayout(uint32_t base, const GlassesTerminal::Geometry &g, int dash_h) {
   GlassesTerminal::Layout l;
   l.base = base;
   l.state = base + kCodeBytes;
   l.dirty = l.state + 4 * kStateWords;
   l.ring = l.dirty + uint32_t((g.rows + 3) & ~3);
-  l.area = l.ring + uint32_t(g.rows * kRecordBytes);
+  l.dash = l.ring + uint32_t(g.rows * kRecordBytes);
+  l.area = l.dash + uint32_t(g.W() / 2 * dash_h);
   l.batt = l.area + uint32_t(g.W() / 2 * g.rows * g.ch);
   l.batt_text = l.batt + uint32_t(g.bw / 2 * g.bh); // 3 digits and %
-  l.dash = l.batt_text + 4;
-  l.end = l.dash + uint32_t(g.W() / 2 * dash_h);
+  l.end = l.batt_text + 4;
   return l;
 }
 
@@ -213,7 +216,7 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   auto w = [&](int i) { return ArenaWord(l.state / 4 + i); };
   ArenaWord top = w(wTop), full = w(wFull), cur_slot = w(wCurSlot), cur_x = w(wCurX), show_at = w(wShowAt),
             frame = w(wFrame), font = w(wFont), batt_font = w(wBattFont), next = w(wNext), shown = w(wShown),
-            force = w(wForce), peer = w(wPeer), hide_at = w(wHideAt), up = w(wUp);
+            force = w(wForce), peer = w(wPeer), hide_at = w(wHideAt), up = w(wUp), hold = w(wHold);
   ArenaWord area = c(l.area), stride = n(g.W() / 2);
   ArenaWord pitch = c(g1::PROP_PITCH), lo = c(g1::PROP_PITCH_LO), hi = c(g1::PROP_PITCH_HI);
   ArenaWord time_us = c(g1::PROP_TIME_US), timer = c(g1::PROP_TIMER), panel = c(g1::PROP_PANEL);
@@ -350,19 +353,34 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.SysWrite(lo, n(-90));
   p.SysWrite(hi, n(angle - 1));
   p.Ret();
+  // Held for a transition: the panel only comes on (black, unless the panel policy keeps it off), without the
+  // fade; the host's reveal draws the picture.
+  auto held_show = p.NewLabel(), shown_now = p.NewLabel(), no_fade = p.NewLabel();
   p.Bind(show);
   p.Bne(shown, c(0), on_panel);
+  p.Bne(hold, c(0), held_show);
   if (fade_us > 0) { // the panel comes on dark (BRIGHTNESS is applied at power-on)
     p.SysRead(R(10), bright);
     p.SysWrite(bright, c(0));
   }
   p.Call(draw_all);
   p.Call(dash);
+  p.Jmp(shown_now);
+  p.Bind(held_show);
+  if (!ignore_worn) p.Bne(p.PanelHidden(), c(0), shown_now);
+  p.SysRead(R(7), panel);
+  p.Beq(R(7), c(1), shown_now);
+  p.SysWrite(panel, c(1));
+  p.Bind(shown_now);
   p.Mov(shown, c(1));
   p.SysRead(R(7), pitch);
   p.Or(R(8), shown, R(6));
   p.Notify(R(8), R(7)); // first: the other eye shows at once too
-  if (fade_us > 0) fade(true);
+  if (fade_us > 0) {
+    p.Bne(hold, c(0), no_fade);
+    fade(true);
+    p.Bind(no_fade);
+  }
   p.Bind(on_panel);
   p.Beq(up, c(0), no_band);
   p.Call(label);
@@ -411,6 +429,7 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.Bind(present);
   p.Beq(shown, c(0), presented); // hidden: the panel stays off
   p.SleepUntil(show_at);
+  p.Bne(hold, c(0), presented); // held: the host reveals it
   p.Beq(full, c(0), slots);
   p.Call(draw_all);
   p.Jmp(drawn);
@@ -553,10 +572,12 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.Call(label);
   p.End();
 
-  // USER3: the host wrote the dashboard's picture: drawn while the terminal shows.
+  // USER3: the host wrote the dashboard's picture: drawn while the terminal shows (and the dashboard is not
+  // held for a transition).
   auto user3 = p.NewLabel();
   p.Bind(user3);
   p.Beq(shown, c(0), done);
+  p.Beq(hold, c(2), done);
   p.Call(dash);
   p.End();
 
@@ -576,8 +597,8 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.On(g1::TRIGGER_TILT, tilt);
   p.On(g1::TRIGGER_TIMER, tick);
   p.On(g1::TRIGGER_BATTERY, battery);
-  p.Changes(l.state + 4 * wNext, 4 * (kStateWords - wNext));
-  p.Changes(l.area, l.end - l.area);
+  p.Changes(l.state + 4 * wNext, 4 * (wHold - wNext));
+  p.Changes(l.dash, l.end - l.dash);
   return p;
 }
 
@@ -630,14 +651,19 @@ bool GlassesTerminal::LoadGlyphs(const std::set<uint32_t> &chars) {
   std::string error;
   sk::Font &font = sk::LoadFont(std::span<const uint8_t>(blob_), Chars(chars), &error);
   if (!font.pimpl) return false;
-  font_ = &font;
+  Adopt(&font, chars);
+  return true;
+}
+
+// A font on the arms with these characters becomes the terminal's.
+void GlassesTerminal::Adopt(sk::Font *font, const std::set<uint32_t> &chars) {
+  font_ = font;
   loaded_ = chars;
   glyphs_.clear();
-  auto space = g1::GlyphIndices(font, " ");
-  auto q = g1::GlyphIndices(font, "?");
+  auto space = g1::GlyphIndices(*font, " ");
+  auto q = g1::GlyphIndices(*font, "?");
   space_ = space.empty() ? 0 : space[0];
   unknown_ = q.size() == 1 ? q[0] : space_;
-  return true;
 }
 
 // The wanted characters go to the arms too: the font again with them (the glyph indices change, so the
@@ -732,6 +758,7 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
                             std::string *error) {
   blob_ = std::move(font);
   changed_ = std::move(changed);
+  fx_ = config.fx;
   angle_ = config.angle;
   battery_ = config.battery;
   on_touch_ = config.on_touch;
@@ -742,7 +769,13 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
   for (uint32_t c : has_)
     for (auto &r : kBaseRanges)
       if (c >= r[0] && c <= r[1]) base.insert(c);
-  if (has_.empty() || !LoadGlyphs(base)) {
+  // The fonts kept from the last run (the same blob): nothing to upload.
+  font_ = batt_font_ = nullptr;
+  if (config.fonts && config.fonts->font && config.fonts->batt && config.fonts->blob == blob_.size() && !has_.empty()) {
+    Adopt(config.fonts->font, config.fonts->loaded);
+    batt_font_ = config.fonts->batt;
+    *config.fonts = Fonts{};
+  } else if (has_.empty() || !LoadGlyphs(base)) {
     *error = "cannot load the terminal font";
     return false;
   }
@@ -763,20 +796,28 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
   geo_.x = (vw - geo_.W()) / 2;
   geo_.y = top + dash_h_ + (avail - geo_.rows * geo_.ch) / 2;
   // The battery band's font: the digits (glyphs 0 ... 9, VM.md §4.1) and % at 2x.
-  sk::Font &batt = sk::LoadFont(std::span<const uint8_t>(blob_), "0123456789%", nullptr, 2);
-  auto percent = batt.pimpl ? g1::GlyphIndices(batt, "%") : std::vector<uint32_t>{};
-  if (percent.size() != 1 || percent[0] > 127 || g1::GlyphIndices(batt, "0") != std::vector<uint32_t>{0}) {
-    if (batt.pimpl) sk::Unload(batt);
+  if (!batt_font_) {
+    sk::Font &loaded = sk::LoadFont(std::span<const uint8_t>(blob_), "0123456789%", nullptr, 2);
+    batt_font_ = loaded.pimpl ? &loaded : nullptr;
+  }
+  auto percent = batt_font_ ? g1::GlyphIndices(*batt_font_, "%") : std::vector<uint32_t>{};
+  if (percent.size() != 1 || percent[0] > 127 || g1::GlyphIndices(*batt_font_, "0") != std::vector<uint32_t>{0}) {
+    if (batt_font_) sk::Unload(*batt_font_);
+    sk::Unload(*font_);
+    font_ = batt_font_ = nullptr;
     *error = "cannot load the battery font";
     return false;
   }
-  batt_font_ = &batt;
+  sk::Font &batt = *batt_font_;
   batt.Measure("0", &geo_.bcw);
   geo_.bascent = batt.ascent;
   geo_.bw = (4 * geo_.bcw + 2 + 2 * kBattPad + 1) & ~1;
   geo_.bh = batt.line_spacing + 2 + 2 * kBattPadY;
   int64_t base_address = g1::Alloc(MakeLayout(0, geo_, dash_h_).end);
   if (base_address < 0) {
+    sk::Unload(*font_);
+    sk::Unload(*batt_font_);
+    font_ = batt_font_ = nullptr;
     *error = "the terminal does not fit the arena";
     return false;
   }
@@ -796,7 +837,12 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
       *error = "the terminal program overlaps its state (" + std::to_string(p.Here() - l_.base) + " bytes)";
       return false;
     }
-    arms_[i]->WriteArena(l_.state, std::vector<uint8_t>(4 * kStateWords + geo_.rows, 0));
+    // The first screen held for a transition (Reveal before Start): the panel comes on black at START.
+    std::vector<uint8_t> state(4 * kStateWords + geo_.rows, 0);
+    hold_sent_ = reveal_style_ && fx_ ? (reveal_dash_ && dash_h_ ? 2 : 1) : 0;
+    state[4 * wHold] = uint8_t(hold_sent_);
+    arms_[i]->WriteArena(l_.state, state);
+    arms_[i]->WriteArena(l_.dash, std::vector<uint8_t>(size_t(geo_.W() / 2) * dash_h_, 0));
     std::vector<uint8_t> band(l_.end - l_.batt, 0);
     band.back() = uint8_t(percent[0]);
     arms_[i]->WriteArena(l_.batt, band);
@@ -813,7 +859,7 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
   return true;
 }
 
-void GlassesTerminal::Stop(bool keep) {
+void GlassesTerminal::Stop(bool keep, Fonts *keep_fonts) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     stop_ = true;
@@ -832,8 +878,12 @@ void GlassesTerminal::Stop(bool keep) {
     WriteWord(i, wPeer, 0);
     arms_[i]->Raise(g1::TRIGGER_USER2);
   }
-  if (font_) sk::Unload(*font_);
-  if (batt_font_) sk::Unload(*batt_font_);
+  if (keep_fonts && font_ && batt_font_) {
+    *keep_fonts = Fonts{font_, batt_font_, loaded_, blob_.size()};
+  } else {
+    if (font_) sk::Unload(*font_);
+    if (batt_font_) sk::Unload(*batt_font_);
+  }
   font_ = batt_font_ = nullptr;
   if (l_.base) g1::Free(l_.base);
   l_ = {};
@@ -848,6 +898,38 @@ void GlassesTerminal::Show(std::shared_ptr<const Snapshot> s) {
     pending_ = std::move(s);
   }
   cv_.notify_all();
+}
+
+void GlassesTerminal::Reveal(int style, bool with_dash) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (style <= 0) return;
+  reveal_style_ = style;
+  reveal_dash_ = with_dash;
+  reveal_until_ = g1::NowUs() + 4000000;
+  pending_.reset(); // the old screen: not shown any more
+  if (wiped_until_) wiped_until_ = reveal_until_; // drawn again only if nothing comes for it
+}
+
+void GlassesTerminal::Wiped(bool with_dash) {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    wiped_until_ = g1::NowUs() + 1500000;
+    wiped_dash_ = with_dash;
+  }
+  cv_.notify_all();
+}
+
+Fx::Region GlassesTerminal::FxRegion(bool with_dash) const {
+  Fx::Region r;
+  int above = with_dash ? dash_h_ : 0;
+  r.w = geo_.W();
+  r.h = geo_.rows * geo_.ch + above;
+  for (int i = 0; i < 2; i++) r.at[size_t(i)] = {pos_[size_t(i)][0], pos_[size_t(i)][1] - above};
+  return r;
+}
+
+Fx::Source GlassesTerminal::FxSource(bool with_dash) const {
+  return Fx::Source{with_dash ? l_.dash : l_.area, uint32_t(geo_.W() / 2), 4};
 }
 
 void GlassesTerminal::SetDash(const std::vector<uint8_t> &pixels) {
@@ -910,6 +992,13 @@ void GlassesTerminal::WriteWord(int arm, int word, uint32_t value) {
   arms_[arm]->WriteArena(l_.state + 4 * word, Words({value}));
 }
 
+// The arms' wHold (mutex_ held). Cleared after a reveal is sent: in packet order, after it.
+void GlassesTerminal::SetHold(uint32_t hold) {
+  for (int i = 0; i < 2; i++)
+    if (present_[i]) WriteWord(i, wHold, hold);
+  hold_sent_ = hold;
+}
+
 // Both eyes follow the latest decision an arm took itself (the first NOTIFY wins near the threshold, R24).
 void GlassesTerminal::SyncPeers(int from) {
   for (int i = 0; i < 2; i++) {
@@ -925,6 +1014,7 @@ void GlassesTerminal::Restart(int arm) {
   WriteWord(arm, wNext, 0);
   WriteWord(arm, wForce, force_sent_);
   WriteWord(arm, wPeer, 0);
+  WriteWord(arm, wHold, hold_sent_);
   shown_[arm] = 0;
   screen_.fresh = true;
   if (!pending_ && last_) { // the screen again, in full (R5)
@@ -969,8 +1059,20 @@ void GlassesTerminal::Send() {
     if (!Grow()) return;
     rows = Rows(*s);
   }
+  // A transition: the whole screen with its first row in slot 0 (the area is then the picture as it shows),
+  // held on the arms until both have it.
+  bool reveal = reveal_style_ && fx_ && g1::NowUs() < reveal_until_;
+  if (!reveal) reveal_style_ = 0;
+  if (reveal) {
+    screen_.fresh = true;
+    screen_.top = 0;
+  }
+  uint32_t hold = reveal ? (reveal_dash_ && dash_h_ ? 2 : 1) : 0;
   Frame f;
-  if (!screen_.Next(rows, &f)) return;
+  if (!screen_.Next(rows, &f)) {
+    if (hold != hold_sent_) SetHold(hold);
+    return;
+  }
   frame_++;
   size_t bytes = f.dirty.size() + 4 * kStateWords;
   for (auto &[slot, rec] : f.recs) bytes += rec.size();
@@ -984,6 +1086,13 @@ void GlassesTerminal::Send() {
   uint32_t cur = f.cur_slot >= 0 ? uint32_t(f.cur_slot) : kNoCursor;
   // No battery band: the program draws none while wBattFont is 0.
   uint32_t font = g1::AddressOf(*font_), batt_font = battery_ && batt_font_ ? g1::AddressOf(*batt_font_) : 0;
+  if (hold != hold_sent_) SetHold(hold);
+  if (reveal) {
+    held_frame_ = frame_;
+    held_style_ = reveal_style_;
+    held_dash_ = reveal_dash_ && dash_h_ > 0;
+    reveal_style_ = 0;
+  }
   for (int i = 0; i < 2; i++) {
     done_[i] = !present_[i];
     if (!present_[i]) continue;
@@ -1006,6 +1115,8 @@ void GlassesTerminal::Run() {
     int64_t wake = now + 1000000;
     if (pending_ && !inflight_ && visible) wake = std::min(last_us_ + 10000, first_us_ + 40000);
     if (inflight_) wake = std::min(wake, inflight_us_ + 10000000);
+    if (wiped_until_) wake = std::min(wake, wiped_until_);
+    if (reveal_style_) wake = std::min(wake, reveal_until_);
     if (events_.empty() && force_ == force_sent_ && wake > now)
       cv_.wait_for(lock, std::chrono::microseconds(wake - now));
     if (stop_) break;
@@ -1024,9 +1135,28 @@ void GlassesTerminal::Run() {
     }
     now = g1::NowUs();
     if (inflight_ && ((done_[0] && done_[1]) || now - inflight_us_ > 10000000)) {
-      if (!(done_[0] && done_[1])) screen_.fresh = true;
+      bool done = done_[0] && done_[1];
+      if (!done) screen_.fresh = true;
+      // The held frame is on both arms: revealed while the terminal shows (else the next look-up draws it).
+      if (held_frame_ && held_frame_ == inflight_) {
+        held_frame_ = 0;
+        wiped_until_ = 0;
+        if (done && (shown_[0] || shown_[1]))
+          fx_->In(Fx::Style(held_style_), FxRegion(held_dash_), FxSource(held_dash_));
+        SetHold(0);
+      }
       inflight_ = 0;
       cv_.notify_all(); // Check waits for this
+    }
+    if (reveal_style_ && now >= reveal_until_) reveal_style_ = 0; // lapsed
+    // Wiped and nothing revealed since: the last screen in full again, the dashboard with it.
+    if (wiped_until_ && now >= wiped_until_ && !reveal_style_ && !held_frame_) {
+      wiped_until_ = 0;
+      screen_.fresh = true;
+      if (!pending_ && last_) pending_ = last_, first_us_ = last_us_ = now;
+      if (wiped_dash_)
+        for (int i = 0; i < 2; i++)
+          if (present_[i]) arms_[i]->Raise(g1::TRIGGER_USER3);
     }
     if (pending_ && !inflight_ && (shown_[0] || shown_[1]) &&
         (now - last_us_ >= 10000 || now - first_us_ >= 40000))

@@ -361,6 +361,13 @@ class MainActivity : Activity() {
             "Alt+W closes the tab shown. Voice: \"pointer\", \"click\", \"new tab\", \"next tab\", \"tab 2\", " +
             "\"Claude tab\", \"Cursor tab\".")
         point.addView(Touchpad(this), lp().apply { topMargin = dp(4); bottomMargin = dp(8) })
+        point.addToggle(toggle("Keyboard trackpad on the glasses", "While the glasses show the terminal, a trackpad or " +
+            "mouse paired with the phone moves this pointer (tap: click, two fingers: right click and scroll); on the " +
+            "phone's screen it is the phone's pointer. Needs Vox's keyboard shortcuts on (Accessibility).", settings.trackpad) {
+            settings.trackpad = it
+            if (ScouterService.running) ScouterService.send(this)
+        })
+        point.addView(slider("Trackpad speed", 1, 10, settings.trackpadSpeed, { "$it" }) { v -> settings.trackpadSpeed = v })
         fun pointerCmd(cmd: String) = ScouterService.send(this, ScouterService.ACTION_POINTER, "cmd" to cmd)
         fun tab(action: String) = ScouterService.send(this, ScouterService.ACTION_TABS, "tab" to action)
         point.addView(chipRow(chip("Pointer on / off", false) { pointerCmd("toggle") }, chip("Click", false) { pointerCmd("click") },
@@ -445,6 +452,11 @@ class MainActivity : Activity() {
         })
         view.addView(slider("Fade in", 0, 800, settings.fadeMs, { if (it == 0) "off" else "$it ms" }) { v ->
             settings.fadeMs = v
+            lookUpChanged()
+        })
+        view.addToggle(toggle("Transitions", "A half-second animation on the glasses when you switch: Alt+arrows, " +
+            "tabs, the display", settings.animations) {
+            settings.animations = it
             lookUpChanged()
         })
         view.addToggle(toggle("Time, date and batteries", "The clock, the date, each arm's battery", settings.lookUpClock) {

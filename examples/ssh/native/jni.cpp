@@ -16,6 +16,7 @@
 #include <android/log.h>
 
 #include "android_transport.hpp"
+#include "fx.hpp"
 #include "glasses.hpp"
 #include "keys.hpp"
 #include "mosh_client.hpp"
@@ -72,6 +73,46 @@ int g_pointer_row = -1, g_pointer_col = -1;
 std::vector<uint8_t> g_dash; // its last picture (dash), for a terminal that starts again; guarded by g_term_mutex
 int g_top = 0, g_bottom = 0; // pixels left empty above and below the terminal (terminalMargins)
 bool g_panels_off = false;
+// Transitions (Native.transition): the arms' code for them, and the one asked for until the picture it is for
+// comes (a terminal's next screen, or a pipeline that starts). g_fx_mutex is a leaf: nothing is locked under it.
+struct FxPending {
+  int style = 0;
+  bool dash = false;       // the terminal's dashboard comes with it
+  bool to_terminal = true; // the terminal's path shows next (else a screen)
+  int64_t until = 0;
+};
+std::mutex g_fx_mutex;
+std::shared_ptr<ssh::Fx> g_fx;
+// The terminal's fonts, kept on the arms while it does not run (a screen, the display off), so that it starts
+// again without uploading them. g_fonts_mutex is a leaf.
+std::mutex g_fonts_mutex;
+ssh::GlassesTerminal::Fonts g_fonts;
+
+void DropFonts() {
+  ssh::GlassesTerminal::Fonts f;
+  {
+    std::lock_guard<std::mutex> lock(g_fonts_mutex);
+    std::swap(f, g_fonts);
+  }
+  if (f.font) scouter_kit::Unload(*f.font);
+  if (f.batt) scouter_kit::Unload(*f.batt);
+}
+FxPending g_fx_pending;
+bool g_fx_enabled = true;
+
+std::shared_ptr<ssh::Fx> FxNow() {
+  std::lock_guard<std::mutex> lock(g_fx_mutex);
+  return g_fx_enabled ? g_fx : nullptr;
+}
+
+// The transition asked for, when it is for this path and has not lapsed: taken (once).
+FxPending TakeFx(bool terminal) {
+  std::lock_guard<std::mutex> lock(g_fx_mutex);
+  FxPending p = g_fx_pending;
+  if (!p.style || !g_fx_enabled || p.to_terminal != terminal || scouter_kit::g1::NowUs() > p.until) return {};
+  g_fx_pending = {};
+  return p;
+}
 
 // The JNIEnv of a native thread, attached on first use and detached when the
 // thread ends.
@@ -251,7 +292,18 @@ std::string StartTerminal() {
   config.fade_ms = g_fade;
   config.dash_h = g_dash_h;
   config.on_touch = [](int arm, uint32_t gesture) { Gesture(arm, gesture); };
-  if (!term->Start(config, g_font, Changed, &error)) return error;
+  config.fx = FxNow();
+  ssh::GlassesTerminal::Fonts fonts;
+  {
+    std::lock_guard<std::mutex> lock(g_fonts_mutex);
+    std::swap(fonts, g_fonts);
+  }
+  config.fonts = &fonts;
+  if (FxPending fx = TakeFx(true); fx.style) term->Reveal(fx.style, true);
+  bool started = term->Start(config, g_font, Changed, &error);
+  if (fonts.font) scouter_kit::Unload(*fonts.font); // not taken
+  if (fonts.batt) scouter_kit::Unload(*fonts.batt);
+  if (!started) return error;
   std::shared_ptr<const ssh::Snapshot> s;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -265,13 +317,20 @@ std::string StartTerminal() {
   return {};
 }
 
-void StopTerminal(bool keep = false) {
+// keep_fonts: its fonts stay on the arms for its next start (g_fonts).
+void StopTerminal(bool keep = false, bool keep_fonts = false) {
   std::shared_ptr<ssh::GlassesTerminal> term;
   {
     std::lock_guard<std::mutex> lock(g_term_mutex);
     term.swap(g_term);
   }
-  if (term) term->Stop(keep);
+  if (!term) return;
+  ssh::GlassesTerminal::Fonts fonts;
+  term->Stop(keep, keep_fonts ? &fonts : nullptr);
+  if (!fonts.font) return;
+  DropFonts();
+  std::lock_guard<std::mutex> lock(g_fonts_mutex);
+  g_fonts = fonts;
 }
 
 bool ScreenWanted() {
@@ -293,6 +352,12 @@ std::string StartScreen() {
     return error;
   }
   LOG("screen: on the glasses");
+  // A transition: its label again (Start cleared the panels), and the first picture revealed.
+  if (FxPending p = TakeFx(false); p.style)
+    if (auto fx = FxNow()) {
+      screen->Reveal(p.style, fx);
+      fx->Label(screen->FxRegion());
+    }
   std::lock_guard<std::mutex> lock(g_screen_mutex);
   g_screen = screen;
   return {};
@@ -329,7 +394,7 @@ std::string Apply() {
   Show now = Current();
   std::string error;
   if (now != want) {
-    if (now == Show::kTerminal) StopTerminal(false);
+    if (now == Show::kTerminal) StopTerminal(false, true);
     if (now == Show::kScreen) StopScreen();
     if (want == Show::kNone) {
       scouter_kit::gray::Clear();
@@ -408,6 +473,17 @@ JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_glassesStart(JNIEnv *env, j
   for (scouter_kit::g1::Arm *a : {&scouter_kit::g1::left, &scouter_kit::g1::right})
     if (a->GetState().present) a->ReportInputs(uint16_t(1u << scouter_kit::g1::TRIGGER_TOUCH));
   g_glasses = true;
+  // A screen short of arena takes back the terminal's kept fonts first.
+  ssh::SetSpare(DropFonts);
+  // The transitions' code on the arms (without it every switch is at once).
+  auto fx = std::make_shared<ssh::Fx>();
+  std::string fx_error;
+  if (fx->Start(&fx_error)) {
+    std::lock_guard<std::mutex> l(g_fx_mutex);
+    g_fx = fx;
+  } else {
+    LOG("fx: %s", fx_error.c_str());
+  }
   error = Apply();
   return error.empty() ? nullptr : env->NewStringUTF(error.c_str());
 }
@@ -416,7 +492,15 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_glassesStop(JNIEnv *, jclass, 
   g_pump.Stop();
   StopScreen();
   StopTerminal(keep);
+  DropFonts();
   std::lock_guard<std::mutex> lock(g_glasses_mutex);
+  std::shared_ptr<ssh::Fx> fx;
+  {
+    std::lock_guard<std::mutex> l(g_fx_mutex);
+    fx.swap(g_fx);
+    g_fx_pending = {};
+  }
+  if (fx) fx->Stop();
   if (g_glasses) ssh::GlassesStop();
   g_glasses = false;
   SetLink(nullptr);
@@ -530,8 +614,10 @@ JNIEXPORT jboolean JNICALL Java_scouterkit_ssh_Native_moshShow(JNIEnv *env, jcla
     if (g_mosh) s = g_mosh->Latest();
   }
   std::lock_guard<std::mutex> lock(g_term_mutex);
-  if (g_term)
+  if (g_term) {
+    if (FxPending fx = TakeFx(true); fx.style) g_term->Reveal(fx.style, fx.dash);
     if (auto w = WithBand(s)) g_term->Show(w);
+  }
   return found ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -623,8 +709,10 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_card(JNIEnv *env, jclass, jobj
     if (g_mosh) s = g_mosh->Latest();
   }
   std::lock_guard<std::mutex> lock(g_term_mutex);
-  if (g_term)
+  if (g_term) {
+    if (FxPending fx = TakeFx(true); fx.style) g_term->Reveal(fx.style, fx.dash);
     if (auto w = WithBand(s)) g_term->Show(w);
+  }
 }
 
 // A key from keyer (R17): encoded with the screen's cursor-key mode, then to mosh.
@@ -634,6 +722,66 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_keyEvent(JNIEnv *, jclass, jin
   auto s = g_mosh->Latest();
   std::string bytes = ssh::EncodeKey(kind, uint8_t(mods), uint32_t(value), s && s->application_cursor_keys);
   if (!bytes.empty()) g_mosh->Keys(bytes);
+}
+
+// ------------------------------------------------ transitions
+
+// A switch is coming (Fx.kt): what shows goes now (style's out, then the label: 4 bpp, lw x lh), and the next
+// picture comes with the style's reveal: the terminal's next screen (to_terminal) or the next screen's first
+// picture. now: the terminal's next screen whatever brings it (its tabs); otherwise the screen of the session or
+// card shown next, or the path that starts next. kOn: no out (the display was off).
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_transition(JNIEnv *env, jclass, jint style, jbyteArray label,
+                                                             jint lw, jint lh, jboolean to_terminal, jboolean now) {
+  std::vector<uint8_t> pixels;
+  if (label) {
+    pixels.resize(size_t(env->GetArrayLength(label)));
+    env->GetByteArrayRegion(label, 0, jsize(pixels.size()), reinterpret_cast<jbyte *>(pixels.data()));
+  }
+  std::lock_guard<std::mutex> lock(g_glasses_mutex);
+  auto fx = FxNow();
+  if (!g_glasses || !fx || style <= ssh::Fx::kNone || style >= ssh::Fx::kStyles) return;
+  Show cur = g_blank ? Show::kNone : Current();
+  // The same path goes on: only the terminal goes (its dashboard stays), or the screen's picture; another
+  // path: all of it.
+  bool same = (cur == Show::kTerminal && to_terminal) || (cur == Show::kScreen && !to_terminal);
+  ssh::Fx::Region r;
+  {
+    std::lock_guard<std::mutex> l(g_term_mutex);
+    if (cur == Show::kTerminal && g_term) {
+      r = g_term->FxRegion(!same);
+      if (style != ssh::Fx::kOn) g_term->Wiped(!same);
+    }
+  }
+  {
+    std::lock_guard<std::mutex> l(g_screen_mutex);
+    if (cur == Show::kScreen && g_screen) {
+      r = g_screen->FxRegion();
+      if (style != ssh::Fx::kOn) g_screen->Wiped();
+    }
+  }
+  if (style != ssh::Fx::kOn && r.w > 0) fx->Out(ssh::Fx::Style(style), r, pixels, lw, lh);
+  if (style == ssh::Fx::kOff) return; // the display goes off: nothing comes
+  FxPending p{style, !same, bool(to_terminal), scouter_kit::g1::NowUs() + 4000000};
+  // The tabs (the same session's next screen), or a screen after a screen (its next picture): attached now.
+  if (same && (now || !to_terminal)) {
+    if (to_terminal) {
+      std::lock_guard<std::mutex> l(g_term_mutex);
+      if (g_term) g_term->Reveal(style, false);
+    } else {
+      std::lock_guard<std::mutex> l(g_screen_mutex);
+      if (g_screen) g_screen->Reveal(style, fx);
+    }
+    return;
+  }
+  std::lock_guard<std::mutex> l(g_fx_mutex);
+  g_fx_pending = p;
+}
+
+// Transitions on or off (off: every switch at once).
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_fxEnabled(JNIEnv *, jclass, jboolean on) {
+  std::lock_guard<std::mutex> lock(g_fx_mutex);
+  g_fx_enabled = on;
+  if (!on) g_fx_pending = {};
 }
 
 // ------------------------------------------------ the phone's screen
@@ -673,7 +821,7 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_setBattery(JNIEnv *, jclass, j
   if (g_battery == bool(on)) return;
   g_battery = on;
   if (!g_glasses || Current() != Show::kTerminal) return;
-  StopTerminal(false);
+  StopTerminal(false, true);
   StartTerminal();
 }
 
@@ -684,7 +832,7 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_terminalMargins(JNIEnv *, jcla
   g_top = top;
   g_bottom = bottom;
   if (!g_glasses || Current() != Show::kTerminal) return;
-  StopTerminal(false);
+  StopTerminal(false, true);
   StartTerminal();
 }
 
@@ -794,7 +942,7 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_terminalDash(JNIEnv *, jclass,
     g_dash.clear();
   }
   if (!g_glasses || Current() != Show::kTerminal) return;
-  StopTerminal(false);
+  StopTerminal(false, true);
   StartTerminal();
 }
 
@@ -829,7 +977,7 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_terminalFade(JNIEnv *, jclass,
   if (g_fade == ms) return;
   g_fade = ms;
   if (!g_glasses || Current() != Show::kTerminal) return;
-  StopTerminal(false);
+  StopTerminal(false, true);
   StartTerminal();
 }
 

@@ -92,6 +92,13 @@ object Native {
     // (button 0 left, 2 right, 64 / 65 wheel up / down): false (nothing sent) while it takes no mouse.
     @JvmStatic external fun pointer(row: Int, col: Int)
     @JvmStatic external fun mouse(button: Int, row: Int, col: Int): Boolean
+    // A switch is coming (Fx.kt): what shows goes now (style's out), the label (4 bpp, lw x lh) shows, and the next
+    // picture comes in with the style's animation. toTerminal: the terminal's path shows next (a terminal, a
+    // card), else a screen; now: the terminal's next screen whatever brings it (its tabs), else the next session
+    // or card shown, or the path that starts next.
+    @JvmStatic external fun transition(style: Int, label: ByteArray?, lw: Int, lh: Int, toTerminal: Boolean, now: Boolean)
+    // Transitions on or off (off: every switch at once).
+    @JvmStatic external fun fxEnabled(on: Boolean)
     // The look-up view: the header's lines above the terminal (none: no header), and the fade in ms (0: none).
     @JvmStatic external fun lookUpHeader(lines: Array<String>)
     @JvmStatic external fun terminalFade(ms: Int)

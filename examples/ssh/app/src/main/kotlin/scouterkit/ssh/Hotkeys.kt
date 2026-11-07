@@ -135,7 +135,8 @@ object Hotkeys {
             return
         }
         if (settings.left.isNotEmpty() && settings.right.isNotEmpty()) settings.glassesAllowed = true
-        ScouterService.send(context, ScouterService.ACTION_SOURCE, Shortcuts.EXTRA to key)
+        // An arrow: its own transition on the glasses (Fx), else a jump.
+        ScouterService.send(context, ScouterService.ACTION_SOURCE, Shortcuts.EXTRA to key, "fx" to target)
     }
 
     // The source on the glasses now (or last).
@@ -159,25 +160,30 @@ object Hotkeys {
 // The keyboard's shortcuts in every app: an accessibility service that only filters key events (it reads no
 // screen content); every other key goes on as it came.
 // It also taps the phone where the glasses' cursor is (Android's accessibility gestures), and Back and Home.
+// A mouse or a keyboard's trackpad: watched (Android's pointer as always, the glasses draw where it is), or taken
+// for the glasses' own pointer while they show a terminal (capture).
 class VoxKeys : AccessibilityService() {
     override fun onServiceConnected() {
         instance = this
-        watchMouse()
+        captured = false
+        watchMouse(wantCapture)
     }
 
-    // A mouse or a keyboard's trackpad on the phone: watched, never taken (Android 15+: observed sources), so
-    // Android's pointer moves and clicks as always and the glasses can draw where it is.
-    private fun watchMouse() {
+    // Android 15+: the mouse's events watched (observed sources: they go on to the phone's apps too), or taken.
+    private fun watchMouse(take: Boolean) {
         if (android.os.Build.VERSION.SDK_INT < 35) return
         val info = serviceInfo ?: return
         try {
             info.motionEventSources = InputDevice.SOURCE_MOUSE
             info.javaClass.getMethod("setObservedMotionEventSources", Int::class.javaPrimitiveType)
-                .invoke(info, InputDevice.SOURCE_MOUSE)
+                .invoke(info, if (take) 0 else InputDevice.SOURCE_MOUSE)
             serviceInfo = info
+            captured = take
+            android.util.Log.i(ScouterService.TAG, "trackpad: " + if (take) "the glasses' pointer" else "the phone's pointer")
         } catch (e: Throwable) {
             // Never left taking the mouse: nothing watched.
             android.util.Log.w(ScouterService.TAG, "mouse: ${e.message}")
+            captured = false
             runCatching {
                 info.motionEventSources = 0
                 serviceInfo = info
@@ -185,8 +191,46 @@ class VoxKeys : AccessibilityService() {
         }
     }
 
+    private var lastX = Float.NaN
+    private var lastY = Float.NaN
+    private var sawButton = false // the device sends BUTTON_PRESS (else DOWN / UP are its clicks)
+
     override fun onMotionEvent(event: MotionEvent) {
-        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) onMouse?.invoke(event.x, event.y)
+        if (!event.isFromSource(InputDevice.SOURCE_MOUSE)) return
+        if (!captured) {
+            onMouse?.invoke(event.x, event.y)
+            return
+        }
+        val pad = onTrackpad ?: return
+        // How far it moved: the device's own relative motion (unclamped), else from Android's pointer.
+        var dx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
+        var dy = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
+        if (dx == 0f && dy == 0f && !lastX.isNaN()) {
+            dx = event.x - lastX
+            dy = event.y - lastY
+        }
+        lastX = event.x
+        lastY = event.y
+        val twoFinger = android.os.Build.VERSION.SDK_INT >= 34 &&
+            event.classification == MotionEvent.CLASSIFICATION_TWO_FINGER_SWIPE
+        when {
+            twoFinger -> pad(Trackpad.SCROLL, 0f, event.getAxisValue(MotionEvent.AXIS_GESTURE_SCROLL_Y_DISTANCE))
+            event.actionMasked == MotionEvent.ACTION_SCROLL -> {
+                val v = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+                if (v != 0f) pad(Trackpad.WHEEL, 0f, v)
+            }
+            event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS -> {
+                sawButton = true
+                pad(when (event.actionButton) {
+                    MotionEvent.BUTTON_SECONDARY -> Trackpad.RIGHT
+                    else -> Trackpad.CLICK
+                }, 0f, 0f)
+            }
+            event.actionMasked == MotionEvent.ACTION_DOWN && !sawButton ->
+                pad(if (event.buttonState and MotionEvent.BUTTON_SECONDARY != 0) Trackpad.RIGHT else Trackpad.CLICK, 0f, 0f)
+            event.actionMasked == MotionEvent.ACTION_HOVER_MOVE || event.actionMasked == MotionEvent.ACTION_MOVE ->
+                if (dx != 0f || dy != 0f) pad(Trackpad.MOVE, dx, dy)
+        }
     }
 
     override fun onDestroy() {
@@ -198,9 +242,30 @@ class VoxKeys : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
     override fun onInterrupt() {}
 
+    // What the trackpad did while taken (onTrackpad's kind).
+    object Trackpad {
+        const val MOVE = 0  // dx, dy: device pixels
+        const val CLICK = 1
+        const val RIGHT = 2
+        const val WHEEL = 3 // dy: notches, positive up
+        const val SCROLL = 4 // dy: a two-finger swipe's pixels, positive: the fingers went down (scrolls up)
+    }
+
     companion object {
         @Volatile private var instance: VoxKeys? = null
         @Volatile var onMouse: ((Float, Float) -> Unit)? = null // where Android's pointer is, in screen pixels
+        // The trackpad's events while taken (Trackpad's kind, dx, dy), on the accessibility thread.
+        @Volatile var onTrackpad: ((Int, Float, Float) -> Unit)? = null
+        @Volatile private var captured = false
+        @Volatile private var wantCapture = false
+
+        // The trackpad to the glasses' pointer (taken from the phone's apps), or back to the phone's own pointer.
+        fun capture(take: Boolean) {
+            if (wantCapture == take) return
+            wantCapture = take
+            val s = instance ?: return
+            android.os.Handler(android.os.Looper.getMainLooper()).post { if (captured != wantCapture) s.watchMouse(wantCapture) }
+        }
 
         // A tap (long: held 650 ms, a right click) at x, y of the phone's screen, in pixels. False: VoxKeys is off.
         fun tap(x: Float, y: Float, long: Boolean = false): Boolean {
