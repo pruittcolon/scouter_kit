@@ -38,11 +38,19 @@ object Native {
     @JvmStatic external fun linkFound(arm: Int, address: String)
     @JvmStatic external fun linkProblem(code: Int, text: String)
 
-    @JvmStatic external fun moshStart(ip: String, port: Int, key: String, cols: Int, rows: Int): String?
-    // No traffic while paused (keyer off); the session resumes where it was.
+    // A terminal's mosh session, by id (a saved server's): each runs on its own, side by side. An error or null.
+    @JvmStatic external fun moshStart(id: String, ip: String, port: Int, key: String, cols: Int, rows: Int): String?
+    // The session shown on the glasses and typed into (false: that id has none, so none is shown).
+    @JvmStatic external fun moshShow(id: String): Boolean
+    // heard, ended, silent ms of that id's session; null: none.
+    @JvmStatic external fun moshStatus(id: String): IntArray?
+    // No traffic while paused (keyer off, a screen shown); every session resumes where it was.
     @JvmStatic external fun moshPause(on: Boolean)
-    @JvmStatic external fun moshStop()
+    @JvmStatic external fun moshStop(id: String)
     @JvmStatic external fun resize(cols: Int, rows: Int)
+    // A card on the glasses in place of the shown terminal (what is chosen, why it cannot show yet), lines
+    // centred on cols x rows; empty: none.
+    @JvmStatic external fun card(lines: Array<String>, cols: Int, rows: Int)
     @JvmStatic external fun keyEvent(kind: Int, mods: Int, value: Int)
     // keyer held: the terminal shows on the glasses whatever the head's angle (R25).
     @JvmStatic external fun force(on: Boolean)

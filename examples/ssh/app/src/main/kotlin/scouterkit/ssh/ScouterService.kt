@@ -94,6 +94,14 @@ class ScouterService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private val screenTicker = object : Runnable {
         override fun run() {
+            // A server's screen chosen: on the glasses once its first image has come (its card until then).
+            remote?.let { r ->
+                if (r.images > 0 && chosen() == r.key) {
+                    remoteTries = 0
+                    remoteWhy = ""
+                    if (settings.show != Settings.SCREEN) render(Settings.SCREEN)
+                }
+            }
             val remoteShown = Session.screenSource.startsWith("screen:")
             val s = (if (remoteShown) remote?.state else screen?.state) ?: run {
                 if (screen == null && remote == null) return
@@ -205,20 +213,18 @@ class ScouterService : Service() {
         registerReceiver(adapterState, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
     }
 
-    // The terminal's session again after an error: soon at first, then less often; this phone's own server needs
-    // no network.
-    private var moshTries = 0
-    private val moshRetry = Runnable { retryMosh() }
+    // The chosen terminal's session again after an error: soon at first, then less often (each terminal counts its
+    // own failures); at once when the network comes back or the watchdog looks. This phone's own server needs no
+    // network.
+    private val moshRetry = Runnable { refresh() }
 
     private fun retryMosh() {
-        val local = settings.host == Termux.HOST || settings.host == "localhost"
-        if (active() && Session.mosh.startsWith("error") && Session.unknownHost == null && (local || online())) startMosh()
-    }
-
-    private fun moshFailed() {
-        work.removeCallbacks(moshRetry)
-        work.postDelayed(moshRetry, RETRY_MS[minOf(moshTries, RETRY_MS.size - 1)])
-        moshTries++
+        val s = settings.active() ?: return
+        val t = terms[s.id] ?: return
+        if (chosen().startsWith("term:") && t.status.startsWith("error") && t.unknownHost == null && (s.local || online())) {
+            t.retryAt = 0L
+            refresh()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -244,8 +250,11 @@ class ScouterService : Service() {
             ACTION_SCREEN -> startScreen(intent)
             // ... or the terminal (screen sharing goes on, so the phone's screen can come back without asking)...
             ACTION_TERMINAL -> work.post {
-                settings.phone = true
-                view(Settings.TERMINAL)
+                settings.active()?.let { choose("term:${it.id}") } ?: run {
+                    settings.phone = true
+                    settings.source = ""
+                    render(Settings.TERMINAL) // the card: no terminal yet
+                }
             }
             // A saved server's terminal (extra "id"); empty: the next saved server.
             ACTION_SERVER -> work.post {
@@ -339,7 +348,7 @@ class ScouterService : Service() {
         getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(network)
         work.post { // ended by the system: as when keyer goes
             stopKeyer()
-            pauseMosh()
+            pauseTerms(true)
             stopGlasses(true)
         }
         worker.quitSafely()
@@ -401,17 +410,37 @@ class ScouterService : Service() {
         if (glassesWith != null && glassesWith != glassesSettings()) stopGlasses(false)
         if (stopped != null && stoppedWith != glassesSettings()) stopped = null
         if (!work.hasCallbacks(retryGlasses)) startGlasses()
-        if (moshWith != null && moshWith != moshSettings()) stopMosh()
-        // The phone's screen on the glasses: mosh waits (paused, the session kept) until the terminal is back.
-        if (settings.show == Settings.SCREEN) {
-            if (moshWith != null && Session.mosh != "paused") pauseMosh()
-            return
+        // Saved servers removed or edited: their sessions end (an edited one starts anew when it is chosen).
+        val servers = settings.servers()
+        for (t in terms.values.toList()) {
+            val s = servers.firstOrNull { it.id == t.id }
+            if (s == null || (t.key != null && t.key != serverKey(s))) dropTerm(t)
         }
-        startMosh()
-        if (moshWith != null && moshSize != (settings.cols to settings.rows)) {
+        if (moshSize != (settings.cols to settings.rows)) {
             moshSize = settings.cols to settings.rows
             Native.resize(moshSize.first, moshSize.second)
         }
+        val key = chosen()
+        // A server's screen chosen and not running: started (again after a failure once its wait is over); the
+        // glasses keep its card until its first image.
+        if (key.startsWith("screen:") && remote == null && SystemClock.elapsedRealtime() >= remoteRetryAt)
+            servers.firstOrNull { "screen:${it.id}" == key }?.let { s ->
+                startRemote(s)
+                Session.screenSource = key
+                work.removeCallbacks(screenTicker)
+                work.postDelayed(screenTicker, 1000)
+            }
+        // A screen on the glasses: the terminals wait (paused, their sessions kept) until the terminal is back.
+        if (settings.show == Settings.SCREEN) {
+            pauseTerms(true)
+            return
+        }
+        // The terminal's path: the chosen terminal (started on its own, never waiting for another one), or the
+        // card of a source that cannot show yet.
+        val server = if (key.startsWith("term:")) settings.active() else null
+        pauseTerms(server == null)
+        if (server != null) startTerm(server)
+        showTerm(server)
     }
 
     // keyer gone or Bluetooth off (the user's battery rule): keyer's keys go back to it, mosh goes quiet but keeps
@@ -446,7 +475,7 @@ class ScouterService : Service() {
         if (Session.blank) Native.blank(false)
         Session.blank = false
         blankByLock = false
-        pauseMosh()
+        pauseTerms(true)
         stopGlasses(true, stopped?.let { "stopped: $it (pair again in the case)" } ?: "off")
         if (stopped == null) stopForeground(STOP_FOREGROUND_REMOVE)
         else {
@@ -459,7 +488,7 @@ class ScouterService : Service() {
     private fun glassesSettings() = listOf(settings.glassesAllowed, settings.left, settings.right, settings.dx,
         settings.dy, settings.angle, settings.ignoreWorn).joinToString(" ") // brightness, battery: live
 
-    private fun moshSettings() = listOf(settings.host, settings.port, settings.user, settings.command, settings.moshPorts).joinToString(" ")
+    private fun serverKey(s: Settings.Server) = listOf(s.host, s.port, s.user, s.command, s.moshPorts).joinToString(" ")
 
     // A start in progress (Native.glassesStart waits up to 30 s for both arms: on its own thread, so taps, voice
     // and shortcuts never wait for it), and the starts that failed in a row (each retry waits longer).
@@ -561,67 +590,175 @@ class ScouterService : Service() {
         update(glasses = state)
     }
 
-    private fun startMosh() {
-        if (moshWith != null && Session.mosh == "paused") { // keyer back: the same session
-            Native.moshPause(false)
-            return update(mosh = "connecting")
-        }
-        if (Session.mosh != "off" && !Session.mosh.startsWith("error")) return
-        if (settings.host.isEmpty() || settings.user.isEmpty()) return update(mosh = "error: no server in Settings")
-        // Termux on this phone: its sshd started first (it does not run by itself).
-        if (settings.termux) Termux.ensureSshd(this)?.let { return update(mosh = "error: $it") }
-        update(mosh = "starting")
-        // The last mosh-server this server ran for the app ends first (the record names its server).
-        val record = vault.text(Vault.MOSH)?.split(" ")
-        val previous = if (record?.getOrNull(4) == "${settings.host}:${settings.port}") record.getOrNull(3)?.toIntOrNull() ?: 0 else 0
-        try {
-            val m = Bootstrap(vault).start(settings.host, settings.port, settings.user, settings.command, settings.moshPorts, previous)
-            vault.putText(Vault.MOSH, "${m.ip} ${m.port} ${m.key} ${m.pid} ${settings.host}:${settings.port}")
-            val error = Native.moshStart(m.ip, m.port, m.key, settings.cols, settings.rows)
-            if (error == null) {
-                moshWith = moshSettings()
-                moshSize = settings.cols to settings.rows
-            }
-            update(mosh = if (error == null) "connecting" else "error: $error")
-            if (error == null) moshTries = 0 else moshFailed()
-        } catch (e: Bootstrap.UnknownHost) {
-            // Termux's own host key, as Termux reported it at setup: trusted without asking.
-            if (settings.termux && e.fingerprint in settings.termuxKeys.split(" ")) {
-                Bootstrap.remember(vault, "${settings.host}:${settings.port}", e.fingerprint)
-                update(mosh = "off")
-                return startMosh()
-            }
-            Session.unknownHost = e.fingerprint
-            update(mosh = "error: confirm the host key")
-        } catch (e: Exception) {
-            Log.w(TAG, "bootstrap: ${e.message}")
-            val local = settings.host == Termux.HOST || settings.host == "localhost"
-            val refused = (e.message ?: "").contains("refused", ignoreCase = true)
-            update(mosh = "error: " + if (local && refused) "this phone's SSH server is off (type ssh in Termux)" else e.message)
-            moshFailed()
-        }
+    // ------------------------------------------------ terminals
+
+    // The source the user chose: "term:ID" (the saved server in use, Settings.active), PHONE or "screen:ID".
+    // Only the user's choice sets it; what cannot show yet gets a card on the glasses, nothing switches by itself.
+    private fun chosen(): String {
+        val src = settings.source
+        if (src == Settings.PHONE || src.startsWith("screen:")) return src
+        return settings.active()?.let { "term:${it.id}" } ?: ""
     }
 
-    // keyer gone: no traffic; mosh-server keeps the session and the client waits in this process (if Android
-    // ends the process, keyer's next session starts a new one: tmux on the server keeps the work).
-    private fun pauseMosh() {
-        if (moshWith == null) return stopMosh()
-        Native.moshPause(true)
-        update(mosh = "paused")
+    // A terminal's session: its SSH start runs on its own thread (an unreachable server holds up nothing else),
+    // then mosh keeps it, side by side with the other terminals', while the process lives.
+    private fun startTerm(s: Settings.Server) {
+        val t = terms.getOrPut(s.id) { Term(s.id) }
+        if (t.started || t.thread?.isAlive == true || t.unknownHost != null) return
+        if (t.status.startsWith("error") && SystemClock.elapsedRealtime() < t.retryAt) return
+        t.key = serverKey(s)
+        if (s.host.isEmpty() || s.user.isEmpty()) return failed(t, "no address (Terminal tab)")
+        t.status = "starting"
+        val record = (vault.text(vaultKey(t.id)) ?: vault.text(Vault.MOSH))?.split(" ")
+        val previous = if (record?.getOrNull(4) == "${s.host}:${s.port}") record.getOrNull(3)?.toIntOrNull() ?: 0 else 0
+        val cols = settings.cols
+        val rows = settings.rows
+        val termux = s.local && s.port == Termux.PORT
+        val boot = Bootstrap(vault)
+        Log.i(TAG, "terminal ${s.name}: starting")
+        t.thread = Thread({
+            val r = runCatching {
+                // Termux on this phone: its sshd started first (it does not run by itself).
+                if (termux) Termux.ensureSshd(this)?.let { throw IllegalStateException(it) }
+                boot.start(s.host, s.port, s.user, s.command, s.moshPorts, previous)
+            }
+            work.post { started(t, s, r, cols, rows) }
+        }, "vox-start-${s.id}").apply { isDaemon = true }
+        t.thread?.start()
     }
 
-    private fun stopMosh() {
-        Native.moshStop()
-        moshWith = null
-        update(mosh = "off")
+    private fun started(t: Term, s: Settings.Server, r: Result<Bootstrap.Mosh>, cols: Int, rows: Int) {
+        t.thread = null
+        if (terms[t.id] !== t || ended) return // dropped meanwhile (its server edited or removed), or the service ended
+        val m = r.getOrNull()
+        val e = r.exceptionOrNull()
+        when {
+            m != null -> {
+                vault.putText(vaultKey(t.id), "${m.ip} ${m.port} ${m.key} ${m.pid} ${s.host}:${s.port}")
+                val error = Native.moshStart(t.id, m.ip, m.port, m.key, cols, rows)
+                if (error == null) {
+                    t.started = true
+                    t.tries = 0
+                    t.status = "connecting"
+                    if (moshPaused) Native.moshPause(true)
+                    if ((cols to rows) != moshSize) Native.resize(moshSize.first, moshSize.second)
+                    Log.i(TAG, "terminal ${s.name}: started")
+                } else failed(t, error)
+            }
+            e is Bootstrap.UnknownHost -> {
+                // Termux's own host key, as Termux reported it at setup: trusted without asking.
+                if (s.local && e.fingerprint in settings.termuxKeys.split(" ")) {
+                    Bootstrap.remember(vault, "${s.host}:${s.port}", e.fingerprint)
+                    t.status = "off"
+                } else {
+                    t.unknownHost = e.fingerprint
+                    t.status = "error: confirm the host key"
+                }
+            }
+            else -> {
+                Log.w(TAG, "terminal ${s.name}: ${e?.message}")
+                val refused = (e?.message ?: "").contains("refused", ignoreCase = true)
+                failed(t, if (s.local && refused) "this phone's SSH server is off (type ssh in Termux)" else e?.message ?: "failed")
+            }
+        }
+        refresh() // shown (or its card) if it is the one chosen
+        update()
     }
+
+    private fun failed(t: Term, why: String) {
+        t.status = "error: $why"
+        val wait = RETRY_MS[minOf(t.tries, RETRY_MS.size - 1)]
+        t.tries++
+        t.retryAt = SystemClock.elapsedRealtime() + wait
+        work.removeCallbacks(moshRetry)
+        work.postDelayed(moshRetry, wait + 50)
+    }
+
+    // A terminal's session ends (its server edited or removed, its command ended, no answer for long).
+    private fun dropTerm(t: Term) {
+        terms.remove(t.id)
+        if (t.started) Native.moshStop(t.id)
+        if (moshShown == t.id) moshShown = ""
+        tabCache.remove(t.id)
+    }
+
+    // Every terminal's session quiet (keyer gone, a screen or a card shown) or going again.
+    private fun pauseTerms(on: Boolean) {
+        if (moshPaused == on) return
+        moshPaused = on
+        Native.moshPause(on)
+    }
+
+    // The chosen terminal on the glasses: its session once it has one, else (and for a screen that cannot show)
+    // a card: the source's name, what is going on, and how to switch. Its tabs on the dashboard.
+    private var tabsFor: String? = null
+    private fun showTerm(server: Settings.Server?) {
+        val t = server?.let { terms[it.id] }
+        val shown = if (t != null && t.started) t.id else ""
+        if (shown != moshShown) {
+            moshShown = shown
+            Native.moshShow(shown)
+        }
+        if (server?.id != tabsFor) {
+            tabsFor = server?.id
+            Session.tabList = server?.let { tabCache[it.id] }.orEmpty()
+            dash()
+            if (t?.status == "connected") fetchTabs()
+        }
+        card(cardLines(server, t))
+    }
+
+    private fun card(lines: List<String>) {
+        val size = settings.cols to settings.rows
+        if (lines == cardShown && size == cardSize) return
+        cardShown = lines
+        cardSize = size
+        Native.card(lines.toTypedArray(), size.first, size.second)
+    }
+
+    private fun cardLines(server: Settings.Server?, t: Term?): List<String> {
+        val key = chosen()
+        val hint = switchHint()
+        val lines = when {
+            key == Settings.PHONE -> listOf("PHONE SCREEN", "", "Not shared right now", "Share it in Vox: Phone screen", "", hint)
+            key.startsWith("screen:") -> {
+                val name = settings.servers().firstOrNull { "screen:${it.id}" == key }?.name ?: "Screen"
+                if (remoteWhy.isEmpty()) listOf("${name.uppercase()} SCREEN", "", "Starting…", "", hint)
+                else listOf("${name.uppercase()} SCREEN", "", remoteWhy, "Trying again by itself", "", hint)
+            }
+            server == null -> listOf("NO TERMINAL", "", "Add a server in Vox: Terminal tab", "", hint)
+            t == null || t.status == "off" || t.status == "starting" || t.status == "connecting" ->
+                listOf(server.name.uppercase(), "", "Connecting…", "", hint)
+            t.unknownHost != null -> listOf(server.name.uppercase(), "", "New host key: confirm it in Vox", "", hint)
+            t.status.startsWith("error") ->
+                listOf(server.name.uppercase(), "", "Can't connect: " + t.status.removePrefix("error: "), "Trying again by itself", "", hint)
+            else -> emptyList()
+        }
+        val room = maxOf(8, settings.cols - 2)
+        return lines.map { if (it.length <= room) it else it.take(room - 1) + "…" }
+    }
+
+    // How to switch: the user's own TouchBar gesture for the next source (Settings), and the keyboard's.
+    private fun switchHint(): String {
+        val touch = (0..1).flatMap { arm ->
+            Settings.GESTURES.filter { settings.gestureAction(arm, it.first) == Settings.ACTION_NEXT }
+                .map { (if (arm == 0) "left " else "right ") + it.second }
+        }.firstOrNull()
+        return listOfNotNull(touch?.let { "Next source: $it" }, "Alt+arrows").joinToString(" · ")
+    }
+
+    private fun vaultKey(id: String) = Vault.MOSH + "." + id.filter { it.isLetterOrDigit() || it == '-' || it == '_' }
 
     private fun trust(fingerprint: String?) {
-        if (fingerprint == null || fingerprint != Session.unknownHost) return
-        Bootstrap.remember(vault, "${settings.host}:${settings.port}", fingerprint)
-        Session.unknownHost = null
-        update(mosh = "off")
-        startMosh()
+        val s = settings.active() ?: return
+        val t = terms[s.id] ?: return
+        if (fingerprint == null || fingerprint != t.unknownHost) return
+        Bootstrap.remember(vault, "${s.host}:${s.port}", fingerprint)
+        t.unknownHost = null
+        t.status = "off"
+        t.retryAt = 0L
+        update()
+        refresh()
     }
 
     private fun startKeyer() {
@@ -654,26 +791,39 @@ class ScouterService : Service() {
     // After a native change: the mosh status and, while the terminal is live, a wake lock (R4).
     private fun poll() {
         val s = Native.status()
-        val mosh = when {
-            Session.mosh in setOf("off", "paused") || Session.mosh.startsWith("error") -> Session.mosh
-            s[1] == 1 -> "ended"
-            s[0] == 0 -> "connecting"
-            s[2] > 10000 -> "no contact for ${s[2] / 1000} s"
-            else -> "connected"
+        var changed = false
+        for (t in terms.values.toList()) {
+            if (!t.started) continue
+            val st = Native.moshStatus(t.id) ?: continue
+            val now = when {
+                st[1] == 1 -> "ended"
+                st[0] == 0 -> "connecting"
+                st[2] > 10000 -> "no contact for ${st[2] / 1000} s"
+                else -> "connected"
+            }
+            if (now != t.status) {
+                if (now == "connected" && t.status == "connecting" && t.id == settings.active()?.id) work.post { fetchTabs() }
+                t.status = now
+                changed = true
+            }
+            // Its command ended, or (R20) its server has not answered for 5 min with the network up: a new session
+            // (the chosen terminal's at once, another's when it is chosen again).
+            if (now == "ended" || (!moshPaused && st[0] == 1 && st[2] > 300000 && online())) work.post {
+                if (terms[t.id] === t) {
+                    dropTerm(t)
+                    refresh()
+                }
+            }
         }
         val shown = s[5] == 1
         val title = Native.texts()[1]
-        if (mosh != Session.mosh || shown != Session.shown || title != Session.title) {
+        if (changed || shown != Session.shown || title != Session.title) {
             Session.shown = shown
             Session.title = title
-            update(mosh = mosh)
+            if (changed && !ended && settings.show == Settings.TERMINAL)
+                showTerm(if (chosen().startsWith("term:")) settings.active() else null)
+            update()
         } else Session.changed()
-        if (mosh == "ended") work.post { stopMosh() } // the next refresh starts a new session
-        // R20: a new session over SSH when the network is up and the server has not answered for 5 min.
-        if (mosh != "paused" && s[0] == 1 && s[2] > 300000 && online()) work.post {
-            stopMosh()
-            startMosh()
-        }
     }
 
     private fun online(): Boolean {
@@ -682,9 +832,12 @@ class ScouterService : Service() {
         return caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }
 
-    private fun update(glasses: String? = null, mosh: String? = null, keyer: String? = null, screen: String? = null) {
+    private fun update(glasses: String? = null, keyer: String? = null, screen: String? = null) {
         glasses?.let { Session.glasses = it }
-        mosh?.let { Session.mosh = it }
+        // The chosen terminal's state, for the app and the notification.
+        val t = settings.active()?.let { terms[it.id] }
+        Session.mosh = if (t != null && t.started && moshPaused) "paused" else t?.status ?: "off"
+        Session.unknownHost = t?.unknownHost
         keyer?.let { Session.keyer = it }
         screen?.let { Session.screen = it }
         Session.capturing = this.screen != null
@@ -772,40 +925,63 @@ class ScouterService : Service() {
     }
 
     // A source on the glasses (Settings.sources): "term:ID" (that saved server's terminal), PHONE (the phone's
-    // screen, while it is shared: Android asks in the app), "screen:ID" (that server's screen over SSH), or
-    // next / prev through them.
+    // screen), "screen:ID" (that server's screen over SSH), or next / prev through them (skipping the phone's
+    // screen while it is not shared).
     private fun source(want: String) {
-        val all = settings.sources().map { it.first }.filter { it != Settings.PHONE || screen != null }
         val key = if (want == Settings.ACTION_NEXT || want == Settings.ACTION_PREV) {
+            val all = settings.sources().map { it.first }.filter { it != Settings.PHONE || screen != null }
             if (all.isEmpty()) return
-            val now = if (settings.show == Settings.TERMINAL) "term:${settings.active()?.id}" else Session.screenSource
-            val i = all.indexOf(now)
+            val i = all.indexOf(chosen())
             all[Math.floorMod(if (i < 0) 0 else i + if (want == Settings.ACTION_NEXT) 1 else -1, all.size)]
         } else want
+        choose(key)
+    }
+
+    // The user's choice (Settings.source): kept until they choose another. One that cannot show yet (a server
+    // that does not answer, the phone's screen not shared) shows its card; nothing switches by itself.
+    private fun choose(key: String) {
         settings.phone = true
         when {
             key.startsWith("term:") -> {
                 val id = key.removePrefix("term:")
                 if (settings.servers().none { it.id == id }) return
                 if (settings.activeServer != id || settings.host.isEmpty()) settings.useServer(id)
-                view(Settings.TERMINAL)
+                terms[id]?.let { if (it.status.startsWith("error")) it.retryAt = 0L } // chosen again: tried at once
+                settings.source = key
+                stopRemote()
+                render(Settings.TERMINAL)
             }
             key == Settings.PHONE -> {
-                if (screen == null) return update(screen = "not shared: tap Phone screen in the app")
+                settings.source = key
+                lastScreen = key
                 stopRemote()
-                Session.screenSource = key
-                view(Settings.SCREEN)
+                if (screen == null) {
+                    update(screen = "not shared: tap Phone screen in the app")
+                    render(Settings.TERMINAL) // its card
+                } else {
+                    Session.screenSource = key
+                    render(Settings.SCREEN)
+                }
             }
             key.startsWith("screen:") -> {
                 val s = settings.servers().firstOrNull { it.id == key.removePrefix("screen:") } ?: return
-                startRemote(s)
+                settings.source = key
+                lastScreen = key
+                remoteTries = 0
+                remoteRetryAt = 0L
+                remoteWhy = ""
                 Session.screenSource = key
-                view(Settings.SCREEN)
+                if (remote?.key != key) {
+                    startRemote(s)
+                    render(Settings.TERMINAL) // its card ("Starting…") until its first image
+                } else render(if (remote!!.images > 0) Settings.SCREEN else Settings.TERMINAL)
                 update(screen = "starting")
                 work.removeCallbacks(screenTicker)
-                work.postDelayed(screenTicker, 2000)
+                work.postDelayed(screenTicker, 1000)
             }
+            else -> return
         }
+        Session.source = settings.sourceName(key)
         SourceTile.refresh(this)
     }
 
@@ -826,15 +1002,25 @@ class ScouterService : Service() {
         if (Session.screenSource.startsWith("screen:")) Session.screenSource = ""
     }
 
-    // A server's screen stopped by itself (not reachable, no vox-screen there, ended): the terminal comes back.
+    // A server's screen stopped by itself (not reachable, no vox-screen there, ended): it stays the choice, its
+    // card says why, and it is tried again, soon at first, then less often.
+    private var remoteWhy = ""
+    private var remoteTries = 0
+    private var remoteRetryAt = 0L
+    private var lastScreen = "" // the screen last chosen (the TouchBar's terminal / screen switch goes back to it)
     private fun remoteEnded(r: RemoteScreen, why: String) {
         if (remote !== r) return
         remote = null
         Session.remote = ""
-        if (Session.screenSource == r.key) {
-            Session.screenSource = ""
+        Log.w(TAG, "remote screen: $why")
+        remoteWhy = why
+        val wait = RETRY_MS[minOf(remoteTries, RETRY_MS.size - 1)]
+        remoteTries++
+        remoteRetryAt = SystemClock.elapsedRealtime() + wait
+        work.postDelayed({ if (chosen() == r.key) refresh() }, wait + 50)
+        if (chosen() == r.key) {
             if (screen == null) Native.screenStop()
-            view(Settings.TERMINAL)
+            render(Settings.TERMINAL) // its card
         }
         update(screen = why)
     }
@@ -972,8 +1158,11 @@ class ScouterService : Service() {
         }
     }
 
+    // The chosen terminal's tabs, asked of its tmux only while its session is connected; each terminal keeps its
+    // own list (tabCache), so a switch shows the right tabs at once.
     private fun fetchTabs() {
         val s = settings.active() ?: return
+        if (!chosen().startsWith("term:")) return
         val session = Tabs.session(s)
         if (session == null) {
             if (Session.tabList.isNotEmpty()) {
@@ -982,14 +1171,16 @@ class ScouterService : Service() {
             }
             return
         }
-        if (tabsAsking) return
+        if (terms[s.id]?.status != "connected" || tabsAsking) return
         val cmd = Tabs.command("list", session) ?: return
         tabsAsking = true
         Thread {
             val list = runCatching { Tabs.parse(Bootstrap(vault).runShared(s.host, s.port, s.user, cmd)) }.getOrNull()
             work.post {
                 tabsAsking = false
-                if (list != null && (list.size != Session.tabList.size ||
+                if (list == null) return@post
+                tabCache[s.id] = list
+                if (settings.active()?.id == s.id && (list.size != Session.tabList.size ||
                         list.zip(Session.tabList).any { (a, b) -> a.index != b.index || a.name != b.name || a.active != b.active })) {
                     Session.tabList = list
                     dash()
@@ -1004,6 +1195,11 @@ class ScouterService : Service() {
         val session = Tabs.session(s)
         if (session == null) {
             Session.tabs = "tabs need tmux on ${s.name}: its command like tmux new -A -s main"
+            Session.changed()
+            return
+        }
+        if (terms[s.id]?.status != "connected") {
+            if (action != "mouse") Session.tabs = "${s.name} is not connected yet"
             Session.changed()
             return
         }
@@ -1228,17 +1424,17 @@ class ScouterService : Service() {
     }
 
     // What the glasses show: the terminal, or the phone's screen (only while it is shared).
-    private fun view(show: String) {
-        if (show == Settings.SCREEN && screen == null && remote == null) return update(screen = "not shared: tap Phone screen in the app")
-        if (show == Settings.SCREEN && Session.screenSource.isEmpty()) Session.screenSource = if (remote != null) remote!!.key else Settings.PHONE
-        if (show == Settings.TERMINAL) stopRemote()
+    // What the glasses draw: a screen (the phone's, or a server's once its images come) or the terminal's path
+    // (the chosen terminal, or the card of a source that cannot show yet). The choice itself is Settings.source.
+    private fun render(want: String) {
+        val show = if (want == Settings.SCREEN && screen == null && remote == null) Settings.TERMINAL else want
+        if (show == Settings.SCREEN && Session.screenSource.isEmpty()) Session.screenSource = remote?.key ?: Settings.PHONE
         settings.show = show
-        settings.source = if (show == Settings.TERMINAL) "term:${settings.active()?.id ?: ""}" else Session.screenSource
-        Session.source = settings.sourceName(settings.source)
+        Session.source = settings.sourceName(chosen())
         if (show == Settings.SCREEN) {
             val error = Native.screenStart()
             if (error != null) {
-                // The glasses keep the terminal: say so, and keep the sharing for another try.
+                // The glasses keep the terminal's path: say so, and keep the sharing for another try.
                 Log.w(TAG, "phone screen: $error")
                 settings.show = Settings.TERMINAL
                 update(screen = "error: $error")
@@ -1271,8 +1467,10 @@ class ScouterService : Service() {
                 blankByLock = false
                 display(Session.blank, name)
             }
-            Settings.ACTION_VIEW -> if (screen != null || remote != null)
-                view(if (settings.show == Settings.SCREEN) Settings.TERMINAL else Settings.SCREEN)
+            // The terminal and the screen last chosen, one then the other.
+            Settings.ACTION_VIEW -> if (chosen().startsWith("term:")) {
+                lastScreen.ifEmpty { if (screen != null) Settings.PHONE else "" }.takeIf { it.isNotEmpty() }?.let { choose(it) }
+            } else settings.active()?.let { choose("term:${it.id}") }
             Settings.ACTION_NEXT, Settings.ACTION_PREV -> source(action)
             Settings.ACTION_LISTEN -> listen(true)
             Settings.ACTION_TAB_NEXT -> tabs("next")
@@ -1299,10 +1497,9 @@ class ScouterService : Service() {
         work.removeCallbacks(screenTicker)
         Native.screenStop()
         Session.screenSource = ""
-        settings.show = Settings.TERMINAL
         foreground()
         update(screen = why)
-        refresh()
+        render(Settings.TERMINAL) // the phone's screen still chosen: its card says it is not shared
     }
 
     // GlassesLink: an arm's link went up or down.
@@ -1378,8 +1575,23 @@ class ScouterService : Service() {
         // (emulated arms in the app, no keyer) needs no Bluetooth.
         fun bluetoothOn(context: Context) = BuildConfig.FLAVOR == "emulated" ||
             bluetooth(context) && context.getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled == true
-        // The native mosh session outlives a service: paused between keyer's sessions, in this process.
-        @Volatile private var moshWith: String? = null // the settings it started with
+        // The native mosh sessions outlive a service (paused between keyer's sessions, in this process): one per
+        // terminal (a saved server), side by side, by its id. Used on the work thread.
+        class Term(val id: String) {
+            @Volatile var status = "off" // off, starting, connecting, connected, no contact for N s, ended, error: …
+            var key: String? = null      // its server's fields when it was started (serverKey)
+            var started = false          // a native session exists
+            var tries = 0                // failed starts in a row
+            var retryAt = 0L             // after an error: no new start before (elapsedRealtime)
+            var thread: Thread? = null   // its SSH start, under way
+            var unknownHost: String? = null // a host key waiting for the user
+        }
+        private val terms = HashMap<String, Term>()
+        private val tabCache = HashMap<String, List<Tabs.Tab>>() // each terminal's tabs, as last asked
+        private var moshShown = ""     // the session shown on the glasses (Native.moshShow)
+        private var moshPaused = false // every session quiet (Native.moshPause)
+        private var cardShown: List<String> = emptyList() // the card on the glasses (Native.card)
+        private var cardSize = 0 to 0
         @Volatile private var moshSize = 0 to 0
 
         // Never without Bluetooth permission (Settings asks for it), nor with Bluetooth off (a running service

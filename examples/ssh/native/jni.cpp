@@ -8,6 +8,7 @@
 #include <clocale>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -38,9 +39,12 @@ ssh::GlassesConfig g_config;
 int g_angle = 20;
 bool g_ignore_worn = false;
 std::vector<uint8_t> g_font;
-std::mutex g_mutex; // guards g_mosh
-std::unique_ptr<ssh::MoshClient> g_mosh;
-std::atomic<ssh::MoshClient *> g_mosh_live{nullptr}; // between Start and Stop, for its own thread
+std::mutex g_mutex; // guards g_moshes and g_mosh
+// Each terminal's mosh session, by the app's id (a saved server's): they all run side by side, so one that
+// cannot connect holds up no other, and a switch between them is at once. One is shown (g_mosh).
+std::map<std::string, std::unique_ptr<ssh::MoshClient>> g_moshes;
+ssh::MoshClient *g_mosh = nullptr;                  // the session shown (in g_moshes), or none
+std::atomic<ssh::MoshClient *> g_mosh_live{nullptr}; // g_mosh, for the sessions' own threads
 std::mutex g_term_mutex;                          // guards g_term and g_force
 std::shared_ptr<ssh::GlassesTerminal> g_term;
 bool g_force = false;
@@ -60,6 +64,9 @@ std::vector<std::string> g_band;
 std::vector<std::string> g_header;
 int g_fade = 400; // the look-up fade, ms (terminalFade)
 int g_dash_h = 0;  // the dashboard's height above the terminal (terminalDash)
+// A card the terminal shows in place of the session's screen (card): what is chosen and why it cannot show
+// yet. Guarded by g_band_mutex; null: none.
+std::shared_ptr<const ssh::Snapshot> g_card;
 // The pointer (pointer): a cell of the SSH session's screen shown inverted; -1: none. Guarded by g_band_mutex.
 int g_pointer_row = -1, g_pointer_col = -1;
 std::vector<uint8_t> g_dash; // its last picture (dash), for a terminal that starts again; guarded by g_term_mutex
@@ -178,6 +185,7 @@ std::shared_ptr<const ssh::Snapshot> WithBand(std::shared_ptr<const ssh::Snapsho
     header = g_header;
     prow = g_pointer_row;
     pcol = g_pointer_col;
+    if (g_card) s = g_card;
   }
   if (!s || s->cols < 8) return s;
   // The pointer: its cell inverted (a block), on a copy.
@@ -252,7 +260,7 @@ std::string StartTerminal() {
   std::lock_guard<std::mutex> lock(g_term_mutex);
   term->Force(g_force);
   if (!g_dash.empty()) term->SetDash(g_dash);
-  if (s) term->Show(WithBand(s));
+  if (auto w = WithBand(s)) term->Show(w);
   g_term = term;
   return {};
 }
@@ -371,7 +379,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *) {
 }
 
 JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_version(JNIEnv *env, jclass) {
-  return env->NewStringUTF("scouter_ssh 0.16, mosh 1.4.0");
+  return env->NewStringUTF("scouter_ssh 0.17, mosh 1.4.0");
 }
 
 // ------------------------------------------------ glasses
@@ -482,46 +490,141 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_linkProblem(JNIEnv *env, jclas
 
 // ------------------------------------------------ mosh
 
-JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_moshStart(JNIEnv *env, jclass, jstring ip, jint port,
-                                                                jstring key, jint cols, jint rows) {
+JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_moshStart(JNIEnv *env, jclass, jstring jid, jstring ip,
+                                                                jint port, jstring key, jint cols, jint rows) {
+  std::string id = Text(env, jid);
   std::lock_guard<std::mutex> lock(g_mutex);
-  if (g_mosh) return env->NewStringUTF("already started");
-  auto mosh = std::make_unique<ssh::MoshClient>([] {
-    if (ssh::MoshClient *m = g_mosh_live.load()) {
+  if (g_moshes.count(id)) return env->NewStringUTF("already started");
+  // On its own thread: shown on the glasses while it is the one shown, else only kept up to date.
+  auto self = std::make_shared<std::atomic<ssh::MoshClient *>>(nullptr);
+  auto mosh = std::make_unique<ssh::MoshClient>([self] {
+    ssh::MoshClient *m = self->load();
+    if (m && m == g_mosh_live.load()) {
       std::lock_guard<std::mutex> lock(g_term_mutex);
       if (g_term)
-        if (auto s = m->Latest()) g_term->Show(WithBand(s));
+        if (auto w = WithBand(m->Latest())) g_term->Show(w);
     }
     Changed();
   });
-  g_mosh_live = mosh.get();
+  self->store(mosh.get());
   std::string error;
   if (!mosh->Start(Text(env, ip), port, Text(env, key), cols, rows, &error)) {
-    g_mosh_live = nullptr;
+    self->store(nullptr);
     return env->NewStringUTF(error.c_str());
   }
-  g_mosh = std::move(mosh);
+  g_moshes[id] = std::move(mosh);
   return nullptr;
 }
 
-JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_moshPause(JNIEnv *, jclass, jboolean on) {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  if (g_mosh) g_mosh->Pause(on);
+// The session shown on the glasses (and typed into): that id's; false (none shown) when it has none.
+JNIEXPORT jboolean JNICALL Java_scouterkit_ssh_Native_moshShow(JNIEnv *env, jclass, jstring jid) {
+  std::string id = Text(env, jid);
+  std::shared_ptr<const ssh::Snapshot> s;
+  bool found;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto it = g_moshes.find(id);
+    g_mosh = it == g_moshes.end() ? nullptr : it->second.get();
+    g_mosh_live = g_mosh;
+    found = g_mosh != nullptr;
+    if (g_mosh) s = g_mosh->Latest();
+  }
+  std::lock_guard<std::mutex> lock(g_term_mutex);
+  if (g_term)
+    if (auto w = WithBand(s)) g_term->Show(w);
+  return found ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_moshStop(JNIEnv *, jclass) {
+// heard, ended, silent ms of that id's session; null: there is none.
+JNIEXPORT jintArray JNICALL Java_scouterkit_ssh_Native_moshStatus(JNIEnv *env, jclass, jstring jid) {
+  std::string id = Text(env, jid);
+  jint v[3] = {0, 0, 0};
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto it = g_moshes.find(id);
+    if (it == g_moshes.end()) return nullptr;
+    ssh::Status st = it->second->GetStatus();
+    v[0] = st.heard;
+    v[1] = st.ended;
+    v[2] = jint(std::min<int64_t>(st.silent_ms, INT32_MAX));
+  }
+  jintArray out = env->NewIntArray(3);
+  env->SetIntArrayRegion(out, 0, 3, v);
+  return out;
+}
+
+// Every session quiet (keyer gone, a screen shown) or going again.
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_moshPause(JNIEnv *, jclass, jboolean on) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  for (auto &m : g_moshes) m.second->Pause(on);
+}
+
+// That id's session ends (its mosh-server goes by itself after a while).
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_moshStop(JNIEnv *env, jclass, jstring jid) {
+  std::string id = Text(env, jid);
   std::unique_ptr<ssh::MoshClient> mosh;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
-    mosh = std::move(g_mosh);
+    auto it = g_moshes.find(id);
+    if (it == g_moshes.end()) return;
+    mosh = std::move(it->second);
+    g_moshes.erase(it);
+    if (g_mosh == mosh.get()) {
+      g_mosh = nullptr;
+      g_mosh_live = nullptr;
+    }
   }
-  if (mosh) mosh->Stop();
-  g_mosh_live = nullptr;
+  mosh->Stop();
 }
 
+// Every session's size (they share the glasses).
 JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_resize(JNIEnv *, jclass, jint cols, jint rows) {
   std::lock_guard<std::mutex> lock(g_mutex);
-  if (g_mosh) g_mosh->Resize(cols, rows);
+  for (auto &m : g_moshes) m.second->Resize(cols, rows);
+}
+
+// A card in place of the shown session's screen: its lines centred (the first bold, the last faint, when more
+// than one), on a terminal of cols x rows; none (no lines): the session's screen again.
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_card(JNIEnv *env, jclass, jobjectArray lines, jint cols, jint rows) {
+  std::vector<std::string> l;
+  jsize n = lines ? env->GetArrayLength(lines) : 0;
+  for (jsize i = 0; i < n; i++) {
+    auto js = static_cast<jstring>(env->GetObjectArrayElement(lines, i));
+    l.push_back(js ? Text(env, js) : std::string());
+    if (js) env->DeleteLocalRef(js);
+  }
+  std::shared_ptr<ssh::Snapshot> card;
+  if (!l.empty() && cols >= 8 && rows > 0) {
+    card = std::make_shared<ssh::Snapshot>();
+    card->cols = cols;
+    card->rows = rows;
+    card->cells.assign(size_t(cols) * size_t(rows), ssh::Cell());
+    card->cursor_visible = false;
+    int top = std::max(0, (rows - int(l.size())) / 2);
+    for (size_t i = 0; i < l.size() && top + int(i) < rows; i++) {
+      std::vector<std::string> chars = Chars(l[i]);
+      int w = std::min<int>(int(chars.size()), cols);
+      int left = (cols - w) / 2;
+      for (int c = 0; c < w; c++) {
+        ssh::Cell &cell = card->cells[size_t(top + int(i)) * size_t(cols) + size_t(left + c)];
+        cell.text = chars[size_t(c)];
+        cell.bold = i == 0;
+        cell.faint = l.size() > 1 && i == l.size() - 1;
+      }
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_band_mutex);
+    g_card = card;
+  }
+  std::shared_ptr<const ssh::Snapshot> s;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_mosh) s = g_mosh->Latest();
+  }
+  std::lock_guard<std::mutex> lock(g_term_mutex);
+  if (g_term)
+    if (auto w = WithBand(s)) g_term->Show(w);
 }
 
 // A key from keyer (R17): encoded with the screen's cursor-key mode, then to mosh.
@@ -652,7 +755,8 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_voiceBand(JNIEnv *env, jclass,
     g_band = t.empty() ? std::vector<std::string>() : Wrap(t, cols, std::clamp(int(lines), 1, 4));
   }
   std::lock_guard<std::mutex> lock(g_term_mutex);
-  if (g_term && s) g_term->Show(WithBand(s));
+  if (g_term)
+    if (auto w = WithBand(s)) g_term->Show(w);
 }
 
 // The look-up header's lines above the terminal (none: no header); the app gives mosh as many rows fewer, plus
@@ -676,7 +780,8 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_lookUpHeader(JNIEnv *env, jcla
     g_header = h;
   }
   std::lock_guard<std::mutex> lock(g_term_mutex);
-  if (g_term && s) g_term->Show(WithBand(s));
+  if (g_term)
+    if (auto w = WithBand(s)) g_term->Show(w);
 }
 
 // The dashboard above the terminal, h pixels high (0: none), at once (a running terminal starts again).
@@ -742,7 +847,8 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_pointer(JNIEnv *, jclass, jint
     g_pointer_col = col;
   }
   std::lock_guard<std::mutex> lock(g_term_mutex);
-  if (g_term && s) g_term->Show(WithBand(s));
+  if (g_term)
+    if (auto w = WithBand(s)) g_term->Show(w);
 }
 
 // A mouse event at a cell (row, col from 0) for the program in the SSH session, in the encoding it asked for:
@@ -1016,6 +1122,10 @@ JNIEXPORT jbyteArray JNICALL Java_scouterkit_ssh_Native_snapshot(JNIEnv *env, jc
   {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_mosh) s = g_mosh->Latest();
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_band_mutex);
+    if (g_card) s = g_card;
   }
   if (!s) return nullptr;
   std::string out;

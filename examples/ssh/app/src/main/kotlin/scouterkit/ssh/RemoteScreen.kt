@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicReference
 class RemoteScreen(private val context: Context, val server: Settings.Server, private val onStopped: (String) -> Unit) {
     val key get() = "screen:${server.id}"
     @Volatile var state = Native.SCREEN_SAME
+    @Volatile var images = 0 // images received so far (the service shows the screen once one has come)
     @Volatile private var released = false
     @Volatile private var stream: Bootstrap.Stream? = null
     private val latest = AtomicReference<ByteArray?>(null)
@@ -95,6 +96,7 @@ class RemoteScreen(private val context: Context, val server: Settings.Server, pr
                 } else if (prev == 0xFF && b == 0xD9) {
                     image.write(chunk, from, i - from + 1)
                     latest.set(image.toByteArray())
+                    images++
                     wake.release()
                     inside = false
                 }

@@ -66,16 +66,21 @@ class Bootstrap(private val vault: Vault) {
     }
 
     // A short command's output on a connection kept open between calls (the tabs: tmux, every few seconds while
-    // the terminal shows), opened again when it dropped or the server changed.
-    fun runShared(host: String, port: Int, user: String, command: String): String = synchronized(Bootstrap) {
+    // the terminal shows), opened again when it dropped. One per server, each with its own lock: a server that
+    // does not answer holds up no other's.
+    fun runShared(host: String, port: Int, user: String, command: String): String {
         val key = "$user@$host:$port"
-        val s: com.jcraft.jsch.Session = shared?.takeIf { sharedKey == key && it.isConnected } ?: run {
-            runCatching { shared?.disconnect() }
+        val lock = synchronized(Bootstrap) { locks.getOrPut(key) { Any() } }
+        return synchronized(lock) { runOn(key, host, port, user, command) }
+    }
+
+    private fun runOn(key: String, host: String, port: Int, user: String, command: String): String {
+        val s: com.jcraft.jsch.Session = synchronized(Bootstrap) { shared[key] }?.takeIf { it.isConnected } ?: run {
+            synchronized(Bootstrap) { shared.remove(key) }?.let { old -> runCatching { old.disconnect() } }
             val fresh = connect(host, port, user)
             fresh.setServerAliveInterval(15000)
             fresh.timeout = 15000
-            shared = fresh
-            sharedKey = key
+            synchronized(Bootstrap) { shared[key] = fresh }
             fresh
         }
         try {
@@ -89,7 +94,7 @@ class Bootstrap(private val vault: Vault) {
             out
         } catch (e: Exception) {
             runCatching { s.disconnect() } // the next call opens a fresh one
-            shared = null
+            synchronized(Bootstrap) { if (shared[key] === s) shared.remove(key) }
             throw e
         }
     }
@@ -230,13 +235,13 @@ class Bootstrap(private val vault: Vault) {
     }
 
     companion object {
-        // The connection runShared keeps (one at a time), and whose it is.
-        private var shared: com.jcraft.jsch.Session? = null
-        private var sharedKey = ""
+        // The connections runShared keeps, one per server ("user@host:port"), and a lock for each.
+        private val shared = HashMap<String, com.jcraft.jsch.Session>()
+        private val locks = HashMap<String, Any>()
 
-        fun dropShared() = synchronized(Bootstrap) {
-            runCatching { shared?.disconnect() }
-            shared = null
+        fun dropShared() {
+            val all = synchronized(Bootstrap) { shared.values.toList().also { shared.clear() } }
+            for (s in all) runCatching { s.disconnect() }
         }
 
         // A new key made on this phone (ECDSA P-256: JSch cannot write Ed25519 private keys): the private key goes

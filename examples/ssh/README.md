@@ -87,6 +87,13 @@ glasses, the saved servers) and **Settings**.
   Settings tile "Next source" and the TouchBar (by default: left hold next, left double tap previous, right hold
   display off / on) do the same from anywhere. The phone's screen needs Android's consent once per sharing, in
   the app.
+- **Each source on its own**: every terminal has its own mosh session (`Native.moshStart(id, …)`), started on its
+  own thread and kept, side by side with the others, after a switch away, so switching back is at once and a
+  server that does not answer holds up nothing else. Only the user's choice (`Settings.source`) sets what shows:
+  one that cannot show yet (a server not answering, the phone's screen not shared, a server's screen that
+  stopped) keeps its place and shows a card on the glasses (`Native.card`: its name, why, "trying again by
+  itself", how to switch) while it is tried again, soon at first, then less often. Each terminal keeps its own tab
+  list and its own connection for it.
 - **Saved servers** (Terminal tab): name, host, port, user, command. The one in use is what Settings, "Server in
   use" edits. Host keys are trusted per server (host:port), so switching does not ask again. A link
   `vox://server?name=Laptop&host=HOST&port=22&user=USER&command=...` (e.g. `adb shell am start -d '...'`) adds or
