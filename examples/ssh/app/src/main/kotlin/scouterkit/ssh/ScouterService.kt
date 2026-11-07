@@ -228,6 +228,9 @@ class ScouterService : Service() {
         }
         settings.listen(lookPrefs)
         work.postDelayed(windowPoll, 3000)
+        Media.onChange = { work.post { dash() } }
+        Media.start(this)
+        work.postDelayed(mediaTick, 1000)
         LookUp.onChange = { work.post { header() } }
         work.post(headerTick)
         work.postDelayed(tabPoll, 5000)
@@ -376,6 +379,9 @@ class ScouterService : Service() {
         VoxKeys.onApp = null
         settings.unlisten(lookPrefs)
         work.removeCallbacks(windowPoll)
+        Media.onChange = null
+        Media.stop()
+        work.removeCallbacks(mediaTick)
         work.removeCallbacks(batteryTicker)
         runCatching { unregisterReceiver(lock) }
         runCatching { unregisterReceiver(bonds) }
@@ -1334,6 +1340,9 @@ class ScouterService : Service() {
         val hit = barHits.getOrNull(pointerBar) ?: return
         Session.tabs = ""
         when {
+            hit.action.startsWith("media:") -> if (what == "click") {
+                if (!Media.control(hit.action.removePrefix("media:"))) Session.tabs = "nothing plays"
+            }
             hit.action == "phone" -> if (what == "click") {
                 barLeave()
                 phoneScreen()
@@ -1638,6 +1647,7 @@ class ScouterService : Service() {
 
     private fun header() {
         if (ended) return
+        if (Media.now == null) Media.start(this) // notification access may have come since
         Native.lookUpHeader(LookUp.lines(this, settings))
         dash()
     }
@@ -1817,6 +1827,7 @@ class ScouterService : Service() {
             }
             VoiceCommands.TAB -> tabs(m.arg)
             VoiceCommands.POINTER -> pointer(m.arg)
+            VoiceCommands.MEDIA -> if (!Media.control(m.arg)) voiceSay("Nothing is playing (Vox needs notification access)")
         }
         Session.changed()
     }
@@ -1868,6 +1879,16 @@ class ScouterService : Service() {
         update()
         refresh()
         if (show == Settings.TERMINAL) header()
+    }
+
+    // What plays: the dashboard again each second while it plays and shows (its progress line).
+    private val mediaTick = object : Runnable {
+        override fun run() {
+            work.postDelayed(this, 1000)
+            val now = Media.now ?: return
+            if (!now.playing || settings.dashRows == 0 || !Session.shown || settings.show != Settings.TERMINAL) return
+            if (Dashboard.layout(settings).widgets.any { it.type == Dashboard.MEDIA }) dash()
+        }
     }
 
     // ------------------------------------------------ the look per app

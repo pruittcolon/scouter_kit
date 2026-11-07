@@ -48,6 +48,8 @@ class MainActivity : Activity() {
     private lateinit var batterySwitch: Switch
     private lateinit var notesState: TextView
     private lateinit var dashPreview: android.widget.ImageView
+    private lateinit var styleRow: LinearLayout
+    private lateinit var layoutBox: LinearLayout
     private lateinit var shareChip: TextView
     private lateinit var lookTitle: TextView
     private lateinit var lookSub: TextView
@@ -546,14 +548,23 @@ class MainActivity : Activity() {
             lookUpChanged()
         })
 
-        val view = page.section("Look-up view", "term_lookup", "eye",
-            hint = "The strip above the terminal: time, batteries, notifications and the tabs.")
+        val view = page.section("Look-up screen", "term_lookup", "eye", open = true,
+            hint = "The strip above the terminal when you look up. Pick a style, or make your own.")
         dashPreview = android.widget.ImageView(this).apply {
             adjustViewBounds = true
             scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
             setBackgroundColor(0xFF000000.toInt())
         }
         view.addView(dashPreview, lp().apply { topMargin = dp(4); bottomMargin = dp(6) })
+        view.addView(subhead("Style"))
+        styleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        view.addView(android.widget.HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(styleRow)
+        }, lp().apply { topMargin = dp(4) })
+        layoutBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        view.addView(layoutBox)
+        view.addView(subhead("Size and fade"))
         view.addToggle(toggle("Graphical dashboard", "Off: the header as two lines of text", settings.dashboard) {
             settings.dashboard = it
             showDash()
@@ -564,12 +575,14 @@ class MainActivity : Activity() {
             showDash()
         }) { v ->
             settings.dashHeight = v
+            buildStyles()
             lookUpChanged()
         })
         view.addView(slider("Fade in", 0, 800, settings.fadeMs, { if (it == 0) "off" else "$it ms" }) { v ->
             settings.fadeMs = v
             lookUpChanged()
         })
+        view.addView(subhead("Text header (graphical off)"))
         view.addToggle(toggle("Time, date and batteries", null, settings.lookUpClock) {
             settings.lookUpClock = it
             showDash()
@@ -593,6 +606,99 @@ class MainActivity : Activity() {
     }
 
     private fun tab(action: String) = ScouterService.send(this, ScouterService.ACTION_TABS, "tab" to action)
+
+    // The look-up screen's styles as pictures in the glasses' green (tap one), then the user's own layout's editor
+    // while that is the style.
+    private fun buildStyles() {
+        val settings = Settings(this)
+        val h = settings.dashHeight.coerceIn(56, 140) and 1.inv()
+        val w = Dashboard.width(settings)
+        styleRow.removeAllViews()
+        for ((key, name) in Dashboard.STYLES) {
+            val on = settings.dashStyle == key
+            val r = dp(14).toFloat()
+            val cell = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(6), dp(6), dp(6), dp(8))
+                background = ripple(rounded(if (on) Ui.RAISED else 0, r, dp(if (on) 2 else 1), if (on) Ui.ACCENT else Ui.STROKE), r)
+                setOnClickListener {
+                    settings.dashStyle = key
+                    buildStyles()
+                    showDash()
+                    lookUpChanged()
+                }
+            }
+            val picture = Dashboard.render(this, settings, w, h, null, false, null, key).preview
+            cell.addView(android.widget.ImageView(this).apply {
+                adjustViewBounds = true
+                scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+                setBackgroundColor(0xFF000000.toInt())
+                setImageDrawable(android.graphics.drawable.BitmapDrawable(resources, picture))
+            }, LinearLayout.LayoutParams(dp(176), ViewGroup.LayoutParams.WRAP_CONTENT))
+            cell.addView(text(name, 12.5f, if (on) Ui.TEXT else Ui.MUTED, Ui.BOLD).apply { setPadding(dp(2), dp(6), 0, 0) })
+            styleRow.addView(cell, lp(ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(10) })
+        }
+        buildLayoutEditor()
+    }
+
+    // Your own layout: the tab bar on or off, then every widget: on or off, its place (up, down) and, for the
+    // ones that share the room, how wide.
+    private fun buildLayoutEditor() {
+        val settings = Settings(this)
+        layoutBox.removeAllViews()
+        if (settings.dashStyle != "custom") return
+        val lay = Dashboard.custom(settings)
+        fun save(tabs: Boolean, list: List<Dashboard.Widget>) = layoutBox.post {
+            Dashboard.saveCustom(settings, Dashboard.Layout(tabs, list))
+            buildStyles()
+            showDash()
+            lookUpChanged()
+        }
+        layoutBox.addView(subhead("Your layout"))
+        layoutBox.addToggle(toggle("Tab bar", "The terminal's tabs, + and PHONE along the top", lay.tabs) { save(it, lay.widgets) })
+        val on = lay.widgets
+        val off = Dashboard.WIDGETS.map { it.first }.filter { t -> on.none { it.type == t } }
+        val names = Dashboard.WIDGETS.toMap()
+        fun row(type: String, index: Int) {
+            val active = index >= 0
+            val line = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(6), 0, dp(6))
+            }
+            val states = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
+            line.addView(Switch(this).apply {
+                isChecked = active
+                thumbTintList = android.content.res.ColorStateList(states, intArrayOf(Ui.ACCENT, 0xFFC9CED8.toInt()))
+                trackTintList = android.content.res.ColorStateList(states, intArrayOf(0x665EEAD4, Ui.STROKE))
+                setOnCheckedChangeListener { _, checked ->
+                    save(lay.tabs, if (checked) on + Dashboard.Widget(type) else on.filter { it.type != type })
+                }
+            })
+            line.addView(text(names[type] ?: type, 14.5f, if (active) Ui.TEXT else Ui.MUTED, Ui.BOLD).apply { setPadding(dp(8), 0, 0, 0) },
+                lp(0, weight = 1f))
+            if (active) {
+                val wd = on[index]
+                if (type == Dashboard.NOTES || type == Dashboard.MEDIA) line.addView(chip("×${wd.weight}", false) {
+                    save(lay.tabs, on.map { if (it.type == type) Dashboard.Widget(type, wd.weight % 3 + 1) else it })
+                }, lp(ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(6) })
+                fun move(by: Int) {
+                    val j = index + by
+                    if (j < 0 || j >= on.size) return
+                    val l = on.toMutableList()
+                    l[index] = l[j].also { l[j] = l[index] }
+                    save(lay.tabs, l)
+                }
+                line.addView(chip("↑", false) { move(-1) }, lp(ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(6) })
+                line.addView(chip("↓", false) { move(1) }, lp(ViewGroup.LayoutParams.WRAP_CONTENT))
+            }
+            layoutBox.addView(line)
+        }
+        for ((i, wd) in on.withIndex()) row(wd.type, i)
+        for (t in off) row(t, -1)
+        layoutBox.addView(text("Now playing needs notification access (Settings, Access): Spotify, YouTube and other " +
+            "players show there, with buttons the pointer clicks.", 12f, Ui.FAINT).apply { setPadding(0, dp(6), 0, 0) })
+    }
 
     private fun lookUpChanged() {
         if (ScouterService.running) ScouterService.send(this, ScouterService.ACTION_LOOK_UP)
@@ -948,6 +1054,7 @@ class MainActivity : Activity() {
         gridKey = ""
         buildSources()
         buildServers()
+        buildStyles()
         buildCommands()
         if (VoiceModel.progress >= 0) content.post(modelTicker)
         selectTab(tab, animate = false)

@@ -153,8 +153,11 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("dashboard", true)
         set(v) = prefs.edit().putBoolean("dashboard", v).apply()
     var dashHeight: Int by Number("dash_height", 88)
+    // The dashboard's style (Dashboard.STYLES) and the user's own layout (Dashboard.custom).
+    var dashStyle: String by Text("dash_style", "classic")
+    var dashLayout: String by Text("dash_layout", "")
     // The dashboard's height on the glasses, 0 without it (even, as the native side takes it).
-    val dashRows get() = if (dashboard && (lookUpClock || lookUpNotifications)) dashHeight.coerceIn(56, 140) and 1.inv() else 0
+    val dashRows get() = if (dashboard) dashHeight.coerceIn(56, 140) and 1.inv() else 0
     var lookUpClock: Boolean
         get() = prefs.getBoolean("look_up_clock", true)
         set(v) = prefs.edit().putBoolean("look_up_clock", v).apply()

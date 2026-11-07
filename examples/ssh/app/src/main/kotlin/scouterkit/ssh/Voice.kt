@@ -292,6 +292,7 @@ object VoiceCommands {
     const val STOP = "stop" // stop listening
     const val TAB = "tab" // arg: a tab action (Tabs.command)
     const val POINTER = "pointer" // arg: a pointer command (toggle, click, right, up, down)
+    const val MEDIA = "media" // arg: toggle, next, prev (what plays on the phone)
 
     // For the custom commands' editor: what a command can do (SOURCE is picked from the sources).
     val CHOICES = linkedMapOf(NEXT to "Next source", PREV to "Previous source", UP to "Terminal (this machine)",
@@ -301,7 +302,8 @@ object VoiceCommands {
         "key:ctrl-c" to "Press Ctrl-C", "key:up" to "Press Up", "key:down" to "Press Down", DICTATE_ON to "Start dictating",
         DICTATE_OFF to "Stop dictating", STOP to "Stop listening", "tab:new" to "New tab", "tab:next" to "Next tab",
         "tab:prev" to "Previous tab", "tab:close" to "Close the tab", "tab:claude" to "Claude's tab", "tab:cursor" to "Cursor's tab",
-        "pointer:toggle" to "Pointer on / off", "pointer:click" to "Click")
+        "pointer:toggle" to "Pointer on / off", "pointer:click" to "Click", "media:toggle" to "Play / pause",
+        "media:next" to "Next song", "media:prev" to "Previous song")
 
     // What the built-in commands are, for the Voice tab.
     const val HELP = "Next · Back · Phone terminal · Laptop terminal · Phone screen · Laptop screen (any saved server's " +
@@ -309,7 +311,7 @@ object VoiceCommands {
         "Type … · Run … (types it and Enter) · Claude … (types it and Enter) · Enter · Escape · Tab · Control C · Up · " +
         "Down · Dictate (everything you say is typed; \"send\" presses Enter, \"stop dictating\" ends it) · Stop listening · " +
         "New tab · Next tab · Previous tab · Tab 2 · Close tab · Claude tab · Cursor tab · Pointer · Click · Right click · " +
-        "Scroll up / down"
+        "Scroll up / down · Play · Pause · Next song · Previous song"
 
     fun normalize(s: String) = s.lowercase(Locale.US).replace(Regex("[^a-z0-9 ]"), " ").replace(Regex("\\s+"), " ").trim()
 
@@ -325,6 +327,7 @@ object VoiceCommands {
         TYPE -> "type \"$arg\""
         TAB -> CHOICES["tab:$arg"] ?: "tab $arg"
         POINTER -> CHOICES["pointer:$arg"] ?: "pointer $arg"
+        MEDIA -> CHOICES["media:$arg"] ?: "media $arg"
         RUN -> "run \"$arg\""
         KEY -> arg
         else -> CHOICES[action] ?: action
@@ -338,6 +341,7 @@ object VoiceCommands {
                 c.action.startsWith("key:") -> KEY to c.action.removePrefix("key:")
                 c.action.startsWith("tab:") -> TAB to c.action.removePrefix("tab:")
                 c.action.startsWith("pointer:") -> POINTER to c.action.removePrefix("pointer:")
+                c.action.startsWith("media:") -> MEDIA to c.action.removePrefix("media:")
                 else -> c.action to c.arg
             }
             return Match(action, arg, label(settings, action, arg))
@@ -380,6 +384,9 @@ object VoiceCommands {
         val pointer = listOf("pointer|show the pointer|mouse|cursor on|pointer off|hide the pointer" to "toggle",
             "click|click it|tap" to "click", "right click" to "right", "scroll up" to "up", "scroll down" to "down")
         for ((words, cmd) in pointer) if (t in words.split("|")) return m(POINTER, cmd)
+        val media = listOf("play|pause|play music|pause music|resume|stop the music|play pause" to "toggle",
+            "next song|next track|skip|skip song|next video" to "next", "previous song|previous track|last song|go back a song" to "prev")
+        for ((words, cmd) in media) if (t in words.split("|")) return m(MEDIA, cmd)
         // "<name> terminal" / "<name> screen" (show / open / go to / switch to the …).
         Regex("^(?:show |open |go to |switch to )?(?:the |my )?(.+?) (terminal|screen)$").find(t)?.let { r ->
             val name = r.groupValues[1]

@@ -155,6 +155,16 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   in its memory (only the bytes of each row that changed are sent), draws it with the terminal when the head goes
   up (so it fades in with it) and again on USER3 when the phone sends a new one. The Terminal tab shows it as the
   glasses get it.
+- **Styles and your own** (*Look-up screen*, Terminal tab; `Dashboard.STYLES`): *Classic* (the tab bar; clock,
+  notifications, batteries), *Media* (clock, now playing, batteries), *Everything*, *Focus* (no tab bar; clock and
+  wide notifications), *Minimal* (clock, the phone's and the glasses' batteries), and *Your own*: the tab bar on or
+  off and the widgets (clock and date, notifications, now playing, the glasses' batteries, the phone's battery) on
+  or off, in your order, notifications and now playing ×1 to ×3 wide (`Settings.dashLayout`, JSON). Each style shows
+  as a picture in the glasses' green; voice and a quick reply take the widest widget's place while in use.
+- **Now playing** (`Media.kt`): the phone's media sessions (Spotify, YouTube, podcast and video players), listed to
+  Vox's notification listener: the app, the title, the artist, the cover in the glasses' greys and a progress line
+  (redrawn each second while it plays and shows), with before, play / pause and next as places the pointer clicks.
+  Voice: "play", "pause", "next song", "previous song" (also for your own commands).
 - **The header** instead, as text lines (*Graphical dashboard* off; `Native.lookUpHeader`): the time, the date and the glasses' batteries, and
   the newest phone notification (a `NotificationListenerService`, once the user allows Notification access),
   then a rule. The SSH session gets as many rows fewer; the voice band takes the header's rows while voice is in
