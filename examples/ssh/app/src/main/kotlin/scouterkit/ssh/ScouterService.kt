@@ -846,8 +846,11 @@ class ScouterService : Service() {
                 changed = true
             }
             // Its command ended, or (R20) its server has not answered for 5 min with the network up: a new session
-            // (the chosen terminal's at once, another's when it is chosen again).
-            if (now == "ended" || (!moshPaused && st[0] == 1 && st[2] > 300000 && online())) work.post {
+            // (the chosen terminal's at once, another's when it is chosen again). This phone's own server needs no
+            // network and does not roam: silent 20 s, its mosh-server is gone (its SSH server stopped with it).
+            val local = settings.servers().firstOrNull { it.id == t.id }?.local == true
+            val dead = !moshPaused && st[0] == 1 && (if (local) st[2] > 20000 else st[2] > 300000 && online())
+            if (now == "ended" || dead) work.post {
                 if (terms[t.id] === t) {
                     dropTerm(t)
                     refresh()
@@ -985,7 +988,8 @@ class ScouterService : Service() {
                 val id = key.removePrefix("term:")
                 if (settings.servers().none { it.id == id }) return
                 if (settings.activeServer != id || settings.host.isEmpty()) settings.useServer(id)
-                terms[id]?.let { if (it.status.startsWith("error")) it.retryAt = 0L } // chosen again: tried at once
+                // Chosen again: a failed one is tried at once, a silent one starts anew.
+                terms[id]?.let { if (it.status.startsWith("error")) it.retryAt = 0L else if (it.status.startsWith("no contact")) dropTerm(it) }
                 closed.remove(key)
                 closed.remove(id)
                 settings.source = key
