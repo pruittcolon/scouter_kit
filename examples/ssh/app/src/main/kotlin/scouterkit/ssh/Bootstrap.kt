@@ -83,7 +83,7 @@ class Bootstrap(private val vault: Vault) {
             synchronized(Bootstrap) { shared[key] = fresh }
             fresh
         }
-        try {
+        return try {
             val channel = s.openChannel("exec") as ChannelExec
             channel.setCommand(command)
             channel.setErrStream(java.io.ByteArrayOutputStream())
