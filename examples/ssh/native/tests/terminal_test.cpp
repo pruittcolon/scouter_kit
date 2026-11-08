@@ -194,8 +194,9 @@ int main(int argc, char **argv) {
   term.Show(Screen(77, 33, "after the reboot"));
   CHECK(WaitFor([&] { return SameArea(x, y, x - 100, y + 9, w, h) && Lit(0) > 200; }, 5000));
 
-  // The left arm's link drops while keyer's force holds: the arm's own watch ends the force within 5 s, and
-  // the lowered head hides the terminal there; the right arm, still linked, stays forced.
+  // The left arm's link drops while keyer's force holds: the arm's own watch suspends the force within 5 s, and
+  // the lowered head hides the terminal there; the right arm, still linked, stays forced. The link back, the
+  // left arm is forced again (the host never knew).
   Pitch(0, -30);
   Pitch(1, -30);
   CHECK(WaitFor([&] { return PanelProp(0) == 0 && PanelProp(1) == 0; }, 3000));
@@ -205,7 +206,9 @@ int main(int argc, char **argv) {
   g1::emulator::Disconnect(0, 9000);
   CHECK(WaitFor([&] { return Lit(0) == 0; }, 8000)); // its panel, unlinked: no PanelProp
   CHECK(PanelProp(1) != 0);
-  std::this_thread::sleep_until(back); // the link back
+  std::this_thread::sleep_until(back); // the link back: the arm takes the force again by itself
+  CHECK(WaitFor([&] { return PanelProp(0) != 0 && Lit(0) > 200; }, 5000));
+  CHECK(PanelProp(1) != 0);
   term.Force(false);
   CHECK(WaitFor([&] { return PanelProp(0) == 0 && PanelProp(1) == 0; }, 3000));
 

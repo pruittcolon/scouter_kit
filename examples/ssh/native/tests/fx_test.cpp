@@ -20,7 +20,8 @@ static int failures = 0;
     }                                                                     \
   } while (0)
 
-static const char *kNames[] = {"none", "left", "right", "up", "down", "jump", "on", "off", "tab-left", "tab-right"};
+static const char *kNames[] = {"none", "left", "right", "up", "down", "jump", "on", "off", "tab-left", "tab-right",
+                               "cut"};
 
 // Waits until the arms ran what was sent (both panels settle), at most ms.
 static void Settle(Fx &fx, int ms = 3000) {

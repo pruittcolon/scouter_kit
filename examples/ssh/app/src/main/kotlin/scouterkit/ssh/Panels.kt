@@ -24,10 +24,10 @@ object Panels {
         ),
         "Display" to listOf(
             "Alt+0" to "display off / on",
-            "Alt+L" to "look-up only / always",
+            "Alt+Z" to "always on / look-up only",
             "Alt+= / -" to "brighter / dimmer",
             "Alt+S" to "quick settings",
-            "Alt+A" to "this help",
+            "Alt+A" to "this help (or hold Alt)",
             "Alt+U" to "Tunes",
         ),
         "Media and voice" to listOf(
@@ -76,10 +76,13 @@ object Panels {
     fun note(text: String) = Content(listOf(text), listOf(1), false)
 
     // The help as the terminal's lines (cols x rows): a title, then two columns of groups, then the keys to close.
-    fun helpLines(cols: Int, rows: Int): Content {
+    private fun closes(held: Boolean) = if (held) "let go of Alt to close" else "Alt+A or Esc closes"
+
+    fun helpLines(cols: Int, rows: Int, held: Boolean = false): Content {
         val lines = mutableListOf<String>()
         val marks = mutableListOf<Int>()
-        lines += "VOX HOTKEYS".padEnd(maxOf(0, cols - 22)) + "Alt+A or Esc closes"; marks += 1
+        val close = closes(held)
+        lines += "VOX HOTKEYS".padEnd(maxOf(0, cols - close.length - 3)) + close; marks += 1
         lines += "─".repeat(cols); marks += 2
         val half = if (cols >= 60) (cols - 1) / 2 else cols
         fun column(groups: List<Pair<String, List<Pair<String, String>>>>): List<Pair<String, Int>> {
@@ -130,8 +133,17 @@ object Panels {
         return out
     }
 
-    // The help over the whole picture: a title bar, two columns of groups (the keys bold), the way out.
-    fun helpArt(w: Int, h: Int): Art {
+    // The help over the whole picture: a title bar, two columns of groups (the keys bold), the way out. Kept for
+    // the next time (holding Alt brings it often): it shows without being drawn again.
+    private var helpKept: Pair<String, Art>? = null
+
+    fun helpArt(w: Int, h: Int, held: Boolean = false): Art {
+        val id = "$w:$h:$held"
+        helpKept?.let { if (it.first == id) return it.second }
+        return drawHelp(w, h, held).also { helpKept = id to it }
+    }
+
+    private fun drawHelp(w: Int, h: Int, held: Boolean): Art {
         val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c = Canvas(b)
         c.drawColor(Color.BLACK)
@@ -140,7 +152,7 @@ object Panels {
         val title = paint(19f, true).apply { color = Color.BLACK }
         c.drawText("VOX · HOTKEYS", 12f, 22f, title)
         val close = paint(13f).apply { color = Color.BLACK; textAlign = Paint.Align.RIGHT }
-        c.drawText("Alt+A or Esc closes", w - 10f, 21f, close)
+        c.drawText(closes(held), w - 10f, 21f, close)
         val head = paint(15f, true)
         val key = paint(14f, true)
         val text = paint(14f)

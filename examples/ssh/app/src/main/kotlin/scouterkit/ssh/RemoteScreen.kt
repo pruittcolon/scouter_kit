@@ -126,8 +126,13 @@ class RemoteScreen(private val context: Context, val server: Settings.Server, pr
         val previewPixels = ByteArray(640 * 480)
         val info = IntArray(3)
         val decode = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
+        var wasMine = false
         while (!released) {
-            latest.getAndSet(null)?.let { jpeg ->
+            // Unseen (another source in front), the newest image waits undecoded; shown again, it goes at once.
+            val mine = Session.screenSource == key
+            if (mine && !wasMine) due = true
+            wasMine = mine
+            if (mine) latest.getAndSet(null)?.let { jpeg ->
                 val b = runCatching { BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, decode) }.getOrNull()
                 if (b != null) {
                     if (buffer == null || buffer!!.capacity() < b.byteCount) buffer = ByteBuffer.allocateDirect(b.byteCount)
@@ -145,7 +150,6 @@ class RemoteScreen(private val context: Context, val server: Settings.Server, pr
             }
             val b = bitmap
             val buf = buffer
-            val mine = Session.screenSource == key
             if (b != null && buf != null && mine) {
                 if (due) {
                     buf.rewind()

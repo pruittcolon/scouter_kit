@@ -27,6 +27,10 @@ object Fx {
     const val OFF = 7
     const val TAB_LEFT = 8
     const val TAB_RIGHT = 9
+    const val CUT = 10 // one frame each way: a switch right after another (QUICK_MS)
+
+    // A switch this soon after the one before goes as a cut: toggling quickly isn't held up by animations.
+    const val QUICK_MS = 1500L
 
     // The style for a way of switching: an arrow ("left", "right", "up", "down"), next / prev, else a jump.
     fun style(how: String?): Int = when (how) {

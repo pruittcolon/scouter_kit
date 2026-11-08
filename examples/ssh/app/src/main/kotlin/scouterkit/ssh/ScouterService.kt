@@ -1166,7 +1166,7 @@ class ScouterService : Service() {
         screen = capture
         work.post {
             if (screen !== capture) return@post
-            stopRemote()
+            parkRemote()
             Session.screenSource = Settings.PHONE
             settings.source = Settings.PHONE
             Session.source = settings.sourceName(Settings.PHONE)
@@ -1205,10 +1205,19 @@ class ScouterService : Service() {
     // ------------------------------------------------ panels and hotkeys
 
     // A hotkey (Hotkeys, ACTION_PANEL): "help" (Alt+A), "settings" (Alt+S), "key:K" (up, down, left, right, enter,
-    // esc, space while a panel is open), "lookup" (Alt+L), "bright:1" / "bright:-1" (Alt+= / -), "media:toggle",
-    // "media:prev", "media:next" (Alt+P, Alt+, / .).
+    // esc, space while a panel is open), "lookup" (Alt+Z / Alt+L), "bright:1" / "bright:-1" (Alt+= / -),
+    // "media:toggle", "media:prev", "media:next" (Alt+P, Alt+, / .), "althold:on" / "althold:off" (Alt held by
+    // itself: the help while it is held, unless a panel is open already).
     private fun hotkey(what: String) {
         when {
+            what == "althold:on" -> if (Session.overlay.isEmpty() || Session.overlay == Panels.NOTE) {
+                altHelp = true
+                panelOpen(Panels.HELP)
+            }
+            what == "althold:off" -> if (altHelp) {
+                altHelp = false
+                if (Session.overlay == Panels.HELP) panelClose()
+            }
             what == Panels.HELP || what == Panels.SETTINGS -> panelOpen(what)
             what.startsWith("key:") -> panelKey(what.removePrefix("key:"))
             what == "lookup" -> lookUpOnly()
@@ -1227,6 +1236,7 @@ class ScouterService : Service() {
     }
 
     private var panelAt = 0 // the quick setting chosen
+    private var altHelp = false // the help is up while Alt is held (it goes with Alt)
     private var tweaks: List<Panels.Tweak> = emptyList()
     private var noteText = ""
     private val noteEnd = Runnable { if (Session.overlay == Panels.NOTE) panelClose() }
@@ -1260,6 +1270,7 @@ class ScouterService : Service() {
     }
 
     private fun panelClose() {
+        altHelp = false
         if (Session.overlay.isEmpty()) return
         Session.overlay = ""
         work.removeCallbacks(noteEnd)
@@ -1319,7 +1330,7 @@ class ScouterService : Service() {
             val w = st[5]
             val h = st[6]
             if (w <= 0 || h <= 0) return
-            val art = if (content == null) Panels.helpArt(w, h) else Panels.stripArt(w, h, content)
+            val art = if (content == null) Panels.helpArt(w, h, altHelp) else Panels.stripArt(w, h, content)
             Native.overlay(null, null, false)
             Native.screenOverlay(art.pixels, art.w, art.h, art.x, art.y)
             Session.overlayGen++
@@ -1329,7 +1340,7 @@ class ScouterService : Service() {
             val g = region()
             val cols = if (g[2] > 0) g[0] / g[2] else settings.cols
             val rows = if (g[3] > 0) g[1] / g[3] else settings.rows
-            val c = content ?: Panels.helpLines(cols, rows)
+            val c = content ?: Panels.helpLines(cols, rows, altHelp)
             Native.screenOverlay(null, 0, 0, 0, 0)
             Native.overlay(c.lines.toTypedArray(), c.marks.toIntArray(), c.full)
         }
@@ -1349,7 +1360,7 @@ class ScouterService : Service() {
         refresh()
     }
 
-    // Alt+L: the terminal only while looking up (it fades away with the head level), or always. A note says which
+    // Alt+Z / Alt+L: the terminal only while looking up (it fades away with the head level), or always. A note says which
     // (the terminal shows for it, then goes by the new rule).
     private fun lookUpOnly() {
         settings.phone = true
@@ -1454,12 +1465,18 @@ class ScouterService : Service() {
 
     // The user's choice (Settings.source): kept until they choose another. One that cannot show yet (a server
     // that does not answer, the phone's screen not shared) shows its card; nothing switches by itself.
+    private var lastSwitchAt = -Fx.QUICK_MS
+
     private fun choose(key: String, style: Int = Fx.JUMP) {
         val t0 = SystemClock.uptimeMillis()
         settings.phone = true
         if (Session.tunes) tunesSet(false)
         val from = chosen()
-        val fx = if (key != from || (key == Settings.PHONE && screen != null && settings.show != Settings.SCREEN)) style else Fx.NONE
+        val moves = key != from || (key == Settings.PHONE && screen != null && settings.show != Settings.SCREEN)
+        // Quick toggling: a switch soon after the last one cuts (one frame) instead of animating.
+        val quick = t0 - lastSwitchAt < Fx.QUICK_MS
+        if (moves) lastSwitchAt = t0
+        val fx = if (!moves) Fx.NONE else if (quick) Fx.CUT else style
         when {
             key.startsWith("term:") -> {
                 val id = key.removePrefix("term:")
@@ -1471,11 +1488,11 @@ class ScouterService : Service() {
                 closed.remove(key)
                 closed.remove(id)
                 settings.source = key
-                stopRemote()
+                parkRemote()
                 render(Settings.TERMINAL)
             }
             key == Settings.PHONE -> {
-                stopRemote() // first: no more of the server's pictures (one of them would come in with it)
+                parkRemote() // first: no more of the server's pictures (one of them would come in with it)
                 transition(fx, key)
                 settings.source = key
                 lastScreen = key
@@ -1497,10 +1514,12 @@ class ScouterService : Service() {
                 remoteRetryAt = 0L
                 remoteWhy = ""
                 Session.screenSource = key
+                work.removeCallbacks(remotePark)
                 if (remote?.key != key) {
                     startRemote(s)
                     render(Settings.TERMINAL) // its card ("Starting…") until its first image
                 } else render(if (remote!!.images > 0) Settings.SCREEN else Settings.TERMINAL)
+                remote?.poke() // kept connected: its picture now
                 update(screen = "starting")
                 work.removeCallbacks(screenTicker)
                 work.postDelayed(screenTicker, 1000)
@@ -1522,7 +1541,19 @@ class ScouterService : Service() {
         r.start()
     }
 
+    // Another source in front: a server's screen stays connected, its newest picture waiting unseen, so going back
+    // to it shows at once; unseen for PARK_MS it stops.
+    private val remotePark = Runnable { remote?.let { if (chosen() != it.key) stopRemote() } }
+
+    private fun parkRemote() {
+        if (Session.screenSource.startsWith("screen:")) Session.screenSource = ""
+        if (remote == null) return
+        work.removeCallbacks(remotePark)
+        work.postDelayed(remotePark, PARK_MS)
+    }
+
     private fun stopRemote() {
+        work.removeCallbacks(remotePark)
         remote?.release()
         remote = null
         Session.remote = ""
@@ -2525,6 +2556,7 @@ class ScouterService : Service() {
 
     companion object {
         const val TAG = "scouter"
+        const val PARK_MS = 5 * 60_000L // a server's screen kept connected while another source shows
         const val CHANNEL = "session"
         const val NOTIFICATION = 1
         // The X11 window in front on a server (its WM_CLASS line), for the look per window.

@@ -50,6 +50,8 @@ constexpr int kFadeSteps = 8;       // brightness steps of the look-up fade in (
 constexpr int kFadeOutSteps = 5;    // and out
 constexpr uint32_t kByHost = 16;    // NOTIFY a: a visibility change the host asked for (wForce, wPeer)
 constexpr int kForceWatchUs = 5000000; // while forced, how often the arm checks that the host is still linked
+constexpr int kLostWatchUs = 2000000;  // while the force is lost (the link dropped), how often it looks for the link
+constexpr uint32_t kForceLost = 2;     // wForce: forced, but the link dropped: the head decides until it is back
 constexpr int kBattPad = 3, kBattPadY = 1; // the battery band: pixels between its frame and the text
 constexpr int kDefaultLevel = 12;
 
@@ -652,9 +654,12 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.End();
 
   // TIMER: the hold's end (the terminal goes, or while forced only the band), and while forced the force's
-  // watch: once the host is gone (LINK 0: the phone let go, keyer with it), the head alone decides.
+  // watch: once the host is gone (LINK 0: the phone let go, keyer with it, or a drop), the head alone decides
+  // (wForce kForceLost) until the link is back, when the force holds again. The host doesn't know an arm lost it,
+  // so the arm takes it back itself (a phone that let go for good wrote wForce 0 before).
   auto tick = p.NewLabel(), held = p.NewLabel(), watch = p.NewLabel(), rearm = p.NewLabel(),
-       unforce = p.NewLabel(), own = p.NewLabel(), own_show = p.NewLabel();
+       unforce = p.NewLabel(), own = p.NewLabel(), own_show = p.NewLabel(), forced = p.NewLabel(),
+       lost = p.NewLabel(), lost_again = p.NewLabel();
   p.Bind(tick);
   p.Bne(up, c(2), watch);
   p.SysRead(R(1), time_us);
@@ -663,18 +668,30 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.Mov(up, c(0));
   p.Beq(force, c(1), held);
   p.Mov(R(6), c(0));
-  p.Beq(shown, c(0), done);
+  p.Beq(shown, c(0), watch);
   p.Call(hide);
-  p.End();
+  p.Jmp(watch); // the force lost: its watch goes on after the hold
   p.Bind(held);
   p.Beq(shown, c(0), watch);
   p.Call(band_off);
   p.Bind(watch);
+  p.Beq(force, c(kForceLost), lost);
   p.Bne(force, c(1), done);
   p.SysRead(R(0), link);
   p.Beq(R(0), c(0), unforce);
   p.SysRead(R(1), time_us);
   p.Add(R(1), R(1), n(kForceWatchUs));
+  p.SysWrite(timer, R(1));
+  p.End();
+  p.Bind(lost);
+  p.SysRead(R(0), link);
+  p.Beq(R(0), c(0), lost_again);
+  p.Mov(force, c(1));
+  p.Mov(R(6), c(kByHost));
+  p.Jmp(forced);
+  p.Bind(lost_again);
+  p.SysRead(R(1), time_us);
+  p.Add(R(1), R(1), n(kLostWatchUs));
   p.SysWrite(timer, R(1));
   p.End();
   p.Bind(rearm);
@@ -683,8 +700,8 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
 
   // USER2: the host changed wForce or wPeer (the other eye's decision). START: the same, from hidden with the
   // panel off and the head's state from PITCH.
-  auto user2 = p.NewLabel(), forced = p.NewLabel(), peer_up = p.NewLabel(), peer_down = p.NewLabel(),
-       start = p.NewLabel(), start_down = p.NewLabel();
+  auto user2 = p.NewLabel(), peer_up = p.NewLabel(), peer_down = p.NewLabel(), start = p.NewLabel(),
+       start_down = p.NewLabel();
   p.Bind(user2);
   p.Mov(R(6), c(kByHost));
   p.Beq(force, c(1), forced);
@@ -718,8 +735,11 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.SysWrite(timer, R(1));
   p.End();
   p.Bind(unforce);
-  p.Mov(force, c(0));
+  p.Mov(force, c(kForceLost));
   p.Mov(peer, c(0));
+  p.SysRead(R(1), time_us);
+  p.Add(R(1), R(1), n(kLostWatchUs));
+  p.SysWrite(timer, R(1));
   p.Jmp(own);
   p.Bind(start);
   p.SysWrite(panel, c(0));

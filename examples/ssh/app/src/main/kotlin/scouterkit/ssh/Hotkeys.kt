@@ -6,6 +6,8 @@ import android.graphics.Path
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -15,8 +17,8 @@ import android.view.accessibility.AccessibilityEvent
 // sources as a grid (left and right: this phone, then each other server; up and down: terminal, screen),
 // Alt+1 ... Alt+9 picks Home's source of that number, Alt+0 turns the display off or on, Alt+Space (or Alt+V)
 // listens for a voice command, Alt+M the pointer (then arrows, Enter, Escape), Alt+T / [ / ] / W the tabs,
-// Alt+A the help on the glasses (every hotkey: Panels.GROUPS), Alt+S the quick settings, Alt+L look-up only,
-// Alt+= / - the brightness, Alt+P / , / . the music. MainActivity takes them while Vox is in front; VoxKeys (an
+// Alt+A the help on the glasses (every hotkey: Panels.GROUPS; also while Alt is held by itself), Alt+S the quick
+// settings, Alt+Z always on / look-up only (Alt+L too), Alt+= / - the brightness, Alt+P / , / . the music. MainActivity takes them while Vox is in front; VoxKeys (an
 // accessibility service the user turns on) everywhere.
 object Hotkeys {
     // The event was Vox's: a shortcut, or a key typed into the glasses' terminal (both its press and its release are
@@ -35,9 +37,41 @@ object Hotkeys {
         return Settings(context).keysToGlasses
     }
 
+    // Alt held by itself: the hotkeys pop up on the glasses (after ALT_HOLD_MS, so a quick Alt+key doesn't flash
+    // them) and go when it is let go; a key pressed with it takes them away and does its own thing.
+    private const val ALT_HOLD_MS = 300L
+    private val main = Handler(Looper.getMainLooper())
+    private var altShown = false
+    private var altApp: Context? = null
+    private val altShow = Runnable {
+        val c = altApp ?: return@Runnable
+        altShown = true
+        ScouterService.send(c, ScouterService.ACTION_PANEL, "do" to "althold:on")
+    }
+
+    private fun altHold(context: Context, e: KeyEvent) {
+        val alt = e.keyCode == KeyEvent.KEYCODE_ALT_LEFT || e.keyCode == KeyEvent.KEYCODE_ALT_RIGHT
+        if (alt && e.action == KeyEvent.ACTION_DOWN) {
+            if (e.repeatCount == 0 && !altShown) {
+                altApp = context.applicationContext
+                main.removeCallbacks(altShow)
+                if (!e.isCtrlPressed && !e.isMetaPressed && !e.isShiftPressed) main.postDelayed(altShow, ALT_HOLD_MS)
+            }
+            return
+        }
+        if (alt || e.action == KeyEvent.ACTION_DOWN) { // Alt let go, or another key with it
+            main.removeCallbacks(altShow)
+            if (altShown) {
+                altShown = false
+                ScouterService.send(context, ScouterService.ACTION_PANEL, "do" to "althold:off")
+            }
+        }
+    }
+
     private fun shortcut(context: Context, e: KeyEvent): Boolean {
         val settings = Settings(context)
         if (!settings.hotkeys) return false
+        altHold(context, e)
         // A quick reply being written on the dashboard: every key is its (Alt+Space / Alt+V still listen).
         if (Session.replyKey != null && !(e.isAltPressed && (e.keyCode == KeyEvent.KEYCODE_SPACE || e.keyCode == KeyEvent.KEYCODE_V))) {
             if (e.action != KeyEvent.ACTION_DOWN) return true
@@ -126,12 +160,12 @@ object Hotkeys {
             if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0) VoxKeys.global(nav)
             return true
         }
-        // Alt+A the help, Alt+S the quick settings, Alt+L look-up only, Alt+= / - brighter / dimmer, Alt+P play or
-        // pause, Alt+, / . the track before / after.
+        // Alt+A the help, Alt+S the quick settings, Alt+Z (or L) always on / look-up only, Alt+= / - brighter /
+        // dimmer, Alt+P play or pause, Alt+, / . the track before / after.
         val panel = when (e.keyCode) {
             KeyEvent.KEYCODE_A -> Panels.HELP
             KeyEvent.KEYCODE_S -> Panels.SETTINGS
-            KeyEvent.KEYCODE_L -> "lookup"
+            KeyEvent.KEYCODE_Z, KeyEvent.KEYCODE_L -> "lookup"
             KeyEvent.KEYCODE_EQUALS, KeyEvent.KEYCODE_PLUS, KeyEvent.KEYCODE_NUMPAD_ADD -> "bright:1"
             KeyEvent.KEYCODE_MINUS, KeyEvent.KEYCODE_NUMPAD_SUBTRACT -> "bright:-1"
             KeyEvent.KEYCODE_P -> "media:toggle"

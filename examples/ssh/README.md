@@ -109,7 +109,8 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
 - **A server's screen** (a laptop's): over SSH, with the same key, the app runs `vox-screen WIDTH HEIGHT FPS`
   there (looked for in `~/.local/bin`, `~/bin` and `/usr/local/bin` too), which must write baseline JPEG images one after another to stdout (each the whole desktop inside
   WIDTH x HEIGHT) until stdout closes. They go through the same pipeline as the phone's screen. The width asked
-  for is on the Screen tab (640, 960, 1280).
+  for is on the Screen tab (640, 960, 1280). Another source in front, the server's screen stays connected (its
+  newest image waits undecoded) for 5 minutes, so switching back shows it at once.
 - **Transitions** (*Transitions*, Terminal tab, *On the glasses*, on by default; `native/fx.hpp`, `Fx.kt`): a switch plays on the
   glasses in about half a second. The old picture goes the moment it is asked for (about 0.15 s), a label says
   where the glasses are going ("LAPTOP // TERMINAL"), and the new picture comes in once its pixels are on the
@@ -118,7 +119,9 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   CRT scan line with its glow from the top or the bottom, with interference lines ahead; a jump (Alt+1 ... 9, a
   click on the dashboard, voice, a shortcut) tiles that decrypt in a random order; the tabs a quicker stream
   toward the tab they go to; the display a CRT switching off (to a line, then a dot) and on (opening from the
-  middle). Between two terminals only the terminal moves: the dashboard stays, like a task bar.
+  middle). Between two terminals only the terminal moves: the dashboard stays, like a task bar. A switch within
+  1.5 s of the one before is a cut (`Fx::kCut`: one frame out with the label, one in), so toggling quickly is not
+  held up by animations.
   Quick by design: under a transition the screen mirror starts and stops without power-cycling the panels (the
   out has blacked its place out; only the columns one eye sees are drawn black), so the animation and its label
   play on; the terminal's held first screen is due as soon as it is in (its reveal waits for both arms anyway);
@@ -253,12 +256,15 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   the cursor's again.
 - **Closing**: Alt+Q closes the source shown (a terminal's connection, the phone's sharing, a server's screen) and
   the glasses go to the next one still open; a closed one stays closed until it is chosen again.
-- **Look-up only**: Alt+L switches between *Always visible* and look-up only (the terminal shows when looking up):
-  a note says which, then the terminal fades away with the head level (or stays). The left TouchBar held 3 s
-  turns *Always visible* off too; only the app or Alt+L turns it back on, so a stray touch cannot. The left hold's
-  own action comes when it is let go.
+- **Look-up only**: Alt+Z (or Alt+L) switches between *Always visible* and look-up only (the terminal shows when
+  looking up): a note says which, then the terminal fades away with the head level (or stays). The left TouchBar
+  held 3 s turns *Always visible* off too; only the app or Alt+Z turns it back on, so a stray touch cannot. The
+  left hold's own action comes when it is let go. Each arm checks every 5 s that the phone is still linked; while
+  its link is down the head decides there, and once it is back *Always visible* holds again (the arm takes it back
+  itself: the phone never learns it was lost).
 - **Panels over everything** (`Panels.kt`): Alt+A the help, every hotkey and what it does (the same list as the
-  app's Settings, *Hotkeys*); Alt+S the quick settings of what shows (a screen: picture, invert, threshold,
+  app's Settings, *Hotkeys*), also while Alt is held by itself (after 0.3 s, gone when it is let go; a key pressed
+  with it closes it and does its own thing); Alt+S the quick settings of what shows (a screen: picture, invert, threshold,
   contrast, zoom, fit, turn, cuts, frames a second, brightness, pocket mode, cursor speed; the terminal:
   brightness, always visible, the look-up dashboard and its style, speeds, typing, animations, Tunes), one at a
   time: Up / Down the setting, Left / Right its value, live, Esc or Enter done (the trackpad: scroll, click
@@ -273,7 +279,8 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   lost, no answer, two tags seen, the case's battery and temperature. With the case on the phone by a USB-C data
   cable the screen reads it (CH34x, CP210x, FTDI or CDC set up directly, no library), sums each arm up with what
   each finding means, and keeps a copy in Android/data/<package>/files/caselog.txt. Android offers Vox when such
-  a chip is plugged in.
+  a chip is plugged in; the screen looks at the port every second and lists what Android sees there (each
+  device's chip and interfaces, bytes received), so a charge-only cable or a wrong set-up shows as such.
 - **Display off and on** (Alt+0): the CRT close plays to its end before the panels go off (`PanelsOffAfterFx`), and
   the picture opens from the middle when it comes back.
 

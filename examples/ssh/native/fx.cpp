@@ -346,18 +346,18 @@ std::vector<Fx::Step> Fx::PlanOut(Style style, int w, int h, int lw, int lh, uin
   switch (style) {
   case kLeft:
   case kRight:
-    Stream(p, false, style == kRight, w, h, 6, 0.25, false, &seed);
+    Stream(p, false, style == kRight, w, h, 4, 0.25, false, &seed);
     break;
   case kTabLeft:
   case kTabRight:
-    Stream(p, false, style == kTabRight, w, h, 5, 0.2, false, &seed);
+    Stream(p, false, style == kTabRight, w, h, 4, 0.2, false, &seed);
     break;
   case kUp:
   case kDown:
-    Raster(p, false, style == kUp, w, h, 6, false, &seed);
+    Raster(p, false, style == kUp, w, h, 4, false, &seed);
     break;
   case kJump:
-    Tiles(p, false, w, h, 6, &seed);
+    Tiles(p, false, w, h, 4, &seed);
     break;
   case kOff:
     PowerOff(p, w, h);
@@ -378,18 +378,18 @@ std::vector<Fx::Step> Fx::PlanIn(Style style, int w, int h, uint32_t seed, int b
   switch (style) {
   case kLeft:
   case kRight:
-    Stream(p, true, style == kRight, w, h, 10, 0.28, true, &seed);
+    Stream(p, true, style == kRight, w, h, 7, 0.28, true, &seed);
     break;
   case kTabLeft:
   case kTabRight:
-    Stream(p, true, style == kTabRight, w, h, 8, 0.2, false, &seed);
+    Stream(p, true, style == kTabRight, w, h, 6, 0.2, false, &seed);
     break;
   case kUp:
   case kDown:
-    Raster(p, true, style == kUp, w, h, 11, true, &seed);
+    Raster(p, true, style == kUp, w, h, 8, true, &seed);
     break;
   case kJump:
-    Tiles(p, true, w, h, 10, &seed);
+    Tiles(p, true, w, h, 7, &seed);
     break;
   case kOn:
     PowerOn(p, w, h, 10);

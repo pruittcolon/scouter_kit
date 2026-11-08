@@ -23,7 +23,8 @@ namespace ssh {
 // - kOn, kOff: a CRT switching on (a line at the middle opens) or off (the picture closes to a line, then a dot).
 class Fx {
 public:
-  enum Style { kNone, kLeft, kRight, kUp, kDown, kJump, kOn, kOff, kTabLeft, kTabRight, kStyles };
+  // kCut: one frame each way (black with the label, then the picture at once): switches in quick succession.
+  enum Style { kNone, kLeft, kRight, kUp, kDown, kJump, kOn, kOff, kTabLeft, kTabRight, kCut, kStyles };
   // Where an animation plays: w x h pixels at each eye's (x, y) on its panel.
   struct Region {
     int w = 0, h = 0;
