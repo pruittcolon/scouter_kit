@@ -91,6 +91,11 @@ object Native {
     // The pointer at a cell of the SSH session's screen (-1, -1: none), and a mouse event there for its program
     // (button 0 left, 2 right, 64 / 65 wheel up / down): false (nothing sent) while it takes no mouse.
     @JvmStatic external fun pointer(row: Int, col: Int)
+    // The arrow the arms draw over the terminal at pixel (x, y) of its region (y < 0: over the dashboard); on false:
+    // none. Kept for a terminal that starts later.
+    @JvmStatic external fun pointerAt(x: Int, y: Int, on: Boolean)
+    // The terminal's region: width, height, a cell's width and height, the dashboard's height (zeros: no terminal).
+    @JvmStatic external fun termGeometry(): IntArray
     @JvmStatic external fun mouse(button: Int, row: Int, col: Int): Boolean
     // A switch is coming (Fx.kt): what shows goes now (style's out), the label (4 bpp, lw x lh) shows, and the next
     // picture comes in with the style's animation. toTerminal: the terminal's path shows next (a terminal, a

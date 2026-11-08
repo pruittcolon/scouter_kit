@@ -29,13 +29,18 @@ namespace {
 // rendered, not drawn, and the dashboard (2) waits too; the host reveals them (Fx).
 enum {
   wTop, wFull, wCurSlot, wCurX, wShowAt, wFrame, wFont, wBattFont, wNext, wShown, wForce, wPeer, wHideAt, wUp,
-  wHold, kStateWords
+  wHold, wPtrX, wPtrY, wPtrOn, wPtrDX, wPtrDY, wPtrDrawn,
+  wH0, wH1, wH2, wH3, wH4, wH5, wH6, wH7, wHX, wHY, // the pointer's working words for the host's code
+  wQ0, wQ1, wQ2, wQ3, wQ4, wQ5, wQ6, wQ7, wQX, wQY, // and for the program's
+  kStateWords
 };
+constexpr int kPtrW = 16, kPtrH = 20; // the arrow's box (1 bpp masks 2 bytes a row; 4 bpp scratch 8)
 
 constexpr int kRecordBytes = 512; // u8 runs; each u8 x, u8 cells, u8 bg<<4|fg, u8 1: underline, u8 n, n varint bytes
 constexpr int kMaxRuns = 32;
 constexpr int kRowsPerTask = 6; // rows rendered per activation, within the jump budget
-constexpr int kCodeBytes = 4096; // the program, with the fade and the dashboard
+constexpr int kCodeBytes = 6144; // the program, with the fade, the dashboard and the pointer
+constexpr int kPtrCode = 1024;   // the host's pointer code (its own table and pool)
 constexpr int kPoolWords = 96;
 constexpr uint32_t kNoCursor = 0xFFFFFFFF;
 constexpr int kHysteresis = 5;      // degrees below the angle at which the terminal hides again
@@ -199,8 +204,158 @@ GlassesTerminal::Layout MakeLayout(uint32_t base, const GlassesTerminal::Geometr
   l.area = l.dash + uint32_t(g.W() / 2 * dash_h);
   l.batt = l.area + uint32_t(g.W() / 2 * g.rows * g.ch);
   l.batt_text = l.batt + uint32_t(g.bw / 2 * g.bh); // 3 digits and %
-  l.end = l.batt_text + 4;
+  l.ptr_fill = l.batt_text + 4;
+  l.ptr_edge = l.ptr_fill + 2 * kPtrH;
+  l.ptr_host = l.ptr_edge + 2 * kPtrH;
+  l.ptr_prog = l.ptr_host + kPtrW / 2 * kPtrH;
+  l.ptr_code = (l.ptr_prog + kPtrW / 2 * kPtrH + 3) & ~3u;
+  l.end = l.ptr_code + kPtrCode;
   return l;
+}
+
+// The pointer's code (in a program p): `compose` draws the arrow over the content at (X, Y) of the terminal's region
+// (y < 0: the dashboard's rows) from the area's ring (top: wTop) and the dashboard's picture, clipped to the region;
+// `restore` puts the content back over (X, Y)'s box. X, Y and t: working words; scr: a 4 bpp kPtrW x kPtrH scratch.
+struct PointerCode {
+  g1::Program::Label compose, restore;
+};
+PointerCode EmitPointer(g1::Program &p, const GlassesTerminal::Layout &l, const GlassesTerminal::Geometry &g, int dash_h,
+                        int px, int py, ArenaWord top, ArenaWord X, ArenaWord Y, std::array<ArenaWord, 8> t, uint32_t scr) {
+  auto c = [&](uint32_t v) { return p.Const(v); };
+  auto n = [&](int v) { return p.Const(uint32_t(int32_t(v))); };
+  ArenaWord i = t[0], yy = t[1], sy = t[2], src = t[3], x0 = t[4], x1 = t[5], tmp = t[6], tmp2 = t[7];
+  const int H = g.rows * g.ch, W = g.W(), stride = g.W() / 2;
+  PointerCode pc{p.NewLabel(), p.NewLabel()};
+  // yy (inside the region) to its source row: the dashboard's, or the area's slot row.
+  auto row_src = p.NewLabel(), rs_dash = p.NewLabel();
+  p.Bind(row_src);
+  p.BltS(yy, c(0), rs_dash);
+  p.DivU(sy, yy, n(g.ch));
+  p.ModU(tmp, yy, n(g.ch));
+  p.Add(sy, sy, top);
+  p.ModU(sy, sy, n(g.rows));
+  p.Mul(sy, sy, n(g.ch));
+  p.Add(sy, sy, tmp);
+  p.Mov(src, c(l.area));
+  p.Ret();
+  p.Bind(rs_dash);
+  p.Add(sy, yy, n(dash_h));
+  p.Mov(src, c(l.dash));
+  p.Ret();
+  // The box's columns inside the region: [x0, x1).
+  auto cols = p.NewLabel(), c0 = p.NewLabel(), c1 = p.NewLabel();
+  p.Bind(cols);
+  p.Mov(x0, X);
+  p.BgeS(x0, c(0), c0);
+  p.Mov(x0, c(0));
+  p.Bind(c0);
+  p.Add(x1, X, n(kPtrW));
+  p.BltS(x1, n(W), c1);
+  p.Mov(x1, n(W));
+  p.Bind(c1);
+  p.Ret();
+  // compose: the content under the box into scr (black outside the region), the arrow's dark edge and bright body
+  // over it, then the part inside the region to the panel.
+  auto cl = p.NewLabel(), cnext = p.NewLabel(), cdone = p.NewLabel(), y0 = p.NewLabel(), y1 = p.NewLabel(),
+       cret = p.NewLabel();
+  p.Bind(pc.compose);
+  p.Fill(c(scr), n(kPtrW / 2), c(0), c(0), n(kPtrW), n(kPtrH), c(0));
+  p.Call(cols);
+  p.Mov(i, c(0));
+  p.Bind(cl);
+  p.BgeU(i, n(kPtrH), cdone);
+  p.Add(yy, Y, i);
+  p.BltS(yy, n(-dash_h), cnext);
+  p.BgeS(yy, n(H), cnext);
+  p.BgeS(x0, x1, cnext);
+  p.Call(row_src);
+  p.Sub(tmp, x1, x0);
+  p.Sub(tmp2, x0, X);
+  p.Blit(src, n(stride), x0, sy, c(scr), n(kPtrW / 2), tmp2, i, tmp, c(1), c(0), c(15));
+  p.Bind(cnext);
+  p.Add(i, i, c(1));
+  p.Jmp(cl);
+  p.Bind(cdone);
+  p.Blit(c(l.ptr_edge), c(2), c(0), c(0), c(scr), n(kPtrW / 2), c(0), c(0), n(kPtrW), n(kPtrH), c(4 | g1::MODE_ERASE), c(15));
+  p.Blit(c(l.ptr_fill), c(2), c(0), c(0), c(scr), n(kPtrW / 2), c(0), c(0), n(kPtrW), n(kPtrH), c(4 | g1::MODE_MASK), c(15));
+  p.Mov(yy, Y);
+  p.BgeS(yy, n(-dash_h), y0);
+  p.Mov(yy, n(-dash_h));
+  p.Bind(y0);
+  p.Add(tmp, Y, n(kPtrH));
+  p.BltS(tmp, n(H), y1);
+  p.Mov(tmp, n(H));
+  p.Bind(y1);
+  p.BgeS(yy, tmp, cret);
+  p.BgeS(x0, x1, cret);
+  p.Sub(tmp, tmp, yy);   // rows
+  p.Sub(tmp2, x1, x0);   // columns
+  p.Sub(sy, x0, X);      // in the scratch
+  p.Sub(src, yy, Y);
+  p.Add(i, x0, n(px));   // on the panel
+  p.Add(yy, yy, n(py));
+  p.Draw(c(scr), n(kPtrW / 2), sy, src, i, yy, tmp2, tmp);
+  p.Bind(cret);
+  p.Ret();
+  // restore: the content again over the box, row by row.
+  auto rl = p.NewLabel(), rnext = p.NewLabel(), rdone = p.NewLabel();
+  p.Bind(pc.restore);
+  p.Call(cols);
+  p.Mov(i, c(0));
+  p.Bind(rl);
+  p.BgeU(i, n(kPtrH), rdone);
+  p.Add(yy, Y, i);
+  p.BltS(yy, n(-dash_h), rnext);
+  p.BgeS(yy, n(H), rnext);
+  p.BgeS(x0, x1, rnext);
+  p.Call(row_src);
+  p.Sub(tmp, x1, x0);
+  p.Add(tmp2, x0, n(px));
+  p.Add(yy, yy, n(py));
+  p.Draw(src, n(stride), x0, sy, tmp2, yy, tmp, c(1));
+  p.Bind(rnext);
+  p.Add(i, i, c(1));
+  p.Jmp(rl);
+  p.Bind(rdone);
+  p.Ret();
+  return pc;
+}
+
+// The host's pointer code (its own block, called by a host packet): the content back where the arrow was, then the
+// arrow where it is asked to be (wPtrX, wPtrY, wPtrOn); while the terminal is hidden (or the panel policy holds the
+// panel off) only the place is kept, for the program's paint when it shows.
+g1::Program MakePointerCode(const GlassesTerminal::Layout &l, const GlassesTerminal::Geometry &g, int dash_h, int px,
+                            int py, ArenaWord hidden, uint32_t *entry) {
+  g1::Program p(l.ptr_code, 24);
+  auto c = [&](uint32_t v) { return p.Const(v); };
+  auto w = [&](int i) { return ArenaWord(l.state / 4 + i); };
+  PointerCode pc = EmitPointer(p, l, g, dash_h, px, py, w(wTop), w(wHX), w(wHY),
+                               {w(wH0), w(wH1), w(wH2), w(wH3), w(wH4), w(wH5), w(wH6), w(wH7)}, l.ptr_host);
+  auto keep = p.NewLabel(), fresh = p.NewLabel(), done = p.NewLabel();
+  *entry = p.Here();
+  p.Beq(w(wShown), c(0), keep);
+  if (hidden) p.Bne(hidden, c(0), keep);
+  p.Beq(w(wPtrDrawn), c(0), fresh);
+  p.Mov(w(wHX), w(wPtrDX));
+  p.Mov(w(wHY), w(wPtrDY));
+  p.Call(pc.restore);
+  p.Bind(fresh);
+  p.Mov(w(wPtrDrawn), c(0));
+  p.Beq(w(wPtrOn), c(0), done);
+  p.Mov(w(wHX), w(wPtrX));
+  p.Mov(w(wHY), w(wPtrY));
+  p.Call(pc.compose);
+  p.Mov(w(wPtrDX), w(wPtrX));
+  p.Mov(w(wPtrDY), w(wPtrY));
+  p.Mov(w(wPtrDrawn), c(1));
+  p.Bind(done);
+  p.Ret();
+  p.Bind(keep);
+  p.Mov(w(wPtrDX), w(wPtrX));
+  p.Mov(w(wPtrDY), w(wPtrY));
+  p.Mov(w(wPtrDrawn), w(wPtrOn));
+  p.Ret();
+  return p;
 }
 
 // The terminal at panel (px, py) (program.go), and its visibility. USER0 (the host wrote a frame) renders
@@ -209,7 +364,7 @@ GlassesTerminal::Layout MakeLayout(uint32_t base, const GlassesTerminal::Geometr
 // whether the terminal shows and NOTIFY (shown | kByHost when the host caused it, PITCH). The battery band
 // shows at (bx, by) with the terminal; BATTERY redraws it.
 g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal::Geometry &g, int px, int py,
-                        int bx, int by, int angle, bool ignore_worn, int fade_us, int dash_h) {
+                        int bx, int by, int angle, bool ignore_worn, int fade_us, int dash_h, ArenaWord *hidden) {
   g1::Program p(l.base, kPoolWords);
   auto c = [&](uint32_t v) { return p.Const(v); };
   auto n = [&](int v) { return p.Const(uint32_t(int32_t(v))); };
@@ -227,6 +382,9 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   // setting leaves it out, for tests with the glasses folded on the table.
   auto redraw = p.NewLabel();
   if (!ignore_worn) p.PanelPolicy(redraw);
+  *hidden = ignore_worn ? 0 : p.PanelHidden();
+  // The pointer painted again over what was just drawn (where the host's code last put it).
+  auto ptr_paint = p.NewLabel(), ptr_none = p.NewLabel();
 
   auto render = p.NewLabel(), runs = p.NewLabel(), no_bg = p.NewLabel(), no_line = p.NewLabel(),
        runs_done = p.NewLabel(), no_cur = p.NewLabel();
@@ -270,6 +428,18 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.Ret();
 
   auto draw_all = p.NewLabel(); // the whole area, row 0 from slot wTop
+  {
+    auto ww = [&](int i) { return ArenaWord(l.state / 4 + i); };
+    PointerCode pc = EmitPointer(p, l, g, dash_h, px, py, top, ww(wQX), ww(wQY),
+                                 {ww(wQ0), ww(wQ1), ww(wQ2), ww(wQ3), ww(wQ4), ww(wQ5), ww(wQ6), ww(wQ7)}, l.ptr_prog);
+    p.Bind(ptr_paint);
+    p.Beq(ww(wPtrDrawn), c(0), ptr_none);
+    p.Mov(ww(wQX), ww(wPtrDX));
+    p.Mov(ww(wQY), ww(wPtrDY));
+    p.Call(pc.compose);
+    p.Bind(ptr_none);
+    p.Ret();
+  }
   p.Bind(draw_all);
   p.Sub(R(1), n(g.rows), top);
   p.Mul(R(1), R(1), n(g.ch));
@@ -365,6 +535,7 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   }
   p.Call(draw_all);
   p.Call(dash);
+  p.Call(ptr_paint);
   p.Jmp(shown_now);
   p.Bind(held_show);
   if (!ignore_worn) p.Bne(p.PanelHidden(), c(0), shown_now);
@@ -450,6 +621,7 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.Draw(area, stride, c(0), R(4), n(px), R(3), n(g.W()), n(g.ch));
   p.Jmp(skip);
   p.Bind(drawn);
+  p.Call(ptr_paint);
   p.Beq(up, c(0), presented);
   p.Call(label); // again on top, where a row overlaps it
   p.Bind(presented);
@@ -568,6 +740,7 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.Beq(shown, c(0), done);
   p.Call(draw_all);
   p.Call(dash);
+  p.Call(ptr_paint);
   p.Beq(up, c(0), done);
   p.Call(label);
   p.End();
@@ -579,6 +752,7 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.Beq(shown, c(0), done);
   p.Beq(hold, c(2), done);
   p.Call(dash);
+  p.Call(ptr_paint);
   p.End();
 
   // BATTERY: the band again where it shows.
@@ -598,8 +772,42 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.On(g1::TRIGGER_TIMER, tick);
   p.On(g1::TRIGGER_BATTERY, battery);
   p.Changes(l.state + 4 * wNext, 4 * (wHold - wNext));
-  p.Changes(l.dash, l.end - l.dash);
+  p.Changes(l.state + 4 * wPtrDX, 4 * (kStateWords - wPtrDX)); // the pointer's place drawn and working words
+  p.Changes(l.dash, l.ptr_fill - l.dash);
+  p.Changes(l.ptr_host, l.ptr_code - l.ptr_host); // the pointer's scratches
   return p;
+}
+
+// The arrow: its body (a classic pointer, its tip at (1, 1)) and, right after it, its edge (the body grown by a
+// pixel), each 1 bpp, 2 bytes a row.
+std::vector<uint8_t> ArrowMasks() {
+  const float poly[][2] = {{1, 1}, {1, 16}, {4.6f, 12.8f}, {7.2f, 18.4f}, {9.6f, 17.3f}, {7.1f, 11.9f}, {12, 11.9f}};
+  const int np = int(std::size(poly));
+  auto inside = [&](float x, float y) {
+    bool in = false;
+    for (int a = 0, b = np - 1; a < np; b = a++) {
+      if ((poly[a][1] > y) != (poly[b][1] > y) &&
+          x < (poly[b][0] - poly[a][0]) * (y - poly[a][1]) / (poly[b][1] - poly[a][1]) + poly[a][0])
+        in = !in;
+    }
+    return in;
+  };
+  bool body[kPtrH][kPtrW] = {};
+  for (int y = 0; y < kPtrH; y++)
+    for (int x = 0; x < kPtrW; x++) body[y][x] = inside(x + 0.5f, y + 0.5f);
+  std::vector<uint8_t> out(size_t(2 * 2 * kPtrH), 0);
+  for (int y = 0; y < kPtrH; y++)
+    for (int x = 0; x < kPtrW; x++) {
+      bool edge = false;
+      for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) {
+          int yy = y + dy, xx = x + dx;
+          if (yy >= 0 && yy < kPtrH && xx >= 0 && xx < kPtrW && body[yy][xx]) edge = true;
+        }
+      if (body[y][x]) out[size_t(y * 2 + x / 8)] |= uint8_t(0x80 >> (x % 8));
+      if (edge) out[size_t(2 * kPtrH + y * 2 + x / 8)] |= uint8_t(0x80 >> (x % 8));
+    }
+  return out;
 }
 
 } // namespace
@@ -830,9 +1038,15 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
     // room), centred vertically: the left eye's on the left, the right eye's on the right.
     int right = pos_[i][0] + geo_.W();
     int bx = i == 0 ? std::max(2, (pos_[i][0] - geo_.bw) / 2) : std::min(640 - geo_.bw - 2, right + (640 - right - geo_.bw) / 2);
+    ArenaWord hidden = 0;
     g1::Program p = MakeProgram(l_, geo_, pos_[i][0], pos_[i][1], bx, BattY(geo_), angle_, config.ignore_worn,
-                                std::clamp(config.fade_ms, 0, 1000) * 1000, dash_h_);
+                                std::clamp(config.fade_ms, 0, 1000) * 1000, dash_h_, &hidden);
     if (!p.Valid(error)) return false;
+    g1::Program pointer = MakePointerCode(l_, geo_, dash_h_, pos_[i][0], pos_[i][1], hidden, &ptr_entry_);
+    if (!pointer.Valid(error) || pointer.Here() > l_.end) {
+      if (error && error->empty()) *error = "the pointer's code does not fit";
+      return false;
+    }
     if (p.Here() > l_.state) {
       *error = "the terminal program overlaps its state (" + std::to_string(p.Here() - l_.base) + " bytes)";
       return false;
@@ -846,7 +1060,8 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
     std::vector<uint8_t> band(l_.end - l_.batt, 0);
     band.back() = uint8_t(percent[0]);
     arms_[i]->WriteArena(l_.batt, band);
-    if (!arms_[i]->Load(p) || !arms_[i]->Start(l_.base)) {
+    arms_[i]->WriteArena(l_.ptr_fill, ArrowMasks());
+    if (!arms_[i]->Load(pointer) || !arms_[i]->Load(p) || !arms_[i]->Start(l_.base)) {
       *error = "the terminal program did not start";
       return false;
     }
@@ -908,6 +1123,34 @@ void GlassesTerminal::Reveal(int style, bool with_dash) {
   reveal_until_ = g1::NowUs() + 4000000;
   pending_.reset(); // the old screen: not shown any more
   if (wiped_until_) wiped_until_ = reveal_until_; // drawn again only if nothing comes for it
+}
+
+void GlassesTerminal::Pointer(int x, int y, bool on) {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    x = std::clamp(x, 0, geo_.W() - 1);
+    y = std::clamp(y, -dash_h_, geo_.rows * geo_.ch - 1);
+    if (x == ptr_x_ && y == ptr_y_ && on == ptr_on_) return;
+    ptr_x_ = x;
+    ptr_y_ = y;
+    ptr_on_ = on;
+    ptr_dirty_ = true;
+  }
+  cv_.notify_all();
+}
+
+// The pointer's place to both arms and their code that moves it (mutex_ held); at most every 15 ms and while the
+// links keep up, so a quick stroke sends its latest place, not every step.
+void GlassesTerminal::SendPointer() {
+  for (int i = 0; i < 2; i++)
+    if (present_[i] && arms_[i]->GetState().queued > 3) return;
+  ptr_dirty_ = false;
+  ptr_sent_ = g1::NowUs();
+  for (int i = 0; i < 2; i++) {
+    if (!present_[i]) continue;
+    arms_[i]->WriteArena(l_.state + 4 * wPtrX, Words({uint32_t(ptr_x_), uint32_t(ptr_y_), uint32_t(ptr_on_)}));
+    arms_[i]->Call(ptr_entry_);
+  }
 }
 
 void GlassesTerminal::Wiped(bool with_dash) {
@@ -1117,6 +1360,7 @@ void GlassesTerminal::Run() {
     if (inflight_) wake = std::min(wake, inflight_us_ + 10000000);
     if (wiped_until_) wake = std::min(wake, wiped_until_);
     if (reveal_style_) wake = std::min(wake, reveal_until_);
+    if (ptr_dirty_) wake = std::min(wake, ptr_sent_ + 15000);
     if (events_.empty() && force_ == force_sent_ && wake > now)
       cv_.wait_for(lock, std::chrono::microseconds(wake - now));
     if (stop_) break;
@@ -1144,6 +1388,7 @@ void GlassesTerminal::Run() {
         if (done && (shown_[0] || shown_[1]))
           fx_->In(Fx::Style(held_style_), FxRegion(held_dash_), FxSource(held_dash_));
         SetHold(0);
+        if (ptr_on_) ptr_dirty_ = true; // the arrow again over the revealed picture
       }
       inflight_ = 0;
       cv_.notify_all(); // Check waits for this
@@ -1161,6 +1406,7 @@ void GlassesTerminal::Run() {
     if (pending_ && !inflight_ && (shown_[0] || shown_[1]) &&
         (now - last_us_ >= 10000 || now - first_us_ >= 40000))
       Send();
+    if (ptr_dirty_ && now - ptr_sent_ >= 15000) SendPointer();
     if (notify_ && changed_) {
       notify_ = false;
       lock.unlock();

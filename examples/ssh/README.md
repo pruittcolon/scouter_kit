@@ -180,7 +180,11 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
 
 ## The pointer and tabs
 
-- **The pointer**: a cell of the terminal shown inverted (`Native.pointer`), moved by a keyboard paired with the
+- **The pointer**: an arrow the arms draw over the terminal and the dashboard (`Native.pointerAt`,
+  `GlassesTerminal::Pointer`), moved pixel by pixel: the host sends its place at most every 15 ms and stored code on
+  each arm puts back the content under the old place (from the area's ring and the dashboard's picture) and draws
+  the arrow (a bright body, a dark edge) over the new one; the program paints it again after every redraw. Moved
+  by the trackpad (like a mouse), by a keyboard paired with the
   phone (Alt+M on, then arrows, Shift for 5 cells, Enter or Space to click, Shift+Enter a right click, Page Up /
   Down to scroll, Escape off), by the Terminal tab's touchpad (drag, tap, hold, two fingers) or by voice. Clicks
   and the wheel go to the session's program as xterm mouse reports in the encoding it asked for (SGR, urxvt or
@@ -190,8 +194,8 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   Alt+[ / ] the tab before / after, Alt+W closes the tab shown (never the first), and Claude's or Cursor's tab
   (switched to where one runs, else opened). tmux's own status line shows them; with *Mouse in tmux* (on by
   default, `tmux set -g mouse on` when the pointer starts) clicking a tab there switches to it.
-- **The dashboard's tab bar**: up from the terminal's top row the pointer goes onto it (the tab or + it is on
-  gets a bright ring and a notch, `Dashboard.Hit`); left and right go a tab at a time, a click shows that tab
+- **The dashboard's tab bar**: above the terminal's top row the arrow is over the dashboard; the place under its
+  tip gets a bright ring and a notch (`Dashboard.Hit`); a click shows that tab
   (the + opens another, a right click closes it, never the session's first), the wheel goes to the tab before or
   after, and down goes back into the terminal under it. **PHONE** at its right end brings up the phone's screen
   (Android asks in the app first while it is not shared).
@@ -212,15 +216,16 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   phone's apps and back (the glasses say which). With the phone's screen on the glasses the keys are its app's.
   Arrows, Enter and Space drive the pointer only after Alt+M; on by the trackpad, every key types.
 - **A mouse or a keyboard's trackpad** paired with the phone (*Trackpad on the glasses*, Settings, *Keyboard and trackpad*, on
-  by default; VoxKeys, Android 15+): while the glasses show the terminal (or a card) and it shows on an eye, VoxKeys
-  takes the trackpad's events from the phone's apps and they drive the glasses' pointer: it glides a cell at a time
+  by default; VoxKeys, Android 14+): while the glasses show the terminal (or a card), VoxKeys takes the trackpad's
+  events from the phone's apps and they drive the glasses' pointer: it glides a cell at a time
   (fractions kept, quicker strokes go further; *Trackpad speed*), goes up onto the dashboard and there a place at a
   time (tabs, +, PHONE, the notifications), a tap or click clicks, a two-finger tap (the secondary button)
   right-clicks, the wheel and two-finger swipes scroll; a click while the pointer is off only shows it. On the
-  phone's screen it moves the cursor the glasses draw there, and its clicks are taps, long presses and swipes on the
-  phone (VoxKeys' gestures). It is taken only while the glasses show the terminal or the phone's screen (Android
-  14+ motion event sources: no app gets it meanwhile); otherwise it is the phone's own pointer. With the pointer on, typing goes to the phone's app: Space, and Enter once something was typed; an arrow
-  key makes the keys the cursor's again.
+  phone's screen it stays Android's own pointer. It is taken only while the glasses show the terminal (Android
+  14+ motion event sources: no app gets it meanwhile); otherwise, the phone's screen included, it is the phone's own
+  pointer. With the phone's
+  cursor on, typing goes to the phone's app: Space, and Enter once something was typed; an arrow key makes the keys
+  the cursor's again.
 - **Closing**: Alt+Q closes the source shown (a terminal's connection, the phone's sharing, a server's screen) and
   the glasses go to the next one still open; a closed one stays closed until it is chosen again.
 - **Look-up only**: the left TouchBar held 3 s turns *Always visible* off (the glasses show when looking up);

@@ -80,14 +80,17 @@ class Touchpad(context: Context) : View(context) {
                         accY -= if (accY > 0) cellY else -cellY
                     }
                 } else {
+                    // The arrow glides with the finger (about a glasses pixel per dp, quicker strokes further).
                     accX += dx
                     accY += dy
-                    val cx = (accX / cellX).toInt()
-                    val cy = (accY / cellY).toInt()
-                    if (cx != 0 || cy != 0) {
-                        send("move:$cx:$cy")
-                        accX -= cx * cellX
-                        accY -= cy * cellY
+                    val d = resources.displayMetrics.density
+                    val gx = accX / d
+                    val gy = accY / d
+                    if (kotlin.math.abs(gx) >= 1f || kotlin.math.abs(gy) >= 1f) {
+                        val k = 1.1f * (1f + minOf(1.5f, kotlin.math.hypot(gx, gy) / 25f))
+                        send("glide:${gx * k}:${gy * k}")
+                        accX = 0f
+                        accY = 0f
                     }
                 }
             }

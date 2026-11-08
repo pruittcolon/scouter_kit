@@ -70,6 +70,9 @@ int g_dash_h = 0;  // the dashboard's height above the terminal (terminalDash)
 std::shared_ptr<const ssh::Snapshot> g_card;
 // The pointer (pointer): a cell of the SSH session's screen shown inverted; -1: none. Guarded by g_band_mutex.
 int g_pointer_row = -1, g_pointer_col = -1;
+// The arrow (pointerAt): where, and whether it shows; guarded by g_term_mutex.
+int g_ptr_x = 0, g_ptr_y = 0;
+bool g_ptr_on = false;
 std::vector<uint8_t> g_dash; // its last picture (dash), for a terminal that starts again; guarded by g_term_mutex
 int g_top = 0, g_bottom = 0; // pixels left empty above and below the terminal (terminalMargins)
 bool g_panels_off = false;
@@ -313,6 +316,7 @@ std::string StartTerminal() {
   term->Force(g_force);
   if (!g_dash.empty()) term->SetDash(g_dash);
   if (auto w = WithBand(s)) term->Show(w);
+  if (g_ptr_on) term->Pointer(g_ptr_x, g_ptr_y, true);
   g_term = term;
   return {};
 }
@@ -1002,6 +1006,31 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_pointer(JNIEnv *, jclass, jint
 // A mouse event at a cell (row, col from 0) for the program in the SSH session, in the encoding it asked for:
 // button 0 left, 1 middle, 2 right (a press and a release), 64 / 65 the wheel up / down. False (nothing sent)
 // while the program has not asked for mouse reports: the bytes would be typed into it.
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_pointerAt(JNIEnv *, jclass, jint x, jint y, jboolean on) {
+  std::lock_guard<std::mutex> lock(g_term_mutex);
+  g_ptr_x = x;
+  g_ptr_y = y;
+  g_ptr_on = on;
+  if (g_term) g_term->Pointer(x, y, on);
+}
+
+JNIEXPORT jintArray JNICALL Java_scouterkit_ssh_Native_termGeometry(JNIEnv *env, jclass) {
+  jint v[5] = {0, 0, 0, 0, 0};
+  {
+    std::lock_guard<std::mutex> lock(g_term_mutex);
+    if (g_term) {
+      v[0] = g_term->dash_w() ? g_term->dash_w() : g_term->cols() * g_term->cell_w();
+      v[1] = g_term->rows() * g_term->cell_h();
+      v[2] = g_term->cell_w();
+      v[3] = g_term->cell_h();
+      v[4] = g_term->dash_h();
+    }
+  }
+  jintArray out = env->NewIntArray(5);
+  env->SetIntArrayRegion(out, 0, 5, v);
+  return out;
+}
+
 JNIEXPORT jboolean JNICALL Java_scouterkit_ssh_Native_mouse(JNIEnv *, jclass, jint button, jint row, jint col) {
   std::lock_guard<std::mutex> lock(g_mutex);
   if (!g_mosh) return JNI_FALSE;

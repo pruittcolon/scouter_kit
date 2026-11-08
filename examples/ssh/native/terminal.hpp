@@ -76,6 +76,10 @@ public:
   Fx::Region FxRegion(bool with_dash) const;
   Fx::Source FxSource(bool with_dash) const;
   void Force(bool on);
+  // The pointer: an arrow drawn by the arms at pixel (x, y) of the terminal (y < 0: over the dashboard above it),
+  // moved there at once (the content under it comes back from the arms' own picture); off: gone. Kept while
+  // hidden and drawn when the terminal shows.
+  void Pointer(int x, int y, bool on);
   // The dashboard's picture: 4 bpp (the high nibble the left pixel), dash_w() / 2 bytes a row, dash_h() rows.
   // Each arm gets the rows that changed (in its memory); it draws them while the terminal shows, and with it
   // when the terminal comes.
@@ -88,6 +92,8 @@ public:
   std::string Check();
   int cols() const { return geo_.cols; }
   int rows() const { return geo_.rows; }
+  int cell_w() const { return geo_.cw; }
+  int cell_h() const { return geo_.ch; }
 
   struct Geometry {
     int cols, rows, cw, ch, ascent, x, y;
@@ -95,7 +101,7 @@ public:
     int W() const { return (cols * cw + 1) & ~1; } // even: 4-bpp bytes
   };
   struct Layout {
-    uint32_t base, state, dirty, ring, area, batt, batt_text, dash, end;
+    uint32_t base, state, dirty, ring, area, batt, batt_text, dash, ptr_fill, ptr_edge, ptr_host, ptr_prog, ptr_code, end;
   };
   struct Row {
     std::vector<uint8_t> rec;
@@ -180,6 +186,12 @@ private:
   bool held_dash_ = false;
   uint32_t hold_sent_ = 0; // wHold as the arms have it
   int64_t wiped_until_ = 0; // Wiped: when the last screen is drawn again (0: not wiped)
+  // The pointer: where it is asked to be, whether that went to the arms yet, and the arms' code that moves it.
+  int ptr_x_ = 0, ptr_y_ = 0;
+  bool ptr_on_ = false, ptr_dirty_ = false;
+  int64_t ptr_sent_ = 0;
+  uint32_t ptr_entry_ = 0;
+  void SendPointer();
   bool wiped_dash_ = false;
 
   std::thread thread_;

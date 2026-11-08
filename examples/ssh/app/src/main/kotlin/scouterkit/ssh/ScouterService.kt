@@ -947,25 +947,28 @@ class ScouterService : Service() {
 
     // ------------------------------------------------ the trackpad
 
-    // A trackpad or mouse paired with the phone: taken while the glasses show the terminal (their pointer) or the
-    // phone's screen (a cursor drawn there, its clicks taps); otherwise it is the phone's own pointer.
+    // A trackpad or mouse paired with the phone: taken while the glasses show the terminal (their arrow); otherwise
+    // (the phone's screen too) it is the phone's own pointer, as smooth as Android makes it.
     private fun trackpadMode() {
         VoxKeys.capture(!ended && settings.trackpad && glassesWith != null && Session.glasses == "ready" && !Session.blank &&
-            (settings.show == Settings.TERMINAL || onPhone()))
+            settings.show == Settings.TERMINAL)
     }
 
-    private var glideX = 0f
-    private var glideY = 0f
-    private var glideBar = false // the pointer was on the dashboard at the last glide
     private var swipe = 0f
 
-    // The trackpad's motion: the pointer glides a cell at a time in the terminal (fractions kept, faster strokes go
-    // further) and a place at a time on the dashboard; a tap clicks, a right click (two fingers) right-clicks, the
-    // wheel and two-finger swipes scroll. A click while the pointer is off only shows it.
+    // The trackpad: the arrow glides like a mouse pointer (the setting's speed, quicker strokes go further); a tap
+    // clicks, a right click (two fingers) right-clicks, the wheel and two-finger swipes scroll. A click while the
+    // pointer is off only shows it.
     private fun trackpad(kind: Int, dx: Float, dy: Float) {
-        if (onPhone()) return phoneTrackpad(kind, dx, dy)
+        if (settings.show != Settings.TERMINAL) return
         when (kind) {
-            VoxKeys.Trackpad.MOVE -> glide(dx, dy)
+            VoxKeys.Trackpad.MOVE -> {
+                val v = kotlin.math.hypot(dx, dy)
+                val k = settings.trackpadSpeed.coerceIn(1, 10) / 5f * 0.9f * (1f + minOf(1.5f, v / 30f))
+                if (!Session.pointer) pointerOn()
+                moveBy(dx * k, dy * k)
+                Session.changed()
+            }
             VoxKeys.Trackpad.CLICK, VoxKeys.Trackpad.RIGHT -> {
                 if (!Session.pointer) return pointer("toggle")
                 pointer(if (kind == VoxKeys.Trackpad.RIGHT) "right" else "click")
@@ -982,60 +985,6 @@ class ScouterService : Service() {
                 }
             }
         }
-    }
-
-    // The phone's screen on the glasses: the trackpad moves the cursor drawn there (its pixels as the phone's), a
-    // click taps the phone there, a right click is a long press, the wheel and two fingers scroll.
-    private var phoneSwipe = 0f
-    private fun phoneTrackpad(kind: Int, dx: Float, dy: Float) {
-        when (kind) {
-            VoxKeys.Trackpad.MOVE -> {
-                val b = getSystemService(android.view.WindowManager::class.java).maximumWindowMetrics.bounds
-                if (b.width() <= 1 || b.height() <= 1) return
-                if (!Session.pointer) Session.pointer = true
-                val k = settings.trackpadSpeed.coerceIn(1, 10) / 5f * (1f + minOf(1.5f, kotlin.math.hypot(dx, dy) / 40f))
-                cursorX = (cursorX + dx * k / b.width() * 10000).toInt().coerceIn(0, 10000)
-                cursorY = (cursorY + dy * k / b.height() * 10000).toInt().coerceIn(0, 10000)
-                showCursor()
-            }
-            VoxKeys.Trackpad.CLICK -> phonePointer(listOf("click"))
-            VoxKeys.Trackpad.RIGHT -> phonePointer(listOf("right"))
-            VoxKeys.Trackpad.WHEEL -> phonePointer(listOf(if (dy > 0) "up" else "down"))
-            VoxKeys.Trackpad.SCROLL -> {
-                phoneSwipe += dy
-                if (kotlin.math.abs(phoneSwipe) >= 40f) {
-                    phonePointer(listOf(if (phoneSwipe > 0) "up" else "down"))
-                    phoneSwipe = 0f
-                }
-            }
-        }
-        Session.changed()
-    }
-
-    private fun glide(dx: Float, dy: Float) {
-        val onBar = pointerBar >= 0
-        if (onBar != glideBar) {
-            glideBar = onBar
-            glideX = 0f
-            glideY = 0f
-        }
-        // Speed: the setting, and a little acceleration for quick strokes.
-        val v = kotlin.math.hypot(dx, dy)
-        val k = settings.trackpadSpeed.coerceIn(1, 10) / 5f * (1f + minOf(1.5f, v / 40f))
-        glideX += dx * k
-        glideY += dy * k
-        // A cell is about 6 x 12 trackpad pixels; a place on the dashboard 30 across, 20 down.
-        val (sx, sy) = if (onBar) 30f to 20f else 6f to 12f
-        val cx = (glideX / sx).toInt()
-        val cy = (glideY / sy).toInt()
-        if (cx == 0 && cy == 0) return
-        glideX -= cx * sx
-        glideY -= cy * sy
-        if (onBar) {
-            // One place at a time, rows first (a diagonal stroke goes where it mostly points).
-            if (cy != 0 && kotlin.math.abs(cy) * sy >= kotlin.math.abs(cx) * sx) pointer("move:0:${if (cy > 0) 1 else -1}")
-            else if (cx != 0) repeat(minOf(3, kotlin.math.abs(cx))) { pointer("move:${if (cx > 0) 1 else -1}:0") }
-        } else pointer("move:$cx:$cy")
     }
 
     private fun stateLine(): String {
@@ -1254,22 +1203,26 @@ class ScouterService : Service() {
 
     // ------------------------------------------------ the pointer and tabs
 
-    private var pointerRow = 0
-    private var pointerCol = 0
-    // Above the terminal's top row the pointer is on the dashboard's tab bar: the place it is on (an index in
-    // barHits, the bar's tabs and + as last drawn), or -1 while it is in the terminal.
+    // The pointer: an arrow the arms draw over the terminal at pixel (ptrX, ptrY) of its region (y < 0: over the
+    // dashboard above it). The trackpad glides it like a mouse, the keys (Alt+M) and the touchpad step it a cell;
+    // over the dashboard the place under its tip is ringed and its clicks are that place's.
+    private var ptrX = 0f
+    private var ptrY = 0f
+    // The dashboard's place under the pointer (an index in barHits, as last drawn), or -1.
     private var pointerBar = -1
     private var barHits: List<Dashboard.Hit> = emptyList()
     private var barWidth = 0
-    private val pointerIdle = Runnable { // hidden after a while; its keys still work
-        Native.pointer(-1, -1)
+    private val pointerIdle = Runnable { // hidden after a while; it comes back where it was
+        Native.pointerAt(ptrX.toInt(), ptrY.toInt(), false)
         hideCursor()
         if (pointerBar >= 0) {
             pointerBar = -1
-            pointerRow = 0
             dash()
         }
     }
+
+    // The terminal's region on the glasses: width, height, a cell's width and height, the dashboard's height.
+    private fun region(): IntArray = Native.termGeometry()
 
     private fun pointer(cmd: String) {
         val parts = cmd.split(":")
@@ -1286,24 +1239,25 @@ class ScouterService : Service() {
                 Session.pointerKeys = true
             }
             "off" -> pointerOff()
-            "move" -> {
+            "move" -> { // cells (the keys, the touchpad)
                 if (!Session.pointer) pointerOn()
-                val dx = parts.getOrNull(1)?.toIntOrNull() ?: 0
-                val dy = parts.getOrNull(2)?.toIntOrNull() ?: 0
-                if (pointerBar >= 0) barMove(dx, dy)
-                else if (pointerRow + dy < 0 && barHits.isNotEmpty() && settings.dashRows > 0) barEnter()
-                else {
-                    pointerRow = (pointerRow + dy).coerceIn(0, settings.rows - 1)
-                    pointerCol = (pointerCol + dx).coerceIn(0, settings.cols - 1)
-                }
-                showPointer()
+                val g = region()
+                moveBy((parts.getOrNull(1)?.toIntOrNull() ?: 0) * g[2].toFloat(), (parts.getOrNull(2)?.toIntOrNull() ?: 0) * g[3].toFloat())
+            }
+            "glide" -> { // pixels (the trackpad, the touchpad)
+                if (!Session.pointer) pointerOn()
+                moveBy(parts.getOrNull(1)?.toFloatOrNull() ?: 0f, parts.getOrNull(2)?.toFloatOrNull() ?: 0f)
             }
             "click", "right", "up", "down" -> {
                 if (!Session.pointer) pointerOn()
-                if (pointerBar >= 0) barClick(parts[0])
-                else {
+                if (ptrY < 0) {
+                    if (pointerBar >= 0) barClick(parts[0])
+                } else {
+                    val g = region()
                     val button = when (parts[0]) { "right" -> 2; "up" -> 64; "down" -> 65; else -> 0 }
-                    if (!Native.mouse(button, pointerRow, pointerCol))
+                    val row = if (g[3] > 0) (ptrY / g[3]).toInt() else 0
+                    val col = if (g[2] > 0) (ptrX / g[2]).toInt() else 0
+                    if (!Native.mouse(button, row, col))
                         Session.tabs = "the terminal's program takes no mouse (in tmux: Mouse in tmux, Terminal tab)"
                     else Session.tabs = ""
                 }
@@ -1313,64 +1267,30 @@ class ScouterService : Service() {
         Session.changed()
     }
 
-    // The column under a place on the bar, and the place nearest a column (the dashboard is the terminal's width).
-    private fun barCol(hit: Dashboard.Hit): Int =
-        if (barWidth <= 0) pointerCol else (hit.center * settings.cols / barWidth).toInt().coerceIn(0, settings.cols - 1)
-
-    private fun barNearest(col: Int): Int {
-        val x = if (settings.cols <= 0) 0f else (col + 0.5f) * barWidth / settings.cols
-        return barHits.indices.minByOrNull { i ->
-            val h = barHits[i]
-            if (x < h.left) h.left - x else if (x > h.right) x - h.right else 0f
-        } ?: -1
+    private fun moveBy(dx: Float, dy: Float) {
+        val g = region()
+        if (g[0] <= 0) return
+        ptrX = (ptrX + dx).coerceIn(0f, g[0] - 1f)
+        ptrY = (ptrY + dy).coerceIn(-g[4].toFloat(), g[1] - 1f)
+        hover()
+        showPointer()
     }
 
-    // The dashboard's places by row (top to bottom: the tab bar, then the notifications), each left to right.
-    private fun barRows(): List<List<Int>> = barHits.indices.groupBy { barHits[it].top }.toSortedMap().values
-        .map { row -> row.sortedBy { barHits[it].left } }
-
-    private fun nearestIn(row: List<Int>, x: Float): Int? = row.minByOrNull { i ->
-        val h = barHits[i]
-        if (x < h.left) h.left - x else if (x > h.right) x - h.right else 0f
-    }
-
-    // Up from the terminal's top row: onto the dashboard's lowest row (the notifications, else the tab bar), at the
-    // place above the pointer (else the nearest).
-    private fun barEnter() {
-        val rows = barRows()
-        val x = if (settings.cols <= 0) 0f else (pointerCol + 0.5f) * barWidth / settings.cols
-        pointerBar = rows.lastOrNull()?.let { nearestIn(it, x) } ?: -1
-        if (pointerBar < 0) return
-        Native.pointer(-1, -1) // the cell in the terminal goes; the dashboard shows where it is
-        dash()
-    }
-
-    // On the dashboard: left and right go a place at a time in a row, up and down a row (to the place nearest
-    // above or below); down from the lowest row goes back into the terminal under it.
-    private fun barMove(dx: Int, dy: Int) {
-        val rows = barRows()
-        val r = rows.indexOfFirst { pointerBar in it }
-        val here = barHits.getOrNull(pointerBar)
-        if (r < 0 || here == null) return barLeave()
-        when {
-            dy > 0 && r == rows.size - 1 -> {
-                pointerCol = barCol(here)
-                return barLeave()
-            }
-            dy > 0 -> pointerBar = nearestIn(rows[r + 1], here.center) ?: pointerBar
-            dy < 0 && r > 0 -> pointerBar = nearestIn(rows[r - 1], here.center) ?: pointerBar
-            dx != 0 -> {
-                val row = rows[r]
-                pointerBar = row[(row.indexOf(pointerBar) + if (dx > 0) 1 else -1).coerceIn(0, row.size - 1)]
-            }
-            else -> return
+    // Over the dashboard: the place under the tip, ringed (the dashboard drawn again when it changes).
+    private fun hover() {
+        val g = region()
+        val y = ptrY + g[4]
+        val at = if (ptrY < 0) barHits.indexOfFirst { ptrX >= it.left - 2 && ptrX <= it.right + 2 && y >= it.top - 2 && y <= it.bottom + 2 } else -1
+        if (at != pointerBar) {
+            pointerBar = at
+            dash()
         }
-        dash()
     }
 
+    // Away from the dashboard (a notification opened, the phone's screen chosen): no place ringed.
     private fun barLeave() {
+        if (pointerBar < 0) return
         pointerBar = -1
-        pointerRow = 0
         dash()
     }
 
@@ -1570,8 +1490,9 @@ class ScouterService : Service() {
             return showCursor()
         }
         if (settings.tmuxMouse) tabs("mouse")
-        pointerRow = settings.rows / 2
-        pointerCol = settings.cols / 2
+        val g = region()
+        ptrX = g[0] / 2f
+        ptrY = g[1] / 2f
         showPointer()
     }
 
@@ -1579,13 +1500,13 @@ class ScouterService : Service() {
         Session.pointer = false
         Session.pointerKeys = false
         work.removeCallbacks(pointerIdle)
-        Native.pointer(-1, -1)
+        Native.pointerAt(ptrX.toInt(), ptrY.toInt(), false)
         hideCursor()
-        if (pointerBar >= 0) barLeave()
+        barLeave()
     }
 
     private fun showPointer() {
-        Native.pointer(if (pointerBar >= 0) -1 else pointerRow, if (pointerBar >= 0) -1 else pointerCol)
+        Native.pointerAt(ptrX.toInt(), ptrY.toInt(), true)
         work.removeCallbacks(pointerIdle)
         work.postDelayed(pointerIdle, 10000)
     }

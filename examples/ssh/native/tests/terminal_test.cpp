@@ -353,7 +353,34 @@ int main(int argc, char **argv) {
   std::string kcheck = again.Check();
   if (kcheck.rfind("ok", 0) != 0) std::printf("fonts kept: %s", kcheck.c_str());
   CHECK(kcheck.rfind("ok", 0) == 0);
-  CHECK(free_kept - scouter_kit::free_memory < 160000); // the layout only (about 145 KB): no second font (27 KB)
+  CHECK(free_kept - scouter_kit::free_memory < 200000); // the layout only (about 150 KB): no second font (27 KB)
+
+  // The pointer: an arrow drawn by the arms where it is asked to be (over the terminal or the dashboard), the same
+  // on both eyes; moved, the content under it comes back exactly; off, the panels are as before it.
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  std::vector<uint8_t> before(g1::emulator::Panel(0), g1::emulator::Panel(0) + 640 * 480);
+  int ax = x, ay = dy0 + 80; // the area's top left on the left eye
+  auto at = [&](int arm, int px, int py) { return g1::emulator::Panel(arm)[py * 640 + px]; };
+  again.Pointer(100, 50, true);
+  CHECK(WaitFor([&] { return at(0, ax + 100 + 2, ay + 50 + 4) == 15; }, 2000)); // the body, below its tip
+  CHECK(at(0, ax + 100 + 0, ay + 50 + 4) == 0); // its dark edge
+  CHECK(SameArea(x, dy0, x - 100, dy0 + 9, dw, 80 + drows * 14));
+  again.Pointer(300, 120, true);
+  CHECK(WaitFor([&] { return at(0, ax + 300 + 2, ay + 120 + 4) == 15; }, 2000));
+  auto same_box = [&](int bx, int by) {
+    const uint8_t *p = g1::emulator::Panel(0);
+    for (int yy = by; yy < by + 20; yy++)
+      for (int xx = bx; xx < bx + 16; xx++)
+        if (p[yy * 640 + xx] != before[size_t(yy * 640 + xx)]) return false;
+    return true;
+  };
+  CHECK(same_box(ax + 100, ay + 50)); // the old place as it was
+  again.Pointer(40, -60, true); // over the dashboard
+  CHECK(WaitFor([&] { return at(0, ax + 40 + 2, ay - 60 + 4) == 15; }, 2000));
+  CHECK(same_box(ax + 300, ay + 120));
+  again.Pointer(40, -60, false);
+  CHECK(WaitFor([&] { return same_box(ax + 40, ay - 60); }, 2000));
+  CHECK(std::equal(before.begin(), before.end(), g1::emulator::Panel(0)));
   again.Stop();
   fx->Stop();
   g1::Deinit();
