@@ -64,6 +64,11 @@ bool g_battery = true;
 // Voice: lines shown in the terminal's top rows (above a rule) while voice is in use; empty: none.
 std::mutex g_band_mutex;
 std::vector<std::string> g_band;
+// A card over everything on the terminal (the help, the quick settings): lines with their marks (1 bold, 2 faint,
+// 3 highlighted), the whole terminal or a strip at its bottom; guarded by g_band_mutex.
+std::vector<std::string> g_overlay;
+std::vector<int> g_overlay_marks;
+bool g_overlay_full = false;
 // The look-up header (lookUpHeader): lines above the terminal and a rule under them; the app gives the terminal
 // as many rows fewer. Guarded by g_band_mutex.
 std::vector<std::string> g_header;
@@ -224,7 +229,7 @@ void PutRow(ssh::Snapshot *out, int r, const std::string &text, bool bold, bool 
 // The screen the glasses get. With the look-up header: its lines (the first bold) and a rule above the
 // terminal, the voice band in the header's place while voice is in use. Without it, the voice band (bold
 // lines, then a rule) over the terminal's top rows, hiding them (and the cursor there) while it shows.
-std::shared_ptr<const ssh::Snapshot> WithBand(std::shared_ptr<const ssh::Snapshot> s) {
+std::shared_ptr<const ssh::Snapshot> WithBandOnly(std::shared_ptr<const ssh::Snapshot> s) {
   std::vector<std::string> band, header;
   int prow, pcol;
   {
@@ -281,6 +286,40 @@ std::shared_ptr<const ssh::Snapshot> WithBand(std::shared_ptr<const ssh::Snapsho
     }
   }
   if (out->cursor_row <= lines) out->cursor_visible = false;
+  return out;
+}
+
+// The screen the glasses get: WithBandOnly's, and the overlay (Native.overlay) over all of it.
+std::shared_ptr<const ssh::Snapshot> WithBand(std::shared_ptr<const ssh::Snapshot> s) {
+  s = WithBandOnly(std::move(s));
+  std::vector<std::string> lines;
+  std::vector<int> marks;
+  bool full;
+  {
+    std::lock_guard<std::mutex> lock(g_band_mutex);
+    lines = g_overlay;
+    marks = g_overlay_marks;
+    full = g_overlay_full;
+  }
+  if (lines.empty() || !s || s->cols < 8 || s->rows < 3) return s;
+  auto out = std::make_shared<ssh::Snapshot>(*s);
+  int n = std::min(int(lines.size()), out->rows - (full ? 0 : 1));
+  int top = 0;
+  if (full) {
+    out->cells.assign(size_t(out->rows) * out->cols, ssh::Cell());
+  } else {
+    top = out->rows - n - 1;
+    std::string rule;
+    for (int c = 0; c < out->cols; c++) rule += "\u2500";
+    PutRow(out.get(), top++, rule, false, true);
+  }
+  for (int i = 0; i < n; i++) {
+    int mark = i < int(marks.size()) ? marks[size_t(i)] : 0;
+    PutRow(out.get(), top + i, lines[size_t(i)], mark == 1 || mark == 3, mark == 2);
+    if (mark == 3)
+      for (int c = 0; c < out->cols; c++) out->cells[size_t(top + i) * out->cols + c].inverse = true;
+  }
+  out->cursor_visible = false;
   return out;
 }
 
@@ -351,23 +390,50 @@ void Panels(bool on) {
     if (a->GetState().connected) a->SetPanel(on);
 }
 
+// The panels off once the transition playing now has ended (the display's switch-off: its CRT close is seen);
+// a later switch-on (g_off_token) cancels it.
+uint64_t g_off_token = 0;
+void PanelsOffAfterFx() {
+  auto fx = FxNow();
+  int64_t until = fx ? fx->busy_until() : 0, now = scouter_kit::g1::NowUs();
+  if (until <= now) return Panels(false);
+  uint64_t token = ++g_off_token;
+  std::thread([token, wait = until - now + 30000] {
+    std::this_thread::sleep_for(std::chrono::microseconds(wait));
+    std::lock_guard<std::mutex> lock(g_glasses_mutex);
+    if (token == g_off_token && g_panels_off && g_glasses) Panels(false);
+  }).detach();
+}
+
+// The cursor on the phone's screen (screenPointer): kept for the next mirror; guarded by g_screen_mutex.
+int g_sptr_x = 5000, g_sptr_y = 5000;
+bool g_sptr_on = false;
+
+// A transition plays now (its out blacks the picture's place out): the next path need not clear the panels.
+bool FxCovers() {
+  auto fx = FxNow();
+  return fx && fx->busy_until() > scouter_kit::g1::NowUs();
+}
+
 // The mirror's object on the arms (g_glasses_mutex held, nothing else drawing).
 std::string StartScreen() {
   auto screen = std::make_shared<ssh::ScreenMirror>();
   std::string error;
-  if (!screen->Start(g_config.dx, g_config.dy, &error)) {
+  bool keep = FxCovers();
+  if (!screen->Start(g_config.dx, g_config.dy, &error, keep)) {
     LOG("screen: %s", error.c_str());
     return error;
   }
   LOG("screen: on the glasses");
-  // A transition: its label again (Start cleared the panels), and the first picture revealed.
+  // A transition: the first picture revealed (and its label again if Start cleared the panels).
   if (FxPending p = TakeFx(false); p.style)
     if (auto fx = FxNow()) {
       screen->Reveal(p.style, fx);
-      fx->Label(screen->FxRegion());
+      if (!keep) fx->Label(screen->FxRegion());
     }
   std::lock_guard<std::mutex> lock(g_screen_mutex);
   g_screen = screen;
+  screen->Pointer(g_sptr_x, g_sptr_y, g_sptr_on);
   return {};
 }
 
@@ -378,7 +444,7 @@ bool StopScreen() {
     std::lock_guard<std::mutex> lock(g_screen_mutex);
     screen.swap(g_screen);
   }
-  if (screen) screen->Stop();
+  if (screen) screen->Stop(FxCovers());
   return screen != nullptr;
 }
 
@@ -427,6 +493,7 @@ std::string Apply() {
   Show want = g_blank ? Show::kNone : TunesWanted() ? Show::kTunes : ScreenWanted() ? Show::kScreen : Show::kTerminal;
   Show now = Current();
   std::string error;
+  int64_t t0 = scouter_kit::g1::NowUs();
   if (now != want) {
     if (now == Show::kTerminal) StopTerminal(false, true);
     if (now == Show::kScreen) StopScreen();
@@ -434,10 +501,11 @@ std::string Apply() {
     if (want == Show::kNone) {
       scouter_kit::gray::Clear();
       scouter_kit::Flush();
-      Panels(false);
+      PanelsOffAfterFx();
       g_panels_off = true;
     } else {
       g_pump.Stop();
+      ++g_off_token;
       if (g_panels_off) Panels(true);
       g_panels_off = false;
       if (want == Show::kTunes) {
@@ -462,11 +530,14 @@ std::string Apply() {
       }
     }
   } else if (want == Show::kNone && !g_panels_off) {
-    Panels(false);
+    PanelsOffAfterFx();
     g_panels_off = true;
   }
   if (Current() == Show::kTerminal) g_pump.Stop();
   else g_pump.Start();
+  if (now != want)
+    LOG("switch: %d -> %d took %lld ms on the phone", int(now), int(Current()),
+        (long long)((scouter_kit::g1::NowUs() - t0) / 1000));
   return error;
 }
 
@@ -956,6 +1027,58 @@ extern "C" {
 
 // The voice band over the terminal's top rows: the text wrapped into at most `lines` lines (the newest words);
 // empty: the band goes. The terminal shows the change at once.
+// A card over the terminal (lines with marks: 1 bold, 2 faint, 3 highlighted; full: the whole terminal, else a
+// strip at its bottom), at once; null or empty: none.
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_overlay(JNIEnv *env, jclass, jobjectArray lines, jintArray marks,
+                                                          jboolean full) {
+  std::vector<std::string> v;
+  std::vector<int> m;
+  if (lines) {
+    jsize n = env->GetArrayLength(lines);
+    for (jsize i = 0; i < n; i++) {
+      auto js = static_cast<jstring>(env->GetObjectArrayElement(lines, i));
+      v.push_back(Text(env, js));
+      env->DeleteLocalRef(js);
+    }
+  }
+  if (marks) {
+    std::vector<jint> t(size_t(env->GetArrayLength(marks)));
+    env->GetIntArrayRegion(marks, 0, jsize(t.size()), t.data());
+    m.assign(t.begin(), t.end());
+  }
+  std::shared_ptr<const ssh::Snapshot> s;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_mosh) s = g_mosh->Latest();
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_band_mutex);
+    g_overlay = std::move(v);
+    g_overlay_marks = std::move(m);
+    g_overlay_full = full;
+  }
+  std::lock_guard<std::mutex> lock(g_term_mutex);
+  if (g_term)
+    if (auto w = WithBand(s)) g_term->Show(w);
+}
+
+// A card over the screen's picture (0 ... 255 per pixel, w x h at (x, y) of the picture); null: none. It goes with
+// the next frame (the capture is asked for one).
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_screenOverlay(JNIEnv *env, jclass, jbyteArray pixels, jint w, jint h,
+                                                                jint x, jint y) {
+  std::vector<uint8_t> p;
+  if (pixels && w > 0 && h > 0) {
+    p.resize(size_t(env->GetArrayLength(pixels)));
+    env->GetByteArrayRegion(pixels, 0, jsize(p.size()), reinterpret_cast<jbyte *>(p.data()));
+  }
+  std::shared_ptr<ssh::ScreenMirror> screen;
+  {
+    std::lock_guard<std::mutex> lock(g_screen_mutex);
+    screen = g_screen;
+  }
+  if (screen) screen->SetOverlay(std::move(p), w, h, x, y);
+}
+
 JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_voiceBand(JNIEnv *env, jclass, jstring text, jint lines) {
   std::string t = Text(env, text);
   std::shared_ptr<const ssh::Snapshot> s;
@@ -1294,6 +1417,34 @@ JNIEXPORT jintArray JNICALL Java_scouterkit_ssh_Native_screenStats(JNIEnv *env, 
   }
   jintArray a = env->NewIntArray(11);
   env->SetIntArrayRegion(a, 0, 11, v);
+  return a;
+}
+
+// The cursor on the phone's screen (1/10000 of its width and height; on: shown): the arms draw it over the picture
+// at once (black and white). True while it still waits to go (a busy link, a transition): call again soon.
+JNIEXPORT jboolean JNICALL Java_scouterkit_ssh_Native_screenPointer(JNIEnv *, jclass, jint x, jint y, jboolean on) {
+  std::shared_ptr<ssh::ScreenMirror> screen;
+  {
+    std::lock_guard<std::mutex> lock(g_screen_mutex);
+    g_sptr_x = x;
+    g_sptr_y = y;
+    g_sptr_on = on;
+    screen = g_screen;
+  }
+  if (!screen) return JNI_FALSE;
+  screen->Pointer(x, y, on);
+  return screen->PointerPending() ? JNI_TRUE : JNI_FALSE;
+}
+
+// The part of the phone's screen on the glasses (left, top, right, bottom in 1/10000) and its size there (w, h
+// pixels), or null before a frame.
+JNIEXPORT jintArray JNICALL Java_scouterkit_ssh_Native_screenShows(JNIEnv *env, jclass) {
+  int v[6] = {};
+  auto screen = Mirror();
+  if (!screen || !screen->Shows(v)) return nullptr;
+  jint t[6] = {v[0], v[1], v[2], v[3], v[4], v[5]};
+  jintArray a = env->NewIntArray(6);
+  env->SetIntArrayRegion(a, 0, 6, t);
   return a;
 }
 

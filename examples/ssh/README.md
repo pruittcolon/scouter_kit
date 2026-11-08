@@ -119,6 +119,11 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   click on the dashboard, voice, a shortcut) tiles that decrypt in a random order; the tabs a quicker stream
   toward the tab they go to; the display a CRT switching off (to a line, then a dot) and on (opening from the
   middle). Between two terminals only the terminal moves: the dashboard stays, like a task bar.
+  Quick by design: under a transition the screen mirror starts and stops without power-cycling the panels (the
+  out has blacked its place out; only the columns one eye sees are drawn black), so the animation and its label
+  play on; the terminal's held first screen is due as soon as it is in (its reveal waits for both arms anyway);
+  the phone's screen is captured at once on a switch (not at the next tick) with its app's look already applied.
+  Each step is logged (`switch:`, `fx: out / in`, `screen: first picture`, `terminal: started in`) to time it.
   How: the phone plans each animation as a list of drawing steps (8 bytes each: copy a rectangle of the new
   picture, a black or bright bar, a neon edge's levels, the label), and stored code on each arm runs it in a host
   packet, a frame every 22 or 28 ms from a due time both eyes share, so it is as smooth as the panel whatever the
@@ -208,11 +213,18 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   (the + opens another, a right click closes it, never the session's first), the wheel goes to the tab before or
   after, and down goes back into the terminal under it. **PHONE** at its right end brings up the phone's screen
   (Android asks in the app first while it is not shared).
-- **The cursor on the phone's screen**: with the phone's screen on the glasses the pointer is an arrow drawn into
-  its picture (`ScreenOptions::cursor_*`, before rotate and zoom); a click taps the phone there, a right click is a
-  long press, the wheel scrolls (VoxKeys: Android's accessibility gestures; *Vox* must be on in Accessibility).
-  Alt+Backspace is Back, Alt+H Home. Typing goes to the phone's app as usual (the pointer off: Enter and Space
-  are its clicks while it is on).
+- **The cursor on the phone's screen** (pocket mode): with the phone's screen on the glasses the trackpad drives an
+  arrow the arms draw themselves over the picture (`ScreenMirror::Pointer`: stored code in the VIDEO path's block
+  puts the 16 x 20 box back from the 1-bpp bitmap and draws the arrow at its new place, a few bytes a move, and
+  draws it again after each frame), so it glides at once instead of with the 5 frames a second. It moves in
+  glasses pixels at the trackpad's speed, through the picture's zoom, crop and turn (`Locate`, `Shows`), and stays
+  on the part that shows. A click taps the phone there, a right click is a long press, two fingers and the wheel
+  scroll the app as swipes (queued, so a quick stroke is not cut short) (VoxKeys: Android's accessibility
+  gestures; *Vox* must be on in Accessibility). Alt+Backspace is Back, Alt+H Home, Alt+R Recents, Alt+N the
+  notifications. Typing goes to the phone's app as usual (the pointer off: Enter and Space are its clicks while
+  it is on). *Pocket mode* (Settings, *Keyboard and trackpad*, on by default) keeps the phone awake (dimmed) while
+  its screen is on the glasses, so it can stay in a pocket; a key or the trackpad wakes it if it went dark. With
+  16 greys the arrow goes into the frames instead.
 - **Notifications on the dashboard**: the pointer goes on from the terminal's top row up into the newest three
   notifications (then up again to the tab bar). A click opens the notification's app on the phone (as tapping it
   would: `NoteActivity` sends its intent) and the glasses switch to the phone's screen with the cursor in the
@@ -234,15 +246,29 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   (fractions kept, quicker strokes go further; *Trackpad speed*), goes up onto the dashboard and there a place at a
   time (tabs, +, PHONE, the notifications), a tap or click clicks, a two-finger tap (the secondary button)
   right-clicks, the wheel and two-finger swipes scroll; a click while the pointer is off only shows it. On the
-  phone's screen it stays Android's own pointer. It is taken only while the glasses show the terminal (Android
-  14+ motion event sources: no app gets it meanwhile); otherwise, the phone's screen included, it is the phone's own
+  phone's screen it drives the glasses' cursor there (above). It is taken only while the glasses show the terminal
+  or the phone's screen (Android 14+ motion event sources: no app gets it meanwhile); otherwise it is the phone's own
   pointer. With the phone's
   cursor on, typing goes to the phone's app: Space, and Enter once something was typed; an arrow key makes the keys
   the cursor's again.
 - **Closing**: Alt+Q closes the source shown (a terminal's connection, the phone's sharing, a server's screen) and
   the glasses go to the next one still open; a closed one stays closed until it is chosen again.
-- **Look-up only**: the left TouchBar held 3 s turns *Always visible* off (the glasses show when looking up);
-  only the app turns it back on, so a stray touch cannot. The left hold's own action comes when it is let go.
+- **Look-up only**: Alt+L switches between *Always visible* and look-up only (the terminal shows when looking up):
+  a note says which, then the terminal fades away with the head level (or stays). The left TouchBar held 3 s
+  turns *Always visible* off too; only the app or Alt+L turns it back on, so a stray touch cannot. The left hold's
+  own action comes when it is let go.
+- **Panels over everything** (`Panels.kt`): Alt+A the help, every hotkey and what it does (the same list as the
+  app's Settings, *Hotkeys*); Alt+S the quick settings of what shows (a screen: picture, invert, threshold,
+  contrast, zoom, fit, turn, cuts, frames a second, brightness, pocket mode, cursor speed; the terminal:
+  brightness, always visible, the look-up dashboard and its style, speeds, typing, animations, Tunes), one at a
+  time: Up / Down the setting, Left / Right its value, live, Esc or Enter done (the trackpad: scroll, click
+  closes). A note at the bottom says what a hotkey did (Alt+= / - brightness, Alt+P play or pause, Alt+, / . the
+  track before / after). On the terminal they are its own lines (`Native.overlay`, over the band and the card);
+  on a screen a picture composed into its frames (`ScreenMirror::SetOverlay`, the capture asked for a frame), so
+  what is under them keeps running and they come and go at once. The terminal shows whatever the head's angle
+  while one is open.
+- **Display off and on** (Alt+0): the CRT close plays to its end before the panels go off (`PanelsOffAfterFx`), and
+  the picture opens from the middle when it comes back.
 
 ## Voice
 

@@ -160,6 +160,22 @@ class PhoneScreen(
             Preview.publish(previewPixels, previewInfo[0], previewInfo[1], previewInfo[2] == 1, Native.screenStats())
     }
 
+    // The newest image goes again now (a switch to it; greys: the cursor drawn into the picture), from any thread.
+    @Volatile private var pokeAt = 0L
+    fun poke() {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - pokeAt < 80) { // the capture's next go takes it
+            handler.post { due = true }
+            return
+        }
+        pokeAt = now
+        handler.post {
+            if (released) return@post
+            due = true
+            runCatching { grab() }
+        }
+    }
+
     // From any thread: the capture's own thread lets go once a frame in progress is done.
     fun release() {
         if (released) return

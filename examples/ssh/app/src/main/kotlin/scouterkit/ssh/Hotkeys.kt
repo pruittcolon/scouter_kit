@@ -14,9 +14,10 @@ import android.view.accessibility.AccessibilityEvent
 // A keyboard's shortcuts (a Bluetooth keyboard paired with the phone): Alt with an arrow moves around the
 // sources as a grid (left and right: this phone, then each other server; up and down: terminal, screen),
 // Alt+1 ... Alt+9 picks Home's source of that number, Alt+0 turns the display off or on, Alt+Space (or Alt+V)
-// listens for a voice command, Alt+M the pointer (then arrows, Enter, Escape), Alt+T / [ / ] / W the tabs.
-// MainActivity takes them
-// while Vox is in front; VoxKeys (an accessibility service the user turns on) everywhere.
+// listens for a voice command, Alt+M the pointer (then arrows, Enter, Escape), Alt+T / [ / ] / W the tabs,
+// Alt+A the help on the glasses (every hotkey: Panels.GROUPS), Alt+S the quick settings, Alt+L look-up only,
+// Alt+= / - the brightness, Alt+P / , / . the music. MainActivity takes them while Vox is in front; VoxKeys (an
+// accessibility service the user turns on) everywhere.
 object Hotkeys {
     // The event was Vox's: a shortcut, or a key typed into the glasses' terminal (both its press and its release are
     // ours then).
@@ -47,6 +48,24 @@ object Hotkeys {
                 else -> e.getUnicodeChar(e.metaState).takeIf { it > 0 && !e.isCtrlPressed }?.let { "c:" + String(Character.toChars(it)) }
             } ?: return true
             ScouterService.send(context, ScouterService.ACTION_REPLY, "key" to what)
+            return true
+        }
+        // A panel on the glasses (the help, the quick settings): its keys are the arrows, Enter, Space and Escape
+        // (the rest do nothing meanwhile); Alt shortcuts go on as ever (Alt+A / Alt+S again close it).
+        if ((Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS) && !e.isAltPressed && !e.isCtrlPressed &&
+            !e.isMetaPressed) {
+            val k = when (e.keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP -> "up"
+                KeyEvent.KEYCODE_DPAD_DOWN -> "down"
+                KeyEvent.KEYCODE_DPAD_LEFT -> "left"
+                KeyEvent.KEYCODE_DPAD_RIGHT -> "right"
+                KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> "enter"
+                KeyEvent.KEYCODE_SPACE -> "space"
+                KeyEvent.KEYCODE_ESCAPE -> "esc"
+                else -> null
+            }
+            if (k != null && e.action == KeyEvent.ACTION_DOWN && (e.repeatCount == 0 || k in listOf("up", "down", "left", "right")))
+                ScouterService.send(context, ScouterService.ACTION_PANEL, "do" to "key:$k")
             return true
         }
         // The phone's screen on the glasses, the pointer on: typing goes to the phone's app as it is (Space, and
@@ -94,12 +113,35 @@ object Hotkeys {
             return true
         }
         if (!e.isAltPressed || e.isCtrlPressed || e.isMetaPressed) return false
-        // The phone's screen on the glasses: Alt+Backspace is Back, Alt+H Home (VoxKeys).
-        if (Session.showing == Settings.SCREEN && Session.screenSource.ifEmpty { Settings.PHONE } == Settings.PHONE &&
-            (e.keyCode == KeyEvent.KEYCODE_DEL || e.keyCode == KeyEvent.KEYCODE_H)) {
-            if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0)
-                VoxKeys.global(if (e.keyCode == KeyEvent.KEYCODE_DEL) AccessibilityService.GLOBAL_ACTION_BACK
-                else AccessibilityService.GLOBAL_ACTION_HOME)
+        // The phone's screen on the glasses: Alt+Backspace is Back, Alt+H Home, Alt+R Recents, Alt+N the
+        // notifications (VoxKeys).
+        val nav = when (e.keyCode) {
+            KeyEvent.KEYCODE_DEL -> AccessibilityService.GLOBAL_ACTION_BACK
+            KeyEvent.KEYCODE_H -> AccessibilityService.GLOBAL_ACTION_HOME
+            KeyEvent.KEYCODE_R -> AccessibilityService.GLOBAL_ACTION_RECENTS
+            KeyEvent.KEYCODE_N -> AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS
+            else -> null
+        }
+        if (nav != null && onPhone) {
+            if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0) VoxKeys.global(nav)
+            return true
+        }
+        // Alt+A the help, Alt+S the quick settings, Alt+L look-up only, Alt+= / - brighter / dimmer, Alt+P play or
+        // pause, Alt+, / . the track before / after.
+        val panel = when (e.keyCode) {
+            KeyEvent.KEYCODE_A -> Panels.HELP
+            KeyEvent.KEYCODE_S -> Panels.SETTINGS
+            KeyEvent.KEYCODE_L -> "lookup"
+            KeyEvent.KEYCODE_EQUALS, KeyEvent.KEYCODE_PLUS, KeyEvent.KEYCODE_NUMPAD_ADD -> "bright:1"
+            KeyEvent.KEYCODE_MINUS, KeyEvent.KEYCODE_NUMPAD_SUBTRACT -> "bright:-1"
+            KeyEvent.KEYCODE_P -> "media:toggle"
+            KeyEvent.KEYCODE_COMMA -> "media:prev"
+            KeyEvent.KEYCODE_PERIOD -> "media:next"
+            else -> null
+        }
+        if (panel != null) {
+            if (e.action == KeyEvent.ACTION_DOWN && (e.repeatCount == 0 || panel.startsWith("bright")))
+                ScouterService.send(context, ScouterService.ACTION_PANEL, "do" to panel)
             return true
         }
         // Alt+U: Tunes, the synthwave scene, on or off.
@@ -322,17 +364,27 @@ class VoxKeys : AccessibilityService() {
             return s.dispatchGesture(g, null, null)
         }
 
-        // A scroll from x, y: a swipe of dy pixels (positive: the page goes on downward, as a wheel turned down).
-        fun scroll(x: Float, y: Float, dy: Float, height: Float): Boolean {
+        // A scroll from x, y: a swipe of dy pixels (positive: the page goes on downward, as a wheel turned down),
+        // started where the whole swipe fits on the screen; done (from the main thread) when it has run or was cut.
+        fun scroll(x: Float, y: Float, dy: Float, height: Float, done: (() -> Unit)? = null): Boolean {
             val s = instance ?: return false
-            val from = y.coerceIn(1f, height - 2f)
-            val to = (from - dy).coerceIn(1f, height - 2f)
+            val d = dy.coerceIn(-(height - 4f), height - 4f)
+            val from = if (d > 0) y.coerceIn(d + 2f, height - 2f) else y.coerceIn(2f, height - 2f + d)
+            val to = (from - d).coerceIn(1f, height - 2f)
             val path = Path().apply {
                 moveTo(x.coerceAtLeast(0f), from)
                 lineTo(x.coerceAtLeast(0f), to)
             }
-            val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 220)).build()
-            return s.dispatchGesture(g, null, null)
+            // About 1.5 px a millisecond: the page follows without a long fling.
+            val ms = (kotlin.math.abs(d) / 1.5f).toLong().coerceIn(120L, 450L)
+            val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, ms)).build()
+            val callback = done?.let {
+                object : AccessibilityService.GestureResultCallback() {
+                    override fun onCompleted(d: GestureDescription?) = it()
+                    override fun onCancelled(d: GestureDescription?) = it()
+                }
+            }
+            return s.dispatchGesture(g, callback, null)
         }
 
         // Back, Home, Recents (AccessibilityService.GLOBAL_ACTION_*).

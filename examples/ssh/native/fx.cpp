@@ -655,6 +655,7 @@ void Fx::Out(Style style, const Region &r, const std::vector<uint8_t> &label, in
     steps = PlanOut(style, r.w, r.h, lw_, lh_, seed_ = seed_ * 1103515245u + 12345u);
   }
   Run(r, steps, nullptr, style == kOff ? 26000 : kOutUs, 0);
+  LOG("fx: out (%d) ends in %lld ms", int(style), (long long)((busy_until_ - g1::NowUs()) / 1000));
   blank_ = style != kOff;
   blank_w_ = r.w;
   blank_h_ = r.h;
@@ -678,7 +679,10 @@ void Fx::In(Style style, const Region &r, const Source &src, int64_t from_us) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!Ensure() || r.w <= 0 || r.h <= 0) return;
   std::vector<Step> steps = PlanIn(style, r.w, r.h, seed_ = seed_ * 1103515245u + 12345u, src.bpp);
+  int64_t now = g1::NowUs(), out_end = busy_until_;
   Run(r, steps, &src, kInUs, std::max(from_us, busy_until_));
+  LOG("fx: in (%d) ends in %lld ms (the out ended %lld ms ago)", int(style), (long long)((busy_until_ - now) / 1000),
+      (long long)((now - out_end) / 1000));
   blank_ = false;
 }
 

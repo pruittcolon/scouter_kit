@@ -94,6 +94,18 @@ object Native {
     // The arrow the arms draw over the terminal at pixel (x, y) of its region (y < 0: over the dashboard); on false:
     // none. Kept for a terminal that starts later.
     @JvmStatic external fun pointerAt(x: Int, y: Int, on: Boolean)
+    // The cursor on the phone's screen (1/10000 of its width and height): the arms draw it over the picture at once
+    // (black and white). True while it still waits to go (a busy link, a transition): call again soon.
+    @JvmStatic external fun screenPointer(x: Int, y: Int, on: Boolean): Boolean
+    // The part of the phone's screen on the glasses (left, top, right, bottom in 1/10000) and its size there (w, h
+    // pixels), or null before a frame.
+    @JvmStatic external fun screenShows(): IntArray?
+    // A panel over the terminal (Panels): lines with marks (1 bold, 2 faint, 3 highlighted), the whole terminal
+    // (full) or a strip at its bottom, at once; null: none.
+    @JvmStatic external fun overlay(lines: Array<String>?, marks: IntArray?, full: Boolean)
+    // A panel over a screen's picture: w x h pixels (0 ... 255) at (x, y) of it, in the frames from the next; null:
+    // none.
+    @JvmStatic external fun screenOverlay(pixels: ByteArray?, w: Int, h: Int, x: Int, y: Int)
     // The terminal's region: width, height, a cell's width and height, the dashboard's height (zeros: no terminal).
     @JvmStatic external fun termGeometry(): IntArray
     @JvmStatic external fun mouse(button: Int, row: Int, col: Int): Boolean

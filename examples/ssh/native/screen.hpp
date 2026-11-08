@@ -57,6 +57,11 @@ void SetSpare(std::function<void()> release);
 // The pointer (o.cursor_*) drawn on a w x h luma picture that becomes a pw x ph one on the glasses.
 void Cursor(std::vector<uint8_t> *luma, int w, int h, const ScreenOptions &o, int pw, int ph);
 
+// The cursor's arrow for the arms (16 x 20): its body, then its edge (the body grown by a pixel), each 1 bpp,
+// 2 bytes a row; its tip at (1, 1).
+std::vector<uint8_t> ArrowMasks();
+constexpr int kArrowW = 16, kArrowH = 20;
+
 // RGBA_8888 rows (stride bytes apart) to 0..255 luma, w x h bytes.
 void Luma(const uint8_t *rgba, int w, int h, int stride, std::vector<uint8_t> *out);
 
@@ -73,6 +78,14 @@ Rect Place(int pw, int ph, const ScreenOptions &);
 // The part of an sw x sh screen that shows in a dw x dh place: all of it, or (kFill) a crop of the place's
 // shape; zoom narrows it, pan places it.
 Rect Source(int sw, int sh, int dw, int dh, const ScreenOptions &);
+
+// Where the point (cx, cy) of a w x h screen (1/10000 of its width and height) lands on the pw x ph picture
+// (Base's geometry: the bars cut, turned, placed, scaled); false when it is outside what shows.
+bool Locate(int cx, int cy, int w, int h, const ScreenOptions &, int pw, int ph, int *px, int *py);
+
+// The part of a w x h screen that shows on the pw x ph picture, in 1/10000 of the screen (x, y, w, h: left, top,
+// width, height), and the size it takes there (*ow x *oh pixels).
+Rect Shows(int w, int h, const ScreenOptions &, int pw, int ph, int *ow, int *oh);
 
 // Scales the src rectangle r of a (stride sw) luma image into the place d of dst (pw x ph, black around it),
 // averaging the source pixels under each picture pixel. keep: the shape is kept, centred in d. Returns where
@@ -121,10 +134,11 @@ void PictureSize(int dx, int dy, int *pw, int *ph);
 class ScreenMirror {
 public:
   ~ScreenMirror();
-  // After g1::Init. Clears both panels.
-  bool Start(int dx, int dy, std::string *error);
-  // Clears the display; the arms keep nothing.
-  void Stop();
+  // After g1::Init. Clears both panels; keep_panels (a transition has blacked out the picture's place): only the
+  // columns one eye sees go black, the panels stay on (no power cycle: the transition plays on, nothing waits).
+  bool Start(int dx, int dy, std::string *error, bool keep_panels = false);
+  // Clears the display; the arms keep nothing. keep_panels: a transition covers the picture (no power cycle).
+  void Stop(bool keep_panels = false);
   // One captured frame (RGBA_8888). Greys: blocks while the previous frame is not on the display yet;
   // 2 levels: skipped (kBusy) while the link still carries earlier ones. kLater: shown coarser (auto detail);
   // the same frame again sharpens it.
@@ -139,6 +153,18 @@ public:
   void Wiped();
   // Where the picture shows on each eye (after Start).
   Fx::Region FxRegion();
+  // The cursor on the phone's screen: where it is (1/10000 of the screen's width and height) and whether it shows.
+  // Black and white: the arms draw it over the picture themselves, at once (not with the next frame), and keep it
+  // over the frames that follow; greys: drawn into the frames.
+  void Pointer(int x, int y, bool on);
+  // Sends the cursor if it still waits (a busy link, a transition): true while it does (call again soon).
+  bool PointerPending();
+  // A card over the picture (the help, the quick settings): w x h pixels (0 ... 255; black and white: from 128 lit)
+  // at (x, y) of the picture, in every frame from the next one; empty: none.
+  void SetOverlay(std::vector<uint8_t> pixels, int w, int h, int x, int y);
+  // The part of the phone's screen the glasses show, from the last frame: left, top, right, bottom (1/10000) and
+  // its size on the glasses (w, h pixels). False before a frame.
+  bool Shows(int out[6]);
 
   // What was sent: frames, the last frame's bytes, bytes a second (over about 2 s), the last detail, frames
   // skipped while the link was busy, the picture's w, h, x, y, the path's levels (0 none), panels off (1).
@@ -157,12 +183,26 @@ private:
   bool Hidden(const ScreenOptions &); // reads the arms' sensors at most once a second (mutex_ held)
   void Panels(bool on);
   bool Path(int levels);              // the drawing path for these levels (mutex_ held)
-  void DropPath();
+  void DropPath(bool keep_panels = false);
+  void BlackSides(); // the columns one eye sees, black on each arm
   bool StartVideo();
   int VideoReady();                                    // kShown when a record may go, else kBusy or kSame
   bool SendVideo(size_t max_bytes);                    // frame_ as a record: false when larger than max_bytes
   Fx::Region Region() const;
   void Count(int bytes, int detail);
+  void SendPointer(bool force); // the cursor to the arms when it moved (mutex_ held)
+  int FrameVideo(const ScreenOptions &, Rect c, bool still); // Frame's two paths (mutex_ held)
+  int FrameGray(const ScreenOptions &, Rect c);
+  void Compose(); // the overlay into frame_ (mutex_ held)
+  std::vector<uint8_t> over_;
+  int over_w_ = 0, over_h_ = 0, over_x_ = 0, over_y_ = 0;
+
+  // The cursor (Pointer) and the last frame's screen and options (where it lands).
+  int ptr_cx_ = 5000, ptr_cy_ = 5000;
+  bool ptr_on_ = false, ptr_dirty_ = false;
+  int64_t ptr_redo_us_ = 0; // a transition revealed the picture without it: drawn again from then
+  int src_w_ = 0, src_h_ = 0;
+  ScreenOptions src_o_;
 
   std::mutex mutex_;
   bool started_ = false;
@@ -172,6 +212,9 @@ private:
   scouter_kit::gray::Bitmap *pic_ = nullptr;
   std::vector<uint8_t> luma_, rot_, base_, last_base_, frame_, prev_, lo_, hi_;
   int prev_detail_ = 0; // the detail prev_ went at (steady compares like with like)
+  int64_t start_us_ = 0; // Start's end (the first picture's time is logged once)
+  int64_t wiped_until_ = 0; // a transition took the picture away: no frames until its reveal
+  bool first_logged_ = false;
   void Make(const ScreenOptions &, Rect c, int n); // frame_ at detail n (steady against prev_)
   bool hidden_ = false;
   bool paused_ = false; // Check runs
@@ -192,6 +235,11 @@ private:
     int64_t base = -1;
     uint32_t code = 0, bitmap = 0, state = 0, buf = 0, stride = 0, size = 0;
     std::array<uint32_t, 2> call{}, hidden{}, epochs{}; // hidden: decodes without drawing (for a reveal)
+    // The cursor's code (per arm), its words, masks and scratch; where the arms were last told it is.
+    std::array<uint32_t, 2> ptr_call{};
+    uint32_t ptr_state = 0, ptr_masks = 0, ptr_scr = 0;
+    int ptr_x = 0, ptr_y = 0;
+    int ptr_shown = -1; // -1: not told yet
     std::unique_ptr<scouter_kit::g1::VideoEncoder> enc;
     std::vector<uint8_t> pix;
     uint32_t k = 0;

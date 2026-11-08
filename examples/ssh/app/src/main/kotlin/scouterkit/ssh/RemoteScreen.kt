@@ -29,6 +29,9 @@ class RemoteScreen(private val context: Context, val server: Settings.Server, pr
         Thread({ send() }, "remote-screen-send").start()
     }
 
+    // Another go now (a panel over the picture changed: the options carry it).
+    fun poke() = wake.release()
+
     fun release() {
         if (released) return
         released = true

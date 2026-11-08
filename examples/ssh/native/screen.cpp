@@ -19,7 +19,8 @@ namespace sk = scouter_kit;
 namespace ssh {
 
 namespace {
-constexpr uint32_t kCode = 512;        // the VIDEO path's stored code (table, pool, a few instructions)
+constexpr uint32_t kCode = 2048;       // the VIDEO path's stored code (table, pool, the decode and the cursor)
+constexpr uint32_t kPtrWords = 16;     // the cursor's words: X, Y, On (the host's), then its own
 constexpr uint32_t kRecordMax = 65536; // the largest record sent; a larger change waits for a smaller one
 constexpr uint32_t kHeader = 12;       // due time, frame number, record size
 constexpr int kQueued = 4;             // commands not yet sent on an arm's link: more, and a frame is skipped
@@ -105,6 +106,114 @@ Rect Source(int sw, int sh, int dw, int dh, const ScreenOptions &o) {
   }
   int px = std::clamp(o.pan_x, 0, 100), py = std::clamp(o.pan_y, 0, 100);
   return {int(int64_t(sw - rw) * px / 100), int(int64_t(sh - rh) * py / 100), rw, rh};
+}
+
+std::vector<uint8_t> ArrowMasks() {
+  const float poly[][2] = {{1, 1}, {1, 16}, {4.6f, 12.8f}, {7.2f, 18.4f}, {9.6f, 17.3f}, {7.1f, 11.9f}, {12, 11.9f}};
+  const int np = int(std::size(poly));
+  auto inside = [&](float x, float y) {
+    bool in = false;
+    for (int a = 0, b = np - 1; a < np; b = a++) {
+      if ((poly[a][1] > y) != (poly[b][1] > y) &&
+          x < (poly[b][0] - poly[a][0]) * (y - poly[a][1]) / (poly[b][1] - poly[a][1]) + poly[a][0])
+        in = !in;
+    }
+    return in;
+  };
+  bool body[kArrowH][kArrowW] = {};
+  for (int y = 0; y < kArrowH; y++)
+    for (int x = 0; x < kArrowW; x++) body[y][x] = inside(x + 0.5f, y + 0.5f);
+  std::vector<uint8_t> out(size_t(2 * 2 * kArrowH), 0);
+  for (int y = 0; y < kArrowH; y++)
+    for (int x = 0; x < kArrowW; x++) {
+      bool edge = false;
+      for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) {
+          int yy = y + dy, xx = x + dx;
+          if (yy >= 0 && yy < kArrowH && xx >= 0 && xx < kArrowW && body[yy][xx]) edge = true;
+        }
+      if (body[y][x]) out[size_t(y * 2 + x / 8)] |= uint8_t(0x80 >> (x % 8));
+      if (edge) out[size_t(2 * kArrowH + y * 2 + x / 8)] |= uint8_t(0x80 >> (x % 8));
+    }
+  return out;
+}
+
+namespace {
+// Base's geometry for a w x h screen: the rows cut from its top, the cut screen's size, the turn, the shown part
+// (in the turned screen's pixels) and where it goes on the picture (as Fit places it).
+struct Geo {
+  int w = 0, h = 0, top = 0, rot = 0;
+  Rect r, out;
+};
+Geo Geometry(int w, int h, const ScreenOptions &o, int pw, int ph) {
+  Geo g;
+  g.w = w;
+  g.h = h;
+  int top = h * std::clamp(o.crop_top, 0, 400) / 1000, bottom = h * std::clamp(o.crop_bottom, 0, 400) / 1000;
+  if (top + bottom > 0 && h - top - bottom >= 16) {
+    g.top = top;
+    g.h = h - top - bottom;
+  }
+  g.rot = ((o.rotate % 360) + 360) % 360;
+  if (g.rot != 90 && g.rot != 180 && g.rot != 270) g.rot = 0;
+  int sw = g.rot % 180 ? g.h : g.w, sh = g.rot % 180 ? g.w : g.h;
+  Rect d = Place(pw, ph, o);
+  g.r = Source(sw, sh, d.w, d.h, o);
+  g.out = d;
+  if (o.fit == ScreenOptions::kFit && g.r.w > 0 && g.r.h > 0) {
+    double k = std::min(double(d.w) / g.r.w, double(d.h) / g.r.h);
+    g.out.w = std::clamp(int(g.r.w * k), 1, d.w);
+    g.out.h = std::clamp(int(g.r.h * k), 1, d.h);
+    g.out.x = d.x + (d.w - g.out.w) / 2;
+    g.out.y = d.y + (d.h - g.out.h) / 2;
+  }
+  return g;
+}
+} // namespace
+
+bool Locate(int cx, int cy, int w, int h, const ScreenOptions &o, int pw, int ph, int *px, int *py) {
+  if (w <= 1 || h <= 1 || pw <= 0 || ph <= 0) return false;
+  Geo g = Geometry(w, h, o, pw, ph);
+  if (g.r.w <= 0 || g.r.h <= 0) return false;
+  // As Cursor places the tip: whole pixels of the screen, then the cut rows.
+  double x = double(int64_t(std::clamp(cx, 0, 10000)) * (w - 1) / 10000);
+  double y = double(int64_t(std::clamp(cy, 0, 10000)) * (h - 1) / 10000) - g.top;
+  double rx = x, ry = y;
+  switch (g.rot) {
+  case 90: rx = g.h - 1 - y, ry = x; break;
+  case 180: rx = g.w - 1 - x, ry = g.h - 1 - y; break;
+  case 270: rx = y, ry = g.w - 1 - x; break;
+  }
+  double fx = (rx + 0.5 - g.r.x) * g.out.w / g.r.w, fy = (ry + 0.5 - g.r.y) * g.out.h / g.r.h;
+  *px = g.out.x + int(std::floor(fx));
+  *py = g.out.y + int(std::floor(fy));
+  return fx >= 0 && fx < g.out.w && fy >= 0 && fy < g.out.h;
+}
+
+Rect Shows(int w, int h, const ScreenOptions &o, int pw, int ph, int *ow, int *oh) {
+  *ow = *oh = 0;
+  if (w <= 1 || h <= 1 || pw <= 0 || ph <= 0) return {};
+  Geo g = Geometry(w, h, o, pw, ph);
+  if (g.r.w <= 0 || g.r.h <= 0) return {};
+  *ow = g.out.w;
+  *oh = g.out.h;
+  // The shown part's corners back on the (uncut, unturned) screen.
+  auto back = [&](double rx, double ry, double *x, double *y) {
+    switch (g.rot) {
+    case 90: *x = ry, *y = g.h - 1 - rx; break;
+    case 180: *x = g.w - 1 - rx, *y = g.h - 1 - ry; break;
+    case 270: *x = g.w - 1 - ry, *y = rx; break;
+    default: *x = rx, *y = ry;
+    }
+    *y += g.top;
+  };
+  double ax, ay, bx, by;
+  back(g.r.x, g.r.y, &ax, &ay);
+  back(g.r.x + g.r.w - 1, g.r.y + g.r.h - 1, &bx, &by);
+  auto fx = [&](double v) { return std::clamp(int(std::lround(v * 10000 / (w - 1))), 0, 10000); };
+  auto fy = [&](double v) { return std::clamp(int(std::lround(v * 10000 / (h - 1))), 0, 10000); };
+  int x0 = fx(std::min(ax, bx)), x1 = fx(std::max(ax, bx)), y0 = fy(std::min(ay, by)), y1 = fy(std::max(ay, by));
+  return {x0, y0, x1 - x0, y1 - y0};
 }
 
 Rect Fit(std::vector<uint8_t> *dst, int pw, int ph, const std::vector<uint8_t> &src, int sw, Rect r, Rect d, bool keep) {
@@ -358,7 +467,7 @@ void ScreenMirror::Panels(bool on) {
     if (a->GetState().connected) a->SetPanel(on);
 }
 
-bool ScreenMirror::Start(int dx, int dy, std::string *error) {
+bool ScreenMirror::Start(int dx, int dy, std::string *error, bool keep_panels) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (started_) return true;
   int dw = sk::gray::display.width, dh = sk::gray::display.height;
@@ -375,10 +484,18 @@ bool ScreenMirror::Start(int dx, int dy, std::string *error) {
   y_ = 0;
   // The library's picture of the display goes black, then the panels power-cycle: that clears what the
   // terminal's program drew there, which the library never saw.
+  int64_t t0 = g1::NowUs();
   sk::gray::Clear();
   sk::Flush();
-  Panels(false);
-  Panels(true);
+  if (keep_panels) {
+    BlackSides();
+  } else {
+    Panels(false);
+    Panels(true);
+  }
+  start_us_ = g1::NowUs();
+  first_logged_ = false;
+  LOG("screen: panels cleared in %lld ms", (long long)((start_us_ - t0) / 1000));
   levels_ = 0;
   prev_.clear();
   last_base_.clear();
@@ -390,13 +507,46 @@ bool ScreenMirror::Start(int dx, int dy, std::string *error) {
   stats_ = Stats{};
   window_us_ = 0;
   window_bytes_ = 0;
+  ptr_redo_us_ = 0;
+  ptr_dirty_ = true;
   started_ = true;
   LOG("screen: picture %d x %d at (%d, %d)", w_, h_, x_, y_);
   return true;
 }
 
-// Frees the arena the path used; the panels are cleared (VIDEO draws past the gray display's picture).
-void ScreenMirror::DropPath() {
+// The columns outside the picture's place (one eye sees them: the terminal's battery band may be there) go black:
+// a zeroed 4-bpp block drawn down them a band at a time.
+void ScreenMirror::BlackSides() {
+  Fx::Region r = Region();
+  int widest = 0;
+  for (int i = 0; i < 2; i++) widest = std::max({widest, r.at[size_t(i)][0], 640 - r.at[size_t(i)][0] - w_});
+  if (widest <= 0) return;
+  uint32_t stride = uint32_t((widest + 1) / 2);
+  int rows = std::clamp(int(6144 / stride), 1, 480);
+  int64_t at = g1::Alloc(stride * uint32_t(rows));
+  if (at < 0) {
+    Panels(false);
+    Panels(true);
+    return;
+  }
+  for (int i = 0; i < 2; i++) {
+    g1::Arm &arm = i == 0 ? g1::left : g1::right;
+    auto st = arm.GetState();
+    if (!st.present || !st.connected) continue;
+    arm.WriteArena(g1::Address(at), std::vector<uint8_t>(size_t(stride) * size_t(rows), 0));
+    int x = r.at[size_t(i)][0];
+    for (int y = 0; y < 480; y += rows) {
+      uint32_t h = uint32_t(std::min(rows, 480 - y));
+      if (x > 0) arm.Draw(g1::Address(at), stride, 0, 0, 0, y, uint32_t(x), h);
+      if (x + w_ < 640) arm.Draw(g1::Address(at), stride, 0, 0, x + w_, y, uint32_t(640 - x - w_), h);
+    }
+  }
+  g1::Free(g1::Address(at)); // the DRAWs go before anything written there later
+}
+
+// Frees the arena the path used; the panels are cleared (VIDEO draws past the gray display's picture), unless a
+// transition covers the picture (keep_panels).
+void ScreenMirror::DropPath(bool keep_panels) {
   if (levels_ == 16 && pic_) {
     sk::gray::Unload(*pic_);
     pic_ = nullptr;
@@ -406,8 +556,10 @@ void ScreenMirror::DropPath() {
   if (levels_ == 2) {
     if (video_.base >= 0) g1::Free(g1::Address(video_.base));
     video_ = Video{};
-    Panels(false);
-    Panels(true);
+    if (!keep_panels) {
+      Panels(false);
+      Panels(true);
+    }
   }
   levels_ = 0;
   prev_.clear();
@@ -448,7 +600,8 @@ bool ScreenMirror::Path(int levels) {
 bool ScreenMirror::StartVideo() {
   Video &v = video_;
   v.stride = uint32_t(((w_ + 7) / 8 + 3) & ~3);
-  uint32_t size = kCode + v.stride * uint32_t(h_) + g1::kVideoState + 8 + kHeader + kRecordMax;
+  uint32_t size = kCode + v.stride * uint32_t(h_) + g1::kVideoState + 8 + kHeader + kRecordMax + 4 +
+                  4 * kPtrWords + 2 * 2 * kArrowH + kArrowW / 2 * kArrowH;
   v.base = g1::Alloc(size);
   if (v.base < 0) {
     Spare();
@@ -463,16 +616,28 @@ bool ScreenMirror::StartVideo() {
   v.bitmap = v.code + kCode;
   v.state = (v.bitmap + v.stride * uint32_t(h_) + 3) & ~3u;
   v.buf = (v.state + g1::kVideoState + 3) & ~3u;
+  v.ptr_state = (v.buf + kHeader + kRecordMax + 3) & ~3u;
+  v.ptr_masks = v.ptr_state + 4 * kPtrWords;
+  v.ptr_scr = v.ptr_masks + 2 * 2 * kArrowH;
+  v.ptr_shown = -1;
   for (int i = 0; i < 2; i++) {
     g1::Arm &arm = i == 0 ? g1::left : g1::right;
     if (!arm.GetState().present) continue;
     int px = i == 0 ? x_ - std::max(0, -dx_) : x_ - std::max(0, dx_);
     int py = i == 0 ? y_ + std::max(0, -dy_) : y_ + std::max(0, dy_);
-    g1::Program p(v.code, 16);
+    g1::Program p(v.code, 48);
+    auto C = [&](int32_t x) { return p.Const(uint32_t(x)); };
+    auto W = [&](int k) { return g1::ArenaWord(v.ptr_state / 4 + uint32_t(k)); };
+    // The cursor's words: where the host wants it (X, Y: the arrow's box on the picture; On), where it is drawn
+    // (DX, DY; Drawn), the box being drawn (HX, HY; Arrow: with the arrow, else the picture alone), working words.
+    auto X = W(0), Y = W(1), On = W(2), DX = W(3), DY = W(4), Drawn = W(5), HX = W(6), HY = W(7), Arrow = W(8),
+         x0 = W(9), x1 = W(10), y0 = W(11), y1 = W(12), t = W(13), t2 = W(14);
+    auto over = p.NewLabel();
     g1::Address at = p.Here();
     p.SleepUntil(g1::ArenaWord(v.buf / 4));
     p.Video(p.Const(v.bitmap), p.Const(v.stride), p.Const(uint32_t(w_)), p.Const(uint32_t(h_)), p.Const(uint32_t(px)),
             p.Const(uint32_t(py)), p.Const(15), p.Const(v.buf + kHeader), g1::ArenaWord(v.buf / 4 + 2), p.Const(v.state));
+    p.Call(over); // the frame's changed rows went over the arrow
     p.Ret();
     // The same with the picture off the panel: only the bitmap changes (a transition reveals it).
     g1::Address hidden = p.Here();
@@ -480,18 +645,99 @@ bool ScreenMirror::StartVideo() {
     p.Video(p.Const(v.bitmap), p.Const(v.stride), p.Const(uint32_t(w_)), p.Const(uint32_t(h_)), p.Const(640),
             p.Const(uint32_t(py)), p.Const(15), p.Const(v.buf + kHeader), g1::ArenaWord(v.buf / 4 + 2), p.Const(v.state));
     p.Ret();
+    // box: the picture under the box (HX, HY) from the bitmap into the scratch, the arrow over it (Arrow), and the
+    // part inside the picture to the panel: one small DRAW, so the cursor moves at once and costs a few bytes.
+    auto box = p.NewLabel(), l1 = p.NewLabel(), l2 = p.NewLabel(), l3 = p.NewLabel(), l4 = p.NewLabel(),
+         plain = p.NewLabel(), bret = p.NewLabel();
+    p.Bind(box);
+    p.Fill(p.Const(v.ptr_scr), C(kArrowW / 2), C(0), C(0), C(kArrowW), C(kArrowH), C(0));
+    p.Mov(x0, HX);
+    p.BgeS(x0, C(0), l1);
+    p.Mov(x0, C(0));
+    p.Bind(l1);
+    p.Add(x1, HX, C(kArrowW));
+    p.BltS(x1, C(w_), l2);
+    p.Mov(x1, C(w_));
+    p.Bind(l2);
+    p.Mov(y0, HY);
+    p.BgeS(y0, C(0), l3);
+    p.Mov(y0, C(0));
+    p.Bind(l3);
+    p.Add(y1, HY, C(kArrowH));
+    p.BltS(y1, C(h_), l4);
+    p.Mov(y1, C(h_));
+    p.Bind(l4);
+    p.BgeS(x0, x1, bret);
+    p.BgeS(y0, y1, bret);
+    p.Sub(x1, x1, x0); // the columns
+    p.Sub(y1, y1, y0); // the rows
+    p.Sub(t, x0, HX);  // in the scratch
+    p.Sub(t2, y0, HY);
+    p.Blit(p.Const(v.bitmap), p.Const(v.stride), x0, y0, p.Const(v.ptr_scr), C(kArrowW / 2), t, t2, x1, y1,
+           C(4 | g1::MODE_COPY), C(15));
+    p.Beq(Arrow, C(0), plain);
+    p.Blit(p.Const(v.ptr_masks + 2 * kArrowH), C(2), C(0), C(0), p.Const(v.ptr_scr), C(kArrowW / 2), C(0), C(0),
+           C(kArrowW), C(kArrowH), C(4 | g1::MODE_ERASE), C(15));
+    p.Blit(p.Const(v.ptr_masks), C(2), C(0), C(0), p.Const(v.ptr_scr), C(kArrowW / 2), C(0), C(0), C(kArrowW),
+           C(kArrowH), C(4 | g1::MODE_MASK), C(15));
+    p.Bind(plain);
+    p.Add(x0, x0, C(px));
+    p.Add(y0, y0, C(py));
+    p.Draw(p.Const(v.ptr_scr), C(kArrowW / 2), t, t2, x0, y0, x1, y1);
+    p.Bind(bret);
+    p.Ret();
+    // move (the host's call after writing X, Y, On): the picture back where the arrow was, the arrow where asked.
+    auto fresh = p.NewLabel(), mret = p.NewLabel(), oret = p.NewLabel();
+    g1::Address move = p.Here();
+    p.Beq(Drawn, C(0), fresh);
+    p.Mov(HX, DX);
+    p.Mov(HY, DY);
+    p.Mov(Arrow, C(0));
+    p.Call(box);
+    p.Bind(fresh);
+    p.Mov(Drawn, C(0));
+    p.Beq(On, C(0), mret);
+    p.Mov(DX, X);
+    p.Mov(DY, Y);
+    p.Mov(HX, X);
+    p.Mov(HY, Y);
+    p.Mov(Arrow, C(1));
+    p.Call(box);
+    p.Mov(Drawn, C(1));
+    p.Bind(mret);
+    p.Ret();
+    // over: the arrow again where it is drawn.
+    p.Bind(over);
+    p.Beq(Drawn, C(0), oret);
+    p.Mov(HX, DX);
+    p.Mov(HY, DY);
+    p.Mov(Arrow, C(1));
+    p.Call(box);
+    p.Bind(oret);
+    p.Ret();
+    p.Changes(v.ptr_state + 12, 4 * (kPtrWords - 3));
+    p.Changes(v.ptr_scr, kArrowW / 2 * kArrowH);
     std::string why;
     if (!p.Valid(&why)) {
       error_ = "the VIDEO code: " + why;
       return false;
     }
+    if (p.Here() > v.code + kCode) {
+      error_ = "the VIDEO code is larger than its room";
+      return false;
+    }
     arm.WriteArena(v.bitmap, std::vector<uint8_t>(size_t(v.stride) * h_, 0));
+    std::vector<uint8_t> ptr(4 * kPtrWords, 0);
+    std::vector<uint8_t> masks = ArrowMasks();
+    ptr.insert(ptr.end(), masks.begin(), masks.end());
+    arm.WriteArena(v.ptr_state, ptr);
     if (!arm.Load(p)) {
       error_ = "the VIDEO code did not load (a firmware before VIDEO?)";
       return false;
     }
     v.call[size_t(i)] = at;
     v.hidden[size_t(i)] = hidden;
+    v.ptr_call[size_t(i)] = move;
     v.epochs[size_t(i)] = arm.GetState().epoch_changes;
   }
   v.enc = std::make_unique<g1::VideoEncoder>(w_, h_);
@@ -552,6 +798,8 @@ bool ScreenMirror::SendVideo(size_t max_bytes) {
     // The decode takes up to about 40 ms for a whole picture (VM.md §3.7).
     fx_->In(Fx::Style(reveal_style_), Region(), Fx::Source{v.bitmap, v.stride, 1}, g1::NowUs() + lead + 40000);
     LOG("screen: revealed (%d)", reveal_style_);
+    // The transition draws the picture without the arrow: it comes back once that is done.
+    ptr_redo_us_ = std::max<int64_t>(fx_->busy_until(), g1::NowUs() + lead + 40000) + 20000;
   }
   reveal_style_ = 0;
   v.redraw = false;
@@ -576,6 +824,7 @@ void ScreenMirror::Count(int bytes, int detail) {
 
 void ScreenMirror::Reveal(int style, std::shared_ptr<Fx> fx) {
   std::lock_guard<std::mutex> lock(mutex_);
+  wiped_until_ = 0;
   reveal_style_ = style;
   fx_ = std::move(fx);
   reveal_until_ = g1::NowUs() + 4000000;
@@ -583,6 +832,8 @@ void ScreenMirror::Reveal(int style, std::shared_ptr<Fx> fx) {
 
 void ScreenMirror::Wiped() {
   std::lock_guard<std::mutex> lock(mutex_);
+  // No frame over the transition until its reveal (or another path takes over); 1.5 s at most.
+  wiped_until_ = g1::NowUs() + 1500000;
   prev_.clear();
   last_base_.clear();
   video_.redraw = true;
@@ -595,6 +846,100 @@ void ScreenMirror::Wiped() {
 Fx::Region ScreenMirror::FxRegion() {
   std::lock_guard<std::mutex> lock(mutex_);
   return Region();
+}
+
+void ScreenMirror::Pointer(int x, int y, bool on) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  x = std::clamp(x, 0, 10000);
+  y = std::clamp(y, 0, 10000);
+  if (x == ptr_cx_ && y == ptr_cy_ && on == ptr_on_ && !ptr_dirty_ && !ptr_redo_us_) return;
+  ptr_cx_ = x;
+  ptr_cy_ = y;
+  ptr_on_ = on;
+  ptr_dirty_ = true;
+  SendPointer(false);
+}
+
+void ScreenMirror::SetOverlay(std::vector<uint8_t> pixels, int w, int h, int x, int y) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (w <= 0 || h <= 0 || pixels.size() < size_t(w) * size_t(h)) pixels.clear(), w = h = 0;
+  over_ = std::move(pixels);
+  over_w_ = w;
+  over_h_ = h;
+  over_x_ = x;
+  over_y_ = y;
+}
+
+// mutex_ held.
+void ScreenMirror::Compose() {
+  if (over_.empty() || frame_.size() != size_t(w_) * size_t(h_)) return;
+  int x0 = std::max(0, over_x_), x1 = std::min(w_, over_x_ + over_w_);
+  int y0 = std::max(0, over_y_), y1 = std::min(h_, over_y_ + over_h_);
+  for (int y = y0; y < y1; y++)
+    for (int x = x0; x < x1; x++)
+      frame_[size_t(y) * size_t(w_) + size_t(x)] = over_[size_t(y - over_y_) * size_t(over_w_) + size_t(x - over_x_)];
+}
+
+bool ScreenMirror::PointerPending() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (ptr_dirty_ || (ptr_redo_us_ && g1::NowUs() >= ptr_redo_us_)) SendPointer(false);
+  return started_ && (ptr_dirty_ || ptr_redo_us_);
+}
+
+bool ScreenMirror::Shows(int out[6]) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!started_ || src_w_ <= 1 || src_h_ <= 1) return false;
+  int ow = 0, oh = 0;
+  Rect r = ssh::Shows(src_w_, src_h_, src_o_, w_, h_, &ow, &oh);
+  if (ow <= 0 || oh <= 0) return false;
+  out[0] = r.x;
+  out[1] = r.y;
+  out[2] = r.x + r.w;
+  out[3] = r.y + r.h;
+  out[4] = ow;
+  out[5] = oh;
+  return true;
+}
+
+// The cursor to both arms: their code puts the picture back where the arrow was and draws it at its new place
+// (mutex_ held). Only on the black and white path with the panels on; while a link is busy it waits (dirty) for the
+// next call, so a quick stroke sends its latest place, not every step. force: drawn again even where it is.
+void ScreenMirror::SendPointer(bool force) {
+  Video &v = video_;
+  int64_t now = g1::NowUs();
+  if (ptr_redo_us_ && now >= ptr_redo_us_) {
+    ptr_redo_us_ = 0;
+    force = true;
+  }
+  if (!started_ || levels_ != 2 || !v.ptr_state || hidden_ || paused_) return; // greys: in the next frame
+  if (ptr_redo_us_ || v.redraw) return; // a transition draws the picture meanwhile, or the panels lost it
+  int x = 0, y = 0;
+  bool on = ptr_on_ && src_w_ > 1 && Locate(ptr_cx_, ptr_cy_, src_w_, src_h_, src_o_, w_, h_, &x, &y);
+  x -= 1; // the arrow's tip is (1, 1) of its box
+  y -= 1;
+  if (!force && v.ptr_shown == int(on) && (!on || (x == v.ptr_x && y == v.ptr_y))) {
+    ptr_dirty_ = false;
+    return;
+  }
+  for (int i = 0; i < 2; i++) {
+    g1::Arm &arm = i == 0 ? g1::left : g1::right;
+    auto st = arm.GetState();
+    if (st.present && (!st.connected || st.queued > 3)) return; // later (still dirty)
+  }
+  std::vector<uint8_t> words(12);
+  Put32(words, 0, uint32_t(x));
+  Put32(words, 4, uint32_t(y));
+  Put32(words, 8, on ? 1u : 0u);
+  for (int i = 0; i < 2; i++) {
+    g1::Arm &arm = i == 0 ? g1::left : g1::right;
+    if (!arm.GetState().present || !v.ptr_call[size_t(i)]) continue;
+    arm.WriteArena(v.ptr_state, words);
+    arm.Call(v.ptr_call[size_t(i)]);
+  }
+  v.ptr_x = x;
+  v.ptr_y = y;
+  v.ptr_shown = on ? 1 : 0;
+  ptr_dirty_ = false;
 }
 
 // mutex_ held.
@@ -659,11 +1004,11 @@ std::string ScreenMirror::Check() {
   return out;
 }
 
-void ScreenMirror::Stop() {
+void ScreenMirror::Stop(bool keep_panels) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!started_) return;
   started_ = false;
-  DropPath();
+  DropPath(keep_panels);
   sk::gray::Clear();
   sk::Flush();
   if (hidden_) Panels(true); // the terminal's program decides from here
@@ -714,6 +1059,8 @@ int ScreenMirror::Frame(const uint8_t *rgba, int w, int h, int stride, const Scr
   std::lock_guard<std::mutex> lock(mutex_);
   if (!started_) return kStopped;
   if (paused_) return kBusy;
+  if (wiped_until_ && g1::NowUs() < wiped_until_) return kBusy;
+  wiped_until_ = 0;
   if (w <= 0 || h <= 0 || stride < w * 4) return kSame;
   if (seen_++ == 0) LOG("screen: first frame, %d x %d", w, h);
   bool hide = Hidden(o);
@@ -733,46 +1080,81 @@ int ScreenMirror::Frame(const uint8_t *rgba, int w, int h, int stride, const Scr
   }
   if (hide) return kHidden;
   if (!Path(o.levels)) return kSame;
-  Rect c = Base(rgba, w, h, stride, o, w_, h_, &luma_, &rot_, &base_);
+  // Where the cursor lands follows the screen's size and the options that place it.
+  if (w != src_w_ || h != src_h_ || o.fit != src_o_.fit || o.pan_x != src_o_.pan_x || o.pan_y != src_o_.pan_y ||
+      o.zoom != src_o_.zoom || o.rotate != src_o_.rotate || o.out_x != src_o_.out_x || o.out_y != src_o_.out_y ||
+      o.out_w != src_o_.out_w || o.out_h != src_o_.out_h || o.crop_top != src_o_.crop_top ||
+      o.crop_bottom != src_o_.crop_bottom)
+    ptr_dirty_ = true;
+  src_w_ = w;
+  src_h_ = h;
+  src_o_ = o;
+  // The cursor: the arms draw it themselves on the black and white path; greys get it in the picture.
+  ScreenOptions oc = o;
+  bool drawn_in = levels_ != 2 && ptr_on_;
+  oc.cursor_x = drawn_in ? ptr_cx_ : -1;
+  oc.cursor_y = drawn_in ? ptr_cy_ : -1;
+  Rect c = Base(rgba, w, h, stride, oc, w_, h_, &luma_, &rot_, &base_);
   bool still = base_ == last_base_; // the same screen as last time: nothing moved
   if (!still) last_base_ = base_;
 
   if (levels_ == 2) {
     int ready = VideoReady();
     if (ready != kShown) return ready;
-    bool redraw = video_.redraw;
-    if (o.detail >= 1) {
-      int n = std::clamp(o.detail, 1, 4);
-      Make(o, c, n);
-      if (frame_ == prev_ && !redraw) return kSame;
-      if (!SendVideo(kRecordMax)) return kBusy; // too large for one record: the next, smaller change goes
+    int r = FrameVideo(o, c, still);
+    if ((r == kShown || r == kLater) && !first_logged_) {
+      first_logged_ = true;
+      LOG("screen: first picture sent %lld ms after the start (%d bytes)", (long long)((g1::NowUs() - start_us_) / 1000),
+          video_.sent);
+    }
+    // The cursor after the picture it goes over (the first one, a redraw).
+    if (r != kBusy && (ptr_dirty_ || video_.ptr_shown < 0 || (ptr_redo_us_ && g1::NowUs() >= ptr_redo_us_)))
+      SendPointer(false);
+    return r;
+  }
+  return FrameGray(o, c);
+}
+
+// A frame on the black and white path, the link ready (mutex_ held).
+int ScreenMirror::FrameVideo(const ScreenOptions &o, Rect c, bool still) {
+  bool redraw = video_.redraw;
+  if (o.detail >= 1) {
+    int n = std::clamp(o.detail, 1, 4);
+    Make(o, c, n);
+    Compose();
+    if (frame_ == prev_ && !redraw) return kSame;
+    if (!SendVideo(kRecordMax)) return kBusy; // too large for one record: the next, smaller change goes
+    prev_ = frame_;
+    prev_detail_ = n;
+    Count(video_.sent, n);
+    return kShown;
+  }
+  // Auto: every pixel when that fits the budget, else coarser; nothing moved: every pixel whatever the size.
+  size_t budget = still ? kRecordMax : size_t(std::clamp(o.budget, 1, 64)) * 1024;
+  for (int n = 1; n <= 4; n++) {
+    Make(o, c, n);
+    Compose();
+    if (frame_ == prev_ && !redraw) return n == 1 ? kSame : kLater;
+    if (SendVideo(n == 4 ? kRecordMax : budget)) {
       prev_ = frame_;
       prev_detail_ = n;
       Count(video_.sent, n);
-      return kShown;
+      return n == 1 ? kShown : kLater;
     }
-    // Auto: every pixel when that fits the budget, else coarser; nothing moved: every pixel whatever the size.
-    size_t budget = still ? kRecordMax : size_t(std::clamp(o.budget, 1, 64)) * 1024;
-    for (int n = 1; n <= 4; n++) {
-      Make(o, c, n);
-      if (frame_ == prev_ && !redraw) return n == 1 ? kSame : kLater;
-      if (SendVideo(n == 4 ? kRecordMax : budget)) {
-        prev_ = frame_;
-        prev_detail_ = n;
-        Count(video_.sent, n);
-        return n == 1 ? kShown : kLater;
-      }
-    }
-    return kBusy;
   }
+  return kBusy;
+}
 
-  // Greys: the library uploads the changed pixels (4 bits each); a transition's reveal is left out.
+// A frame of greys (mutex_ held): the library uploads the changed pixels (4 bits each); a transition's reveal is
+// left out.
+int ScreenMirror::FrameGray(const ScreenOptions &o, Rect c) {
   reveal_style_ = 0;
   int n = std::clamp(o.detail, 1, 4);
   Finish(base_, w_, c, o, n, &frame_);
   if (o.steady && o.levels != 4 && o.levels != 8 && prev_.size() == frame_.size())
     for (size_t i = 0; i < frame_.size(); i++)
       if (std::abs(int(frame_[i]) - int(prev_[i])) <= 17) frame_[i] = prev_[i];
+  Compose();
   if (frame_ == prev_) return kSame;
   int changed = 0;
   if (prev_.size() == frame_.size()) {

@@ -1,4 +1,5 @@
 #include "terminal.hpp"
+#include "screen.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -34,7 +35,7 @@ enum {
   wQ0, wQ1, wQ2, wQ3, wQ4, wQ5, wQ6, wQ7, wQX, wQY, // and for the program's
   kStateWords
 };
-constexpr int kPtrW = 16, kPtrH = 20; // the arrow's box (1 bpp masks 2 bytes a row; 4 bpp scratch 8)
+constexpr int kPtrW = kArrowW, kPtrH = kArrowH; // the arrow's box (1 bpp masks 2 bytes a row; 4 bpp scratch 8)
 
 constexpr int kRecordBytes = 512; // u8 runs; each u8 x, u8 cells, u8 bg<<4|fg, u8 1: underline, u8 n, n varint bytes
 constexpr int kMaxRuns = 32;
@@ -778,37 +779,6 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   return p;
 }
 
-// The arrow: its body (a classic pointer, its tip at (1, 1)) and, right after it, its edge (the body grown by a
-// pixel), each 1 bpp, 2 bytes a row.
-std::vector<uint8_t> ArrowMasks() {
-  const float poly[][2] = {{1, 1}, {1, 16}, {4.6f, 12.8f}, {7.2f, 18.4f}, {9.6f, 17.3f}, {7.1f, 11.9f}, {12, 11.9f}};
-  const int np = int(std::size(poly));
-  auto inside = [&](float x, float y) {
-    bool in = false;
-    for (int a = 0, b = np - 1; a < np; b = a++) {
-      if ((poly[a][1] > y) != (poly[b][1] > y) &&
-          x < (poly[b][0] - poly[a][0]) * (y - poly[a][1]) / (poly[b][1] - poly[a][1]) + poly[a][0])
-        in = !in;
-    }
-    return in;
-  };
-  bool body[kPtrH][kPtrW] = {};
-  for (int y = 0; y < kPtrH; y++)
-    for (int x = 0; x < kPtrW; x++) body[y][x] = inside(x + 0.5f, y + 0.5f);
-  std::vector<uint8_t> out(size_t(2 * 2 * kPtrH), 0);
-  for (int y = 0; y < kPtrH; y++)
-    for (int x = 0; x < kPtrW; x++) {
-      bool edge = false;
-      for (int dy = -1; dy <= 1; dy++)
-        for (int dx = -1; dx <= 1; dx++) {
-          int yy = y + dy, xx = x + dx;
-          if (yy >= 0 && yy < kPtrH && xx >= 0 && xx < kPtrW && body[yy][xx]) edge = true;
-        }
-      if (body[y][x]) out[size_t(y * 2 + x / 8)] |= uint8_t(0x80 >> (x % 8));
-      if (edge) out[size_t(2 * kPtrH + y * 2 + x / 8)] |= uint8_t(0x80 >> (x % 8));
-    }
-  return out;
-}
 
 } // namespace
 
@@ -964,6 +934,7 @@ std::vector<GlassesTerminal::Row> GlassesTerminal::Rows(const Snapshot &s) {
 
 bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std::function<void()> changed,
                             std::string *error) {
+  int64_t start_t0 = g1::NowUs();
   blob_ = std::move(font);
   changed_ = std::move(changed);
   fx_ = config.fx;
@@ -1066,7 +1037,8 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
       return false;
     }
   }
-  LOG("terminal: %d x %d at %u, angle %d", geo_.cols, geo_.rows, l_.base, angle_);
+  LOG("terminal: %d x %d at %u, angle %d, started in %lld ms", geo_.cols, geo_.rows, l_.base, angle_,
+      (long long)((g1::NowUs() - start_t0) / 1000));
   stop_ = false;
   thread_ = std::thread([this] { Run(); });
   for (int i = 0; i < 2; i++)
@@ -1325,7 +1297,9 @@ void GlassesTerminal::Send() {
     auto st = arms_[i]->GetState();
     lead = std::max<int64_t>(lead, 2 * st.interval_us + st.clock_error_us + 15000);
   }
-  lead += int64_t(bytes / 200 + 1) * 10000 + int64_t(f.recs.size()) * 2000;
+  // Shown at once: time for its bytes to reach both arms first, so the eyes change together. Held for a transition
+  // (on the panel only at its reveal, which waits for both arms to have it): due as soon as it is in.
+  if (!reveal) lead += int64_t(bytes / 200 + 1) * 10000 + int64_t(f.recs.size()) * 2000;
   uint32_t cur = f.cur_slot >= 0 ? uint32_t(f.cur_slot) : kNoCursor;
   // No battery band: the program draws none while wBattFont is 0.
   uint32_t font = g1::AddressOf(*font_), batt_font = battery_ && batt_font_ ? g1::AddressOf(*batt_font_) : 0;

@@ -69,6 +69,8 @@ object Session {
     @Volatile var keysToPhone = false // Alt+K: the keyboard types into the phone's apps even while the terminal shows
     @Volatile var pointerKeys = false // Alt+M put the pointer on: the arrows, Enter and Space are its
     @Volatile var tunes = false // the synthwave scene is on the glasses
+    @Volatile var overlay = "" // a panel over what shows (Panels.HELP, SETTINGS, NOTE), or ""
+    @Volatile var overlayGen = 0 // each change of a screen's panel (the frames carry it)
     @Volatile var heard = listOf<String>() // the last phrases, newest first
     // The devices Android reports near (ScouterCompanionService: keyer); null: unknown (none reported since the
     // process started, Bluetooth was off since, or keyer's link did not come after the last report).
@@ -318,19 +320,15 @@ class ScouterService : Service() {
             ACTION_TABS -> work.post { tabs(intent.getStringExtra("tab").orEmpty()) }
             // Tunes on or off (extra "on": true / false, absent: the other way).
             ACTION_TUNES -> work.post { tunesSet(intent.getStringExtra("on")?.toBoolean() ?: !Session.tunes) }
+            // Alt+A, S, L, = / -, P, , / . and the keys while a panel is open (extra "do").
+            ACTION_PANEL -> work.post { hotkey(intent.getStringExtra("do").orEmpty()) }
             // Alt+K: the keyboard's keys to the phone's apps, or back to the glasses' terminal.
             ACTION_KEYS -> work.post {
                 Session.keysToPhone = !Session.keysToPhone
                 voiceSay(if (Session.keysToPhone) "\u2328 Keyboard: phone (Alt+K for the glasses)" else "\u2328 Keyboard: glasses")
             }
             // The look-up view's settings changed: the header and the fade again.
-            ACTION_LOOK_UP -> work.post {
-                Native.fxEnabled(settings.animations)
-                Native.terminalFade(settings.fadeMs)
-                Native.terminalDash(settings.dashRows)
-                header()
-                refresh()
-            }
+            ACTION_LOOK_UP -> work.post { lookUpChanged() }
             // Voice: "listen" (one command; again: stop), "stop", or "always" (Settings.voiceAlways changed).
             ACTION_VOICE -> work.post {
                 when (intent.getStringExtra("mode")) {
@@ -375,6 +373,8 @@ class ScouterService : Service() {
         work.removeCallbacks(headerTick)
         work.removeCallbacks(tabPoll)
         Thread { Bootstrap.dropShared() }.start()
+        runCatching { dim?.release() } // pocket mode's screen lock
+        dim = null
         screen?.release()
         screen = null
         remote?.release()
@@ -461,7 +461,7 @@ class ScouterService : Service() {
         val force = settings.phone && settings.phoneForce
         if (force != forced) {
             forced = force
-            Native.force(force || Session.keyer == "keys" || Session.keyer == KEYBOARD)
+            forceApply()
         }
         if (glassesWith != null && glassesWith != glassesSettings()) stopGlasses(false)
         if (stopped != null && stoppedWith != glassesSettings()) stopped = null
@@ -954,11 +954,39 @@ class ScouterService : Service() {
 
     // ------------------------------------------------ the trackpad
 
-    // A trackpad or mouse paired with the phone: taken while the glasses show the terminal (their arrow); otherwise
-    // (the phone's screen too) it is the phone's own pointer, as smooth as Android makes it.
+    // A trackpad or mouse paired with the phone: taken while the glasses show the terminal or the phone's screen
+    // (their own arrow, drawn by the arms: Android leaves its pointer out of the shared screen); otherwise the phone's.
     private fun trackpadMode() {
         VoxKeys.capture(!ended && settings.trackpad && glassesWith != null && Session.glasses == "ready" && !Session.blank &&
-            settings.show == Settings.TERMINAL && !Session.tunes)
+            (settings.show == Settings.TERMINAL || onPhone()) && !Session.tunes)
+        pocket()
+    }
+
+    // Pocket mode: while the phone's screen is on the glasses the phone stays awake (dimmed), so it does not lock in
+    // a pocket and the keyboard and trackpad keep working it; it wakes for them if it went dark meanwhile.
+    private var dim: PowerManager.WakeLock? = null
+    @Suppress("DEPRECATION")
+    private fun pocket() {
+        val want = !ended && settings.pocket && onPhone() && Session.glasses == "ready" && !Session.blank
+        if (want && dim == null) dim = getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.SCREEN_DIM_WAKE_LOCK, "scouter:pocket").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        if (!want && dim != null) {
+            runCatching { dim?.release() }
+            dim = null
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun wakeForInput() {
+        if (!settings.pocket || !onPhone()) return
+        val pm = getSystemService(PowerManager::class.java)
+        if (pm.isInteractive) return
+        runCatching {
+            pm.newWakeLock(PowerManager.SCREEN_DIM_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP, "scouter:wake").acquire(3000)
+        }
     }
 
     private var swipe = 0f
@@ -967,12 +995,12 @@ class ScouterService : Service() {
     // clicks, a right click (two fingers) right-clicks, the wheel and two-finger swipes scroll. A click while the
     // pointer is off only shows it.
     private fun trackpad(kind: Int, dx: Float, dy: Float) {
+        if (Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS) return panelTrackpad(kind, dy)
+        if (onPhone()) return phoneTrackpad(kind, dx, dy)
         if (settings.show != Settings.TERMINAL) return
         when (kind) {
             VoxKeys.Trackpad.MOVE -> {
-                val v = kotlin.math.hypot(dx, dy)
-                val accel = settings.trackpadAccel.coerceIn(0, 10) / 5f
-                val k = settings.trackpadSpeed.coerceIn(1, 10) / 5f * 0.9f * (1f + accel * minOf(1.5f, v / 30f))
+                val k = glide(dx, dy)
                 if (!Session.pointer) pointerOn()
                 moveBy(dx * k, dy * k)
                 Session.changed()
@@ -995,6 +1023,98 @@ class ScouterService : Service() {
             }
         }
     }
+
+    // The trackpad's gain: glasses pixels per trackpad pixel (the speed setting; quicker strokes go further).
+    private fun glide(dx: Float, dy: Float): Float {
+        val v = kotlin.math.hypot(dx, dy)
+        val accel = settings.trackpadAccel.coerceIn(0, 10) / 5f
+        return settings.trackpadSpeed.coerceIn(1, 10) / 5f * 0.9f * (1f + accel * minOf(1.5f, v / 30f))
+    }
+
+    // The trackpad on the phone's screen: the arms' arrow glides over the picture as over the terminal (the same
+    // speed, in glasses pixels), a click taps where it points, a right click is a long press, the wheel and
+    // two-finger swipes scroll the app (swipes on the phone). The first click only shows the arrow.
+    private var phoneSwipe = 0f
+    private fun phoneTrackpad(kind: Int, dx: Float, dy: Float) {
+        wakeForInput()
+        val natural = if (settings.scrollNatural) 1f else -1f
+        val speed = settings.scrollSpeed.coerceIn(1, 10) / 5f
+        when (kind) {
+            VoxKeys.Trackpad.MOVE -> {
+                if (!Session.pointer) {
+                    Session.pointer = true
+                    Session.pointerKeys = false
+                }
+                val k = glide(dx, dy)
+                cursorBy(dx * k, dy * k)
+            }
+            VoxKeys.Trackpad.CLICK, VoxKeys.Trackpad.RIGHT -> {
+                if (!Session.pointer) return pointer("toggle")
+                pointer(if (kind == VoxKeys.Trackpad.RIGHT) "right" else "click")
+                return
+            }
+            // A notch: an eighth of the screen (positive dy: the wheel turned up, the page back).
+            VoxKeys.Trackpad.WHEEL -> phoneScroll(-dy * screenBounds().height() / 8f * speed)
+            // The fingers going down (natural) bring the page down: back.
+            VoxKeys.Trackpad.SCROLL -> phoneScroll(-dy * 3f * speed * natural)
+        }
+        Session.changed()
+    }
+
+    // The cursor by (gx, gy) glasses pixels: through the picture's scale and turn to the phone's screen, kept on
+    // the part that shows.
+    private fun cursorBy(gx: Float, gy: Float) {
+        val s = Native.screenShows()
+        if (s == null) {
+            cursorX = (cursorX + gx * 10000f / 540f).coerceIn(0f, 10000f)
+            cursorY = (cursorY + gy * 10000f / 480f).coerceIn(0f, 10000f)
+        } else {
+            val w = (s[2] - s[0]).toFloat()
+            val h = (s[3] - s[1]).toFloat()
+            val ow = s[4].coerceAtLeast(1)
+            val oh = s[5].coerceAtLeast(1)
+            val (ddx, ddy) = when (((settings.screenRotate % 360) + 360) % 360) {
+                90 -> gy * w / oh to -gx * h / ow
+                180 -> -gx * w / ow to -gy * h / oh
+                270 -> -gy * w / oh to gx * h / ow
+                else -> gx * w / ow to gy * h / oh
+            }
+            cursorX = (cursorX + ddx).coerceIn(s[0].toFloat(), s[2].toFloat())
+            cursorY = (cursorY + ddy).coerceIn(s[1].toFloat(), s[3].toFloat())
+        }
+        showCursor()
+    }
+
+    // Scrolling the phone's app: `px` screen pixels onward (positive: the page goes on down), as swipes there;
+    // what comes while one runs adds up for the next (a new gesture would cut the running one short).
+    private var swipePending = 0f
+    private var swiping = false
+    private fun phoneScroll(px: Float) {
+        swipePending += px
+        if (!swiping) swipeNext()
+    }
+
+    private fun swipeNext() {
+        val b = screenBounds()
+        val d = swipePending.coerceIn(-b.height() * 0.4f, b.height() * 0.4f)
+        if (kotlin.math.abs(d) < 6f) {
+            swipePending = 0f
+            swiping = false
+            return
+        }
+        swipePending -= d
+        swiping = true
+        val x = cursorX / 10000f * (b.width() - 1)
+        val y = cursorY / 10000f * (b.height() - 1)
+        val ok = VoxKeys.scroll(x, y, d, b.height().toFloat()) { work.post { swiping = false; swipeNext() } }
+        if (!ok) {
+            swiping = false
+            swipePending = 0f
+            Session.tabs = "scrolling the phone needs Vox's keyboard shortcuts (Android Settings: Accessibility, Vox)"
+        }
+    }
+
+    private fun screenBounds() = getSystemService(android.view.WindowManager::class.java).maximumWindowMetrics.bounds
 
     private fun stateLine(): String {
         fun arm(up: Boolean) = if (up) "up" else "down"
@@ -1082,6 +1202,225 @@ class ScouterService : Service() {
         choose(key, Fx.style(how ?: want))
     }
 
+    // ------------------------------------------------ panels and hotkeys
+
+    // A hotkey (Hotkeys, ACTION_PANEL): "help" (Alt+A), "settings" (Alt+S), "key:K" (up, down, left, right, enter,
+    // esc, space while a panel is open), "lookup" (Alt+L), "bright:1" / "bright:-1" (Alt+= / -), "media:toggle",
+    // "media:prev", "media:next" (Alt+P, Alt+, / .).
+    private fun hotkey(what: String) {
+        when {
+            what == Panels.HELP || what == Panels.SETTINGS -> panelOpen(what)
+            what.startsWith("key:") -> panelKey(what.removePrefix("key:"))
+            what == "lookup" -> lookUpOnly()
+            what.startsWith("bright:") -> bright(what.removePrefix("bright:").toIntOrNull() ?: 0)
+            what.startsWith("media:") -> {
+                val ok = Media.control(what.removePrefix("media:"))
+                note(when {
+                    !ok -> "Nothing is playing"
+                    what == "media:next" -> ">> Next track"
+                    what == "media:prev" -> "<< Previous track"
+                    else -> "Play / pause"
+                })
+            }
+        }
+        Session.changed()
+    }
+
+    private var panelAt = 0 // the quick setting chosen
+    private var tweaks: List<Panels.Tweak> = emptyList()
+    private var noteText = ""
+    private val noteEnd = Runnable { if (Session.overlay == Panels.NOTE) panelClose() }
+
+    // The help or the quick settings over what shows (the same hotkey again closes it). The display comes on and
+    // Tunes goes for it; the terminal shows whatever the head's angle meanwhile.
+    private fun panelOpen(kind: String) {
+        if (glassesWith == null) return
+        if (Session.overlay == kind) return panelClose()
+        if (Session.tunes) tunesSet(false)
+        if (Session.blank) display(true, "panel")
+        work.removeCallbacks(noteEnd)
+        Session.overlay = kind
+        if (kind == Panels.SETTINGS) tweaks = tweaks().also { panelAt = panelAt.coerceIn(0, maxOf(0, it.size - 1)) }
+        if (Session.pointer) pointerOff() // its arrow would sit on the panel
+        forceApply()
+        panelDraw()
+        Log.i(TAG, "panel: $kind")
+    }
+
+    // What a hotkey did, for a moment at the bottom (an open panel shows the change itself).
+    private fun note(text: String) {
+        if (Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS) return panelDraw()
+        if (glassesWith == null || Session.blank || Session.tunes) return
+        noteText = text
+        Session.overlay = Panels.NOTE
+        forceApply()
+        panelDraw()
+        work.removeCallbacks(noteEnd)
+        work.postDelayed(noteEnd, 1600)
+    }
+
+    private fun panelClose() {
+        if (Session.overlay.isEmpty()) return
+        Session.overlay = ""
+        work.removeCallbacks(noteEnd)
+        Native.overlay(null, null, false)
+        Native.screenOverlay(null, 0, 0, 0, 0)
+        Session.overlayGen++
+        screen?.poke()
+        remote?.poke()
+        forceApply()
+        Session.changed()
+    }
+
+    // A key while a panel is open: the quick settings move with the arrows (up and down: the setting, left and
+    // right: its value); Esc or Enter closes either.
+    private fun panelKey(k: String) {
+        if (Session.overlay == Panels.SETTINGS && tweaks.isNotEmpty()) {
+            when (k) {
+                "up" -> panelAt = (panelAt - 1 + tweaks.size) % tweaks.size
+                "down" -> panelAt = (panelAt + 1) % tweaks.size
+                "left", "right" -> tweaks.getOrNull(panelAt)?.change?.invoke(if (k == "left") -1 else 1)
+                "esc", "enter" -> return panelClose()
+                else -> return
+            }
+            return panelDraw()
+        }
+        if (k == "esc" || k == "enter" || k == "space") panelClose()
+    }
+
+    // The trackpad while a panel is open: a click closes it, scrolling walks the quick settings.
+    private var panelSwipe = 0f
+    private fun panelTrackpad(kind: Int, dy: Float) {
+        when (kind) {
+            VoxKeys.Trackpad.CLICK, VoxKeys.Trackpad.RIGHT -> panelClose()
+            VoxKeys.Trackpad.WHEEL -> panelKey(if (dy > 0) "up" else "down")
+            VoxKeys.Trackpad.SCROLL -> {
+                panelSwipe += dy
+                while (kotlin.math.abs(panelSwipe) >= 40f) {
+                    panelKey(if (panelSwipe > 0) "up" else "down")
+                    panelSwipe -= if (panelSwipe > 0) 40f else -40f
+                }
+            }
+        }
+    }
+
+    // The panel on what shows now: lines of the terminal, or a picture in a screen's frames (the other cleared).
+    private fun panelDraw() {
+        val kind = Session.overlay
+        if (kind.isEmpty() || glassesWith == null) return
+        val onScreen = settings.show == Settings.SCREEN
+        val content = when (kind) {
+            Panels.SETTINGS -> Panels.settings(if (onScreen) Session.source.ifEmpty { "Screen" } else "Terminal", tweaks, panelAt)
+            Panels.NOTE -> Panels.note(noteText)
+            else -> null // the help: laid out for each
+        }
+        if (onScreen) {
+            val st = Native.screenStats()
+            val w = st[5]
+            val h = st[6]
+            if (w <= 0 || h <= 0) return
+            val art = if (content == null) Panels.helpArt(w, h) else Panels.stripArt(w, h, content)
+            Native.overlay(null, null, false)
+            Native.screenOverlay(art.pixels, art.w, art.h, art.x, art.y)
+            Session.overlayGen++
+            screen?.poke()
+            remote?.poke()
+        } else {
+            val g = region()
+            val cols = if (g[2] > 0) g[0] / g[2] else settings.cols
+            val rows = if (g[3] > 0) g[1] / g[3] else settings.rows
+            val c = content ?: Panels.helpLines(cols, rows)
+            Native.screenOverlay(null, 0, 0, 0, 0)
+            Native.overlay(c.lines.toTypedArray(), c.marks.toIntArray(), c.full)
+        }
+    }
+
+    // The terminal shows whatever the head's angle: a session started from the phone (Always visible), keyer's
+    // keys, the keyboard mode, or a panel open.
+    private fun forceApply() =
+        Native.force(forced || Session.overlay.isNotEmpty() || Session.keyer == "keys" || Session.keyer == KEYBOARD)
+
+    // The look-up view's settings changed (the app, the quick settings).
+    private fun lookUpChanged() {
+        Native.fxEnabled(settings.animations)
+        Native.terminalFade(settings.fadeMs)
+        Native.terminalDash(settings.dashRows)
+        header()
+        refresh()
+    }
+
+    // Alt+L: the terminal only while looking up (it fades away with the head level), or always. A note says which
+    // (the terminal shows for it, then goes by the new rule).
+    private fun lookUpOnly() {
+        settings.phone = true
+        settings.phoneForce = !settings.phoneForce
+        Log.i(TAG, "look-up only: ${!settings.phoneForce}")
+        refresh()
+        note(if (settings.phoneForce) "Always on" else "Look-up only: look up to see it")
+    }
+
+    // Alt+= / -: brighter or dimmer, a seventh of the range a press.
+    private fun bright(dir: Int) {
+        settings.brightness = (settings.brightness + 6 * dir).coerceIn(0, 42)
+        val level = settings.brightness
+        Thread { Native.brightness(level) }.start()
+        note("Brightness ${level * 100 / 42}%")
+    }
+
+    // The quick settings of what shows: a screen's picture, or the terminal and its look-up view.
+    private fun tweaks(): List<Panels.Tweak> {
+        fun num(name: String, get: () -> Int, set: (Int) -> Unit, lo: Int, hi: Int, step: Int,
+                show: (Int) -> String = { "$it" }, after: () -> Unit = {}) =
+            Panels.Tweak(name, { show(get()) }) { d -> set((get() + d * step).coerceIn(lo, hi)); after() }
+        fun pick(name: String, options: List<Pair<String, String>>, get: () -> String, set: (String) -> Unit,
+                 after: () -> Unit = {}) =
+            Panels.Tweak(name, { options.firstOrNull { it.first == get() }?.second ?: get() }) { d ->
+                val i = options.indexOfFirst { it.first == get() }.coerceAtLeast(0)
+                set(options[(i + d + options.size) % options.size].first)
+                after()
+            }
+        fun flag(name: String, get: () -> Boolean, set: (Boolean) -> Unit, after: () -> Unit = {}) =
+            Panels.Tweak(name, { if (get()) "on" else "off" }) { _ -> set(!get()); after() }
+        val bright = num("Brightness", { settings.brightness }, { settings.brightness = it }, 0, 42, 3, { "${it * 100 / 42}%" }) {
+            val level = settings.brightness
+            Thread { Native.brightness(level) }.start()
+        }
+        val speed = num("Cursor speed", { settings.trackpadSpeed }, { settings.trackpadSpeed = it }, 1, 10, 1)
+        val t = mutableListOf<Panels.Tweak>()
+        if (settings.show == Settings.SCREEN) {
+            t += pick("Picture", listOf("2" to "black and white (fast)", "4" to "4 greys", "8" to "8 greys", "16" to "16 greys"),
+                { settings.screenLevels.toString() }, { settings.screenLevels = it.toInt() })
+            t += num("Invert", { settings.screenInvertPct }, { settings.screenInvertPct = it }, 0, 100, 10, { "$it%" })
+            t += num("Threshold", { settings.screenThreshold }, { settings.screenThreshold = it }, 16, 240, 8)
+            t += num("Contrast", { settings.screenContrast }, { settings.screenContrast = it }, 0, 100, 10)
+            t += num("Zoom", { settings.screenZoom }, { settings.screenZoom = it }, 100, 400, 25, { "$it%" })
+            t += num("Zoomed part", { settings.screenPanY }, { settings.screenPanY = it }, 0, 100, 10, { "$it% down" })
+            t += pick("Fit", listOf(Settings.FIT to "whole screen", Settings.FILL to "fill", Settings.STRETCH to "stretch"),
+                { settings.screenFit }, { settings.screenFit = it })
+            t += pick("Turn", listOf("0" to "none", "90" to "90 right", "180" to "upside down", "270" to "90 left"),
+                { settings.screenRotate.toString() }, { settings.screenRotate = it.toInt() })
+            t += num("Cut top", { settings.screenCropTop }, { settings.screenCropTop = it }, 0, 300, 10, { "${it / 10}%" })
+            t += num("Cut bottom", { settings.screenCropBottom }, { settings.screenCropBottom = it }, 0, 300, 10, { "${it / 10}%" })
+            t += flag("Clean specks", { settings.screenClean }, { settings.screenClean = it })
+            t += num("Frames a second", { settings.screenFps }, { settings.screenFps = it }, 1, 30, 1)
+            t += bright
+            if (onPhone()) t += flag("Pocket mode", { settings.pocket }, { settings.pocket = it }) { trackpadMode() }
+            t += speed
+        } else {
+            t += bright
+            t += flag("Always visible", { settings.phoneForce }, { settings.phoneForce = it; settings.phone = true }) { refresh() }
+            t += flag("Look-up dashboard", { settings.dashboard }, { settings.dashboard = it }) { lookUpChanged() }
+            t += pick("Dashboard", Dashboard.STYLES, { settings.dashStyle }, { settings.dashStyle = it }) { lookUpChanged() }
+            t += speed
+            t += num("Scroll speed", { settings.scrollSpeed }, { settings.scrollSpeed = it }, 1, 10, 1)
+            t += flag("Type on the glasses", { settings.keysToGlasses }, { settings.keysToGlasses = it })
+            t += flag("Animations", { settings.animations }, { settings.animations = it }) { Native.fxEnabled(settings.animations) }
+            t += pick("Tunes follows", listOf(Tunes.BEAT to "the beat", Tunes.VOLUME to "the volume", Tunes.STEADY to "a steady tempo"),
+                { settings.tunesMode }, { settings.tunesMode = it })
+        }
+        return t
+    }
+
     // ------------------------------------------------ transitions
 
     // The glasses go to `key` with the style's transition (Fx.kt): what shows goes now, a label says where to,
@@ -1116,6 +1455,7 @@ class ScouterService : Service() {
     // The user's choice (Settings.source): kept until they choose another. One that cannot show yet (a server
     // that does not answer, the phone's screen not shared) shows its card; nothing switches by itself.
     private fun choose(key: String, style: Int = Fx.JUMP) {
+        val t0 = SystemClock.uptimeMillis()
         settings.phone = true
         if (Session.tunes) tunesSet(false)
         val from = chosen()
@@ -1169,6 +1509,7 @@ class ScouterService : Service() {
         }
         Session.source = settings.sourceName(key)
         SourceTile.refresh(this)
+        Log.i(TAG, "switch: $from -> $key (fx $fx): ${SystemClock.uptimeMillis() - t0} ms on the phone")
     }
 
     private fun startRemote(s: Settings.Server) {
@@ -1410,8 +1751,8 @@ class ScouterService : Service() {
         Session.typing = false
         if (onPhone()) {
             Session.pointer = true
-            cursorX = 5000
-            cursorY = 5000
+            cursorX = 5000f
+            cursorY = 5000f
             showCursor()
         }
     }
@@ -1465,8 +1806,8 @@ class ScouterService : Service() {
     private fun onPhone() = screen != null && settings.show == Settings.SCREEN &&
         Session.screenSource.ifEmpty { Settings.PHONE } == Settings.PHONE
 
-    private var cursorX = 5000
-    private var cursorY = 5000
+    private var cursorX = 5000f // 1/10000 of the phone's screen
+    private var cursorY = 5000f
 
     private fun phonePointer(parts: List<String>) {
         when (parts[0]) {
@@ -1479,20 +1820,25 @@ class ScouterService : Service() {
             "move" -> {
                 if (!Session.pointer) pointerOn()
                 // A step: 1/60 of the screen across, 1/45 down (the keyboard's arrows, a cell of the touchpad).
-                cursorX = (cursorX + (parts.getOrNull(1)?.toIntOrNull() ?: 0) * 167).coerceIn(0, 10000)
-                cursorY = (cursorY + (parts.getOrNull(2)?.toIntOrNull() ?: 0) * 222).coerceIn(0, 10000)
+                cursorX = (cursorX + (parts.getOrNull(1)?.toIntOrNull() ?: 0) * 167).coerceIn(0f, 10000f)
+                cursorY = (cursorY + (parts.getOrNull(2)?.toIntOrNull() ?: 0) * 222).coerceIn(0f, 10000f)
                 showCursor()
+            }
+            "glide" -> { // glasses pixels (the touchpad)
+                if (!Session.pointer) pointerOn()
+                cursorBy(parts.getOrNull(1)?.toFloatOrNull() ?: 0f, parts.getOrNull(2)?.toFloatOrNull() ?: 0f)
             }
             "click", "right", "up", "down" -> {
                 if (!Session.pointer) pointerOn()
-                val b = getSystemService(android.view.WindowManager::class.java).maximumWindowMetrics.bounds
+                wakeForInput()
+                val b = screenBounds()
                 val x = cursorX / 10000f * (b.width() - 1)
                 val y = cursorY / 10000f * (b.height() - 1)
                 val ok = when (parts[0]) {
                     "click" -> VoxKeys.tap(x, y)
                     "right" -> VoxKeys.tap(x, y, long = true)
-                    "up" -> VoxKeys.scroll(x, y, -b.height() / 5f, b.height().toFloat())
-                    else -> VoxKeys.scroll(x, y, b.height() / 5f, b.height().toFloat())
+                    "up" -> true.also { phoneScroll(-b.height() / 4f) }
+                    else -> true.also { phoneScroll(b.height() / 4f) }
                 }
                 Session.tabs = if (ok) "" else "clicks on the phone need Vox's keyboard shortcuts (Android Settings: Accessibility, Vox)"
                 showCursor()
@@ -1507,10 +1853,9 @@ class ScouterService : Service() {
         if (!onPhone()) return
         val b = getSystemService(android.view.WindowManager::class.java).maximumWindowMetrics.bounds
         if (b.width() <= 1 || b.height() <= 1) return
-        cursorX = (x / (b.width() - 1) * 10000).toInt().coerceIn(0, 10000)
-        cursorY = (y / (b.height() - 1) * 10000).toInt().coerceIn(0, 10000)
-        Session.cursorX = cursorX
-        Session.cursorY = cursorY
+        cursorX = (x / (b.width() - 1) * 10000).coerceIn(0f, 10000f)
+        cursorY = (y / (b.height() - 1) * 10000).coerceIn(0f, 10000f)
+        work.post { sendCursor(true) }
         val now = SystemClock.uptimeMillis()
         if (now - mouseAt > 500) { // the hiding after a while, pushed back at most twice a second
             mouseAt = now
@@ -1521,25 +1866,42 @@ class ScouterService : Service() {
         }
     }
 
-    // The cursor into the phone's picture (PhoneScreen sends it again when the options change); hidden after a while.
+    // The cursor on the phone's picture (the arms draw it: it moves at once, between frames); hidden after a while.
     private fun showCursor() {
-        Session.cursorX = cursorX
-        Session.cursorY = cursorY
+        sendCursor(true)
         work.removeCallbacks(pointerIdle)
         work.postDelayed(pointerIdle, 10000)
     }
 
-    private fun hideCursor() {
-        Session.cursorX = -1
-        Session.cursorY = -1
+    private fun hideCursor() = sendCursor(false)
+
+    // To the glasses at most every 15 ms (a quick stroke sends its latest place), again while it waits for a busy
+    // link or a transition (for up to 5 s). Greys: the capture sends a frame with it.
+    private var cursorOn = false
+    private var cursorAt = 0L
+    private var cursorTries = 0
+    private val cursorFlush = Runnable { sendCursor(cursorOn, retry = true) }
+    private fun sendCursor(on: Boolean, retry: Boolean = false) {
+        cursorOn = on
+        work.removeCallbacks(cursorFlush)
+        val now = SystemClock.uptimeMillis()
+        if (now - cursorAt < 15) {
+            work.postDelayed(cursorFlush, 15 - (now - cursorAt))
+            return
+        }
+        cursorAt = now
+        if (!retry) cursorTries = 0
+        if (Native.screenPointer(cursorX.toInt(), cursorY.toInt(), on) && cursorTries++ < 200)
+            work.postDelayed(cursorFlush, 25)
+        if (settings.screenLevels != 2) screen?.poke()
     }
 
     private fun pointerOn() {
         Session.pointer = true
         Session.pointerKeys = false
         if (onPhone()) {
-            cursorX = 5000
-            cursorY = 5000
+            cursorX = 5000f
+            cursorY = 5000f
             return showCursor()
         }
         if (settings.tmuxMouse) tabs("mouse")
@@ -1903,6 +2265,7 @@ class ScouterService : Service() {
         settings.show = show
         Session.source = settings.sourceName(chosen())
         if (!onPhone()) hideCursor()
+        lookSwitch() // first: the first picture goes with its look
         if (show == Settings.SCREEN) {
             val error = Native.screenStart()
             if (error != null) {
@@ -1912,12 +2275,15 @@ class ScouterService : Service() {
                 update(screen = "error: $error")
                 return refresh()
             }
+            screen?.poke() // its picture now, not at the capture's next tick
         } else Native.screenStop()
         if (blankByLock) blankByLock = false
-        lookSwitch()
         update()
         refresh()
         if (show == Settings.TERMINAL) header()
+        // A panel open stays: drawn on what shows now (the quick settings of this screen).
+        if (Session.overlay == Panels.SETTINGS) tweaks = tweaks().also { panelAt = panelAt.coerceIn(0, maxOf(0, it.size - 1)) }
+        if (Session.overlay.isNotEmpty()) panelDraw()
     }
 
     // Each second: a timer that ends says so; the dashboard again while what it shows moves (what plays, the timer).
@@ -1949,6 +2315,7 @@ class ScouterService : Service() {
                 return
             }
             if (Session.pointer) pointerOff()
+            panelClose()
             Session.tunes = true
             Tunes.start(this, settings.tunesMode)
             Log.i(TAG, "tunes: on (${settings.tunesMode})")
@@ -2042,6 +2409,7 @@ class ScouterService : Service() {
     // The display on or off; why: for the status line.
     private fun display(on: Boolean, why: String) {
         if (!on == Session.blank) return
+        if (!on) panelClose()
         // A CRT switching off (the picture closes to a line, then a dot) or on (it opens from the middle).
         if (settings.animations && glassesWith != null)
             Native.transition(if (on) Fx.ON else Fx.OFF, null, 0, 0, settings.show != Settings.SCREEN, false)
@@ -2166,6 +2534,7 @@ class ScouterService : Service() {
         const val ACTION_STOP = "scouterkit.ssh.STOP"
         const val ACTION_KEYS = "scouterkit.ssh.KEYS" // the keyboard to the phone's apps or the glasses' terminal (Alt+K)
         const val ACTION_TUNES = "scouterkit.ssh.TUNES" // the synthwave scene on the glasses, or off (extra "on")
+        const val ACTION_PANEL = "scouterkit.ssh.PANEL" // a hotkey's panel or action (extra "do": hotkey())
         const val ACTION_TRUST = "scouterkit.ssh.TRUST"
         const val ACTION_NEAR = "scouterkit.ssh.NEAR" // keyer came or went (Session.near)
         const val ACTION_SCREEN = "scouterkit.ssh.SCREEN" // the phone's screen on the glasses (EXTRA_CODE, EXTRA_DATA)

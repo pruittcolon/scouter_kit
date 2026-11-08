@@ -102,6 +102,11 @@ class Settings(context: Context) {
     var screenHideFolded: Boolean
         get() = prefs.getBoolean("screen_hide_folded", false)
         set(v) = prefs.edit().putBoolean("screen_hide_folded", v).apply()
+    // Pocket mode: while the phone's screen is on the glasses the phone stays awake (dimmed), so it can stay in a
+    // pocket and be worked from the keyboard and trackpad alone.
+    var pocket: Boolean
+        get() = prefs.getBoolean("pocket", true)
+        set(v) = prefs.edit().putBoolean("pocket", v).apply()
     // The display goes off while the phone is locked (the phone's screen view: nothing new to show).
     var offWhenLocked: Boolean
         get() = prefs.getBoolean("off_when_locked", true)
@@ -126,7 +131,8 @@ class Settings(context: Context) {
         screenZoom, screenRotate, screenOutX, screenOutY, screenOutW, screenOutH, screenInvertPct, screenLevels,
         screenContrast, if (screenSharpen) 1 else 0, if (screenHideCase) 1 else 0, if (screenHideFolded) 1 else 0,
         screenGamma, screenThreshold, if (screenSteady) 1 else 0, if (screenDither) 1 else 0, screenDetail, screenBudget,
-        Session.cursorX, Session.cursorY, if (screenClean) 1 else 0, screenCropTop, screenCropBottom)
+        Session.cursorX, Session.cursorY, if (screenClean) 1 else 0, screenCropTop, screenCropBottom,
+        Session.overlayGen) // last: a panel changed (the capture sends the frame again)
 
     // Once: the fast path (black and white) for everyone, as 0.4 made it the default.
     fun migrate() {

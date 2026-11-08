@@ -95,11 +95,38 @@ class SettingsActivity : Activity() {
             "whatever app is in front (Alt+K: to the phone and back)", settings.keysToGlasses) {
             settings.keysToGlasses = it
         })
-        hot.addToggle(toggle("Trackpad on the glasses", "While they show the terminal, a trackpad or mouse moves their " +
-            "pointer (tap: click, two fingers: right click and scroll)", settings.trackpad) {
+        hot.addToggle(toggle("Trackpad on the glasses", "On the terminal and the phone's screen, a trackpad or mouse " +
+            "moves the glasses' own arrow (tap: click, two fingers: right click and scroll)", settings.trackpad) {
             settings.trackpad = it
             restart()
         })
+        hot.addToggle(toggle("Pocket mode", "While the phone's screen is on the glasses, the phone stays awake (dimmed) " +
+            "so it can stay in your pocket: the trackpad taps, the keyboard types, Alt+Backspace / H / R / N are Back, " +
+            "Home, Recents, Notifications", settings.pocket) {
+            settings.pocket = it
+            restart()
+        })
+
+        // How to use it all from the keyboard: every hotkey (the same list as Alt+A on the glasses).
+        val keys = page.section("Hotkeys", "set_hotkeys", "keyboard",
+            hint = "With the keyboard paired, Alt+A shows these on the glasses over whatever is there.")
+        keys.addView(text("Quick start: put the glasses on, put the phone away, Alt+arrows to pick a screen. On the " +
+            "phone's screen the trackpad is a mouse (tap: click, two fingers: right click and scroll) and the keys " +
+            "type into the app. Alt+S changes what you see, Alt+0 puts the display away and back.", 13f, Ui.MUTED)
+            .apply { setPadding(0, 0, 0, dp(6)) })
+        for ((group, items) in Panels.GROUPS) {
+            keys.addView(subhead(group).apply { setPadding(0, dp(10), 0, dp(4)) })
+            for ((k, what) in items) {
+                val row = android.widget.LinearLayout(this).apply {
+                    orientation = android.widget.LinearLayout.HORIZONTAL
+                    setPadding(0, dp(3), 0, dp(3))
+                }
+                row.addView(text(k, 14f, Ui.TEXT, Ui.MONO), android.widget.LinearLayout.LayoutParams(dp(112),
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT))
+                row.addView(text(what, 14f, Ui.MUTED))
+                keys.addView(row)
+            }
+        }
 
         val speed = page.section("Cursor speed", "set_cursor", "pointer",
             hint = "How the trackpad moves the glasses' arrow and scrolls the terminal.")

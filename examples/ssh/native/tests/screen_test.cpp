@@ -195,6 +195,26 @@ int main() {
   ssh::Sharpen(&edge, 4, {0, 0, 4, 3});
   CHECK(edge[5] < 100 && edge[6] > 200);
 
+  // Locate and Shows: a screen point on the picture, and the part that shows, through the cut, the turn and the fit.
+  {
+    ssh::ScreenOptions lo;
+    int x = -1, y = -1;
+    CHECK(ssh::Locate(5000, 5000, 540, 471, lo, 540, 471, &x, &y) && x == 269 && y == 235);
+    lo.rotate = 90; // a 200 x 100 screen turned clockwise into 100 x 200: its top left goes to the top right
+    CHECK(ssh::Locate(0, 0, 200, 100, lo, 100, 200, &x, &y) && x == 99 && y == 0);
+    CHECK(ssh::Locate(10000, 0, 200, 100, lo, 100, 200, &x, &y) && x == 99 && y == 199);
+    lo.rotate = 0;
+    lo.crop_top = 100; // the top tenth is cut: a point there is not shown
+    CHECK(!ssh::Locate(5000, 500, 200, 400, lo, 200, 360, &x, &y));
+    CHECK(ssh::Locate(5000, 1100, 200, 400, lo, 200, 360, &x, &y) && y < 8);
+    lo.crop_top = 0;
+    lo.fit = ssh::ScreenOptions::kFill; // a tall screen filling a square: a band at the top (pan_y 0)
+    int ow = 0, oh = 0;
+    ssh::Rect sh = ssh::Shows(100, 400, lo, 200, 200, &ow, &oh);
+    CHECK(sh.x == 0 && sh.w == 10000 && sh.y == 0 && sh.h > 2400 && sh.h < 2600 && ow == 200 && oh == 200);
+    CHECK(!ssh::Locate(5000, 9000, 100, 400, lo, 200, 200, &x, &y));
+  }
+
   // The emulated arms, worn, head level.
   g1::GrayConfig gray{100, 9};
   std::string error;
@@ -256,6 +276,52 @@ int main() {
   CHECK(WaitFor([&] { return m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown; }, 10000));
   CHECK(WaitFor([] { return Lit(1, 300, 209, 380, 289) == 0 && Lit(1, 0, 9, 80, 89) > 5500; }));
   CHECK(fx->busy_until() == until); // no reveal for it
+
+  // The cursor (black and white): the arms draw it over the picture at once, no frame sent; moved, the picture
+  // comes back where it was; it stays over the next frame; off, not a trace. Phone (200, 200) is picture (200, 200):
+  // its box at the left eye's (299, 199), the right eye's (199, 208).
+  {
+    auto at = [](int v) { return (v * 10000 + 538) / 539; }; // back to pixel v (floor division)
+    auto aty = [](int v) { return (v * 10000 + 469) / 470; };
+    int before = m.frames();
+    m.Pointer(at(200), aty(200), true);
+    CHECK(WaitFor([] { return Lit(0, 299, 199, 315, 219) > 40 && Lit(1, 199, 208, 215, 228) > 40; }));
+    int arrow = Lit(0, 299, 199, 315, 219);
+    CHECK(Lit(0, 299, 199, 303, 204) >= 2); // the tip
+    CHECK(m.frames() == before);
+    m.Pointer(at(220), aty(300), true);
+    CHECK(WaitFor([] { return Lit(0, 299, 199, 315, 219) == 0 && Lit(0, 319, 299, 335, 319) > 40; }));
+    CHECK(Lit(1, 199, 208, 215, 228) == 0 && Lit(1, 219, 308, 235, 328) > 40);
+    CHECK(Lit(0, 319, 299, 335, 319) == arrow);
+    // Over the lit square: its body lit, its edge dark.
+    m.Pointer(at(30), aty(30), true);
+    CHECK(WaitFor([] { return Lit(0, 319, 299, 335, 319) == 0 && Lit(0, 129, 29, 145, 49) < 320; }));
+    CHECK(Lit(0, 129, 29, 145, 49) > 320 - 120 && Lit(0, 100, 0, 180, 80) > 6400 - 120);
+    // A frame (the square moves): the arrow is drawn again over it.
+    m.Pointer(at(220), aty(300), true);
+    CHECK(WaitFor([] { return Lit(0, 319, 299, 335, 319) > 40; }));
+    phone = Phone(540, 471, 300, 200, 80, 80, stride);
+    CHECK(WaitFor([&] { return m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown; }, 10000));
+    CHECK(WaitFor([] { return Lit(0, 400, 200, 480, 280) > 5500 && Lit(1, 0, 9, 80, 89) == 0; }));
+    CHECK(WaitFor([&] { return Lit(0, 319, 299, 335, 319) == arrow; }));
+    // Off: nothing but the square.
+    m.Pointer(at(220), aty(300), false);
+    CHECK(WaitFor([] { return Lit(0, 319, 299, 335, 319) == 0 && Lit(1, 219, 308, 235, 328) == 0; }));
+    CHECK(Lit(0) - Lit(0, 400, 200, 480, 280) < 400);
+    int shows[6] = {};
+    CHECK(m.Shows(shows) && shows[0] == 0 && shows[1] == 0 && shows[2] == 10000 && shows[3] == 10000 &&
+          shows[4] == 540 && shows[5] == 471);
+    phone = Phone(540, 471, 0, 0, 80, 80, stride); // as the tests below expect
+  }
+
+  // A card over the picture (the help, the quick settings): in the frames from the next one; gone again after.
+  m.SetOverlay(std::vector<uint8_t>(60 * 20, 255), 60, 20, 200, 400);
+  CHECK(WaitFor([&] { return m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown; }, 10000));
+  CHECK(WaitFor([] { return Lit(0, 300, 400, 360, 420) == 1200 && Lit(1, 200, 409, 260, 429) == 1200; }));
+  CHECK(Lit(1, 0, 9, 80, 89) > 5500); // the picture under it as ever
+  m.SetOverlay({}, 0, 0, 0, 0);
+  CHECK(WaitFor([&] { return m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kShown; }, 10000));
+  CHECK(WaitFor([] { return Lit(0, 300, 400, 360, 420) == 0; }));
 
   // Steady black and white: a grey just past the threshold either way changes nothing (no frame sent); one
   // clearly past it does.
@@ -346,9 +412,30 @@ int main() {
   }
 
   m.Stop();
-  fx->Stop();
   CHECK(WaitFor([] { return Lit(0) == 0 && Lit(1) == 0; }));
   CHECK(m.Frame(phone.data(), 540, 471, stride, opt) == ssh::ScreenMirror::kStopped);
+
+  // Under a transition (keep_panels): no power cycle; the columns one eye sees go black (the terminal's battery
+  // band could be there), the picture's place is left to the transition. The left eye's columns 0 ... 99 and the
+  // right eye's 540 ... 639 lit first, and the picture's place.
+  {
+    int64_t lit = g1::Alloc(50 * 480);
+    CHECK(lit >= 0);
+    for (g1::Arm *a : {&g1::left, &g1::right}) a->WriteArena(g1::Address(lit), std::vector<uint8_t>(50 * 480, 0xFF));
+    g1::left.Draw(g1::Address(lit), 50, 0, 0, 0, 0, 100, 480);
+    g1::left.Draw(g1::Address(lit), 50, 0, 0, 300, 100, 50, 50);
+    g1::right.Draw(g1::Address(lit), 50, 0, 0, 540, 0, 100, 480);
+    CHECK(WaitFor([] { return Lit(0, 0, 0, 100, 480) == 48000 && Lit(1, 540, 0, 640, 480) == 48000; }));
+    g1::Free(g1::Address(lit));
+    ssh::ScreenMirror kept;
+    CHECK(kept.Start(100, 9, &error, true));
+    CHECK(WaitFor([] { return Lit(0, 0, 0, 100, 480) == 0 && Lit(1, 540, 0, 640, 480) == 0; }));
+    CHECK(Lit(0, 300, 100, 350, 150) == 2500); // the transition's to black out, not a power cycle
+    uint32_t on = 0;
+    CHECK(g1::left.Prop(g1::PROP_PANEL, &on) && on == 1);
+    kept.Stop(true);
+  }
+  fx->Stop();
   g1::Deinit();
   std::printf(failures ? "screen_test: %d failures\n" : "screen_test: ok\n", failures);
   return failures ? 1 : 0;
