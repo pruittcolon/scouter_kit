@@ -40,9 +40,11 @@ object Panels {
             "Alt+[ / ]" to "tab before / after",
             "Alt+W" to "close the tab",
             "Alt+K" to "keys: phone / glasses",
+            "Alt+X" to "keyboard off / on",
             "Alt+M" to "pointer (arrows, Enter)",
         ),
         "Phone screen" to listOf(
+            "Alt+C" to "share it (taps Start)",
             "trackpad" to "point, tap, scroll",
             "Alt+Bksp" to "Back",
             "Alt+H" to "Home",

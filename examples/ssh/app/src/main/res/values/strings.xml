@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Vox</string>
-    <string name="keys_description">Switches what the glasses show with a keyboard: Alt with the arrows, Alt with 1 to 9, Alt with 0 for the display. It also taps where the glasses\' cursor points on the phone\'s screen, when you click. With a trackpad it moves the glasses\' pointer, and it notes which app is in front (its name only) so the glasses bring back the look you chose for it. It reads nothing on the screen.</string>
+    <string name="keys_description">Switches what the glasses show with a keyboard: Alt with the arrows, Alt with 1 to 9, Alt with 0 for the display. It also taps where the glasses\' cursor points on the phone\'s screen, when you click. With a trackpad it moves the glasses\' pointer, and it notes which app is in front (its name only) so the glasses bring back the look you chose for it. When Vox asks to share the screen it taps Android\'s Start button for you; it reads nothing else on the screen.</string>
 </resources>

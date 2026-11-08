@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- VoxKeys: key events, the trackpad, taps for the glasses' cursor on the phone's screen, and which app is in
-     front (window changes' package names; no window content). -->
+<!-- VoxKeys: key events, the trackpad, taps for the glasses' cursor on the phone's screen, which app is in front
+     (window changes' package names), and Android's screen-sharing question that Vox asks (its Start button, looked
+     for in the system UI's windows only while Vox waits for that answer). -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagRequestFilterKeyEvents"
+    android:accessibilityFlags="flagRequestFilterKeyEvents|flagRetrieveInteractiveWindows"
     android:canRequestFilterKeyEvents="true"
     android:canPerformGestures="true"
-    android:canRetrieveWindowContent="false"
+    android:canRetrieveWindowContent="true"
     android:description="@string/keys_description"
     android:notificationTimeout="100" />

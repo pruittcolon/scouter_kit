@@ -18,12 +18,14 @@ import android.view.accessibility.AccessibilityEvent
 // Alt+1 ... Alt+9 picks Home's source of that number, Alt+0 turns the display off or on, Alt+Space (or Alt+V)
 // listens for a voice command, Alt+M the pointer (then arrows, Enter, Escape), Alt+T / [ / ] / W the tabs,
 // Alt+A the help on the glasses (every hotkey: Panels.GROUPS; also while Alt is held by itself), Alt+S the quick
-// settings, Alt+Z always on / look-up only (Alt+L too), Alt+= / - the brightness, Alt+P / , / . the music. MainActivity takes them while Vox is in front; VoxKeys (an
+// settings, Alt+Z always on / look-up only (Alt+L too), Alt+= / - the brightness, Alt+P / , / . the music, Alt+X
+// the keyboard off / on, Alt+C the phone's screen (shared first, Android's question answered by VoxKeys). MainActivity takes them while Vox is in front; VoxKeys (an
 // accessibility service the user turns on) everywhere.
 object Hotkeys {
     // The event was Vox's: a shortcut, or a key typed into the glasses' terminal (both its press and its release are
     // ours then).
     fun handle(context: Context, e: KeyEvent): Boolean {
+        if (keyboardSwitch(context, e)) return true
         if (shortcut(context, e)) return true
         return toGlasses(context, e) && Keyboard.send(e)
     }
@@ -49,6 +51,34 @@ object Hotkeys {
         ScouterService.send(c, ScouterService.ACTION_PANEL, "do" to "althold:on")
     }
 
+    private fun altGone(context: Context) {
+        main.removeCallbacks(altShow)
+        if (altShown) {
+            altShown = false
+            ScouterService.send(context, ScouterService.ACTION_PANEL, "do" to "althold:off")
+        }
+    }
+
+    // Alt+X: the keyboard off (its keys do nothing anywhere: in a bag, on the table) or on again. Only Alt+X gets
+    // through meanwhile.
+    private fun keyboardSwitch(context: Context, e: KeyEvent): Boolean {
+        if (!Keyboard.physical(e) || !Settings(context).hotkeys) return false
+        if (e.keyCode == KeyEvent.KEYCODE_X && e.isAltPressed && !e.isCtrlPressed && !e.isMetaPressed) {
+            if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0) {
+                altGone(context)
+                Session.keysOff = !Session.keysOff
+                android.util.Log.i(ScouterService.TAG, "keyboard " + if (Session.keysOff) "off" else "on")
+                if (ScouterService.running)
+                    ScouterService.send(context, ScouterService.ACTION_PANEL, "do" to if (Session.keysOff) "keys:off" else "keys:on")
+                Session.changed()
+            }
+            return true
+        }
+        if (!Session.keysOff) return false
+        altGone(context)
+        return true
+    }
+
     private fun altHold(context: Context, e: KeyEvent) {
         val alt = e.keyCode == KeyEvent.KEYCODE_ALT_LEFT || e.keyCode == KeyEvent.KEYCODE_ALT_RIGHT
         if (alt && e.action == KeyEvent.ACTION_DOWN) {
@@ -59,13 +89,7 @@ object Hotkeys {
             }
             return
         }
-        if (alt || e.action == KeyEvent.ACTION_DOWN) { // Alt let go, or another key with it
-            main.removeCallbacks(altShow)
-            if (altShown) {
-                altShown = false
-                ScouterService.send(context, ScouterService.ACTION_PANEL, "do" to "althold:off")
-            }
-        }
+        if (alt || e.action == KeyEvent.ACTION_DOWN) altGone(context) // Alt let go, or another key with it
     }
 
     private fun shortcut(context: Context, e: KeyEvent): Boolean {
@@ -176,6 +200,15 @@ object Hotkeys {
         if (panel != null) {
             if (e.action == KeyEvent.ACTION_DOWN && (e.repeatCount == 0 || panel.startsWith("bright")))
                 ScouterService.send(context, ScouterService.ACTION_PANEL, "do" to panel)
+            return true
+        }
+        // Alt+C: the phone's screen on the glasses, shared first if it is not (VoxKeys taps Android's Start).
+        if (e.keyCode == KeyEvent.KEYCODE_C) {
+            if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0) {
+                if (ScouterService.running) ScouterService.send(context, ScouterService.ACTION_PANEL, "do" to "share")
+                else context.startActivity(Intent(context, MainActivity::class.java).putExtra(MainActivity.EXTRA_SHARE, true)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
             return true
         }
         // Alt+U: Tunes, the synthwave scene, on or off.
@@ -346,11 +379,59 @@ class VoxKeys : AccessibilityService() {
 
     override fun onKeyEvent(event: KeyEvent): Boolean = Hotkeys.handle(this, event)
 
-    // Which app is in front (its package name only, from window changes; the screen's content is never read), for
-    // the look the glasses keep per app. Vox, the system's own windows and keyboards are left out.
+    // Android's question to share the screen, asked by Vox itself (MainActivity.shareScreen): its Start button
+    // tapped for the user. The dialog can take a moment to come: looked for at each window change and every 200 ms
+    // for up to 15 s. Only the system UI's dialog that names this app, and only its start / share button.
+    private val ui = android.os.Handler(android.os.Looper.getMainLooper())
+    private var confirmUntil = 0L
+    private val confirmTick = object : Runnable {
+        override fun run() {
+            ui.removeCallbacks(this)
+            if (android.os.SystemClock.uptimeMillis() > confirmUntil) return
+            if (tapShare()) {
+                confirmUntil = 0L
+                return
+            }
+            ui.postDelayed(this, 200)
+        }
+    }
+
+    private fun startConfirm() {
+        confirmUntil = android.os.SystemClock.uptimeMillis() + 15000
+        ui.removeCallbacks(confirmTick)
+        ui.postDelayed(confirmTick, 100)
+    }
+
+    private fun tapShare(): Boolean {
+        val label = runCatching { applicationInfo.loadLabel(packageManager).toString() }.getOrDefault("Vox")
+        val roots = mutableListOf<android.view.accessibility.AccessibilityNodeInfo>()
+        runCatching { rootInActiveWindow?.let { roots += it } }
+        runCatching { windows.mapNotNullTo(roots) { it.root } }
+        for (root in roots) {
+            val pkg = root.packageName?.toString() ?: continue
+            if (!pkg.contains("systemui", true) && pkg != "android") continue
+            if (root.findAccessibilityNodeInfosByText(label).isEmpty()) continue // not Vox's question
+            for (word in SHARE_BUTTONS) for (n in root.findAccessibilityNodeInfosByText(word)) {
+                val t = (n.text ?: n.contentDescription)?.toString()?.trim()?.lowercase() ?: continue
+                if (t != word) continue
+                var c: android.view.accessibility.AccessibilityNodeInfo? = n
+                while (c != null && !c.isClickable) c = c.parent
+                if (c != null && c.isEnabled && c.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)) {
+                    android.util.Log.i(ScouterService.TAG, "share: tapped \"$t\" ($pkg)")
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    // Which app is in front (its package name only, from window changes), for the look the glasses keep per app.
+    // Vox, the system's own windows and keyboards are left out. A window change also looks for the share question's
+    // button while Vox waits for it (tapShare); no other content is read.
     private var imes: Set<String>? = null
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        if (confirmUntil > 0L) ui.post(confirmTick)
         val pkg = event.packageName?.toString() ?: return
         if (pkg == packageName || pkg == "com.android.systemui" || pkg == "android") return
         val keyboards = imes ?: runCatching {
@@ -423,5 +504,15 @@ class VoxKeys : AccessibilityService() {
 
         // Back, Home, Recents (AccessibilityService.GLOBAL_ACTION_*).
         fun global(action: Int): Boolean = instance?.performGlobalAction(action) ?: false
+
+        // The share question's buttons that start sharing (AOSP 14: Start; 15+: Share screen; One UI: Start now).
+        private val SHARE_BUTTONS = listOf("start now", "share screen", "start", "share", "next")
+
+        // Vox is about to ask Android to share the screen: tap its Start when it comes. False: VoxKeys is off.
+        fun confirmShare(): Boolean {
+            val s = instance ?: return false
+            android.os.Handler(android.os.Looper.getMainLooper()).post { s.startConfirm() }
+            return true
+        }
     }
 }

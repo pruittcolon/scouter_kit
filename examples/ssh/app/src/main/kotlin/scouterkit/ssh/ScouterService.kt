@@ -67,6 +67,7 @@ object Session {
     @Volatile var tabList = listOf<Tabs.Tab>() // the terminal's tabs (tmux windows), for the dashboard
     @Volatile var terms: Map<String, String> = emptyMap() // each terminal's state by server id (Term.status)
     @Volatile var keysToPhone = false // Alt+K: the keyboard types into the phone's apps even while the terminal shows
+    @Volatile var keysOff = false // Alt+X: the keyboard's keys do nothing anywhere (Alt+X aside) until Alt+X again
     @Volatile var pointerKeys = false // Alt+M put the pointer on: the arrows, Enter and Space are its
     @Volatile var tunes = false // the synthwave scene is on the glasses
     @Volatile var overlay = "" // a panel over what shows (Panels.HELP, SETTINGS, NOTE), or ""
@@ -1207,7 +1208,8 @@ class ScouterService : Service() {
     // A hotkey (Hotkeys, ACTION_PANEL): "help" (Alt+A), "settings" (Alt+S), "key:K" (up, down, left, right, enter,
     // esc, space while a panel is open), "lookup" (Alt+Z / Alt+L), "bright:1" / "bright:-1" (Alt+= / -),
     // "media:toggle", "media:prev", "media:next" (Alt+P, Alt+, / .), "althold:on" / "althold:off" (Alt held by
-    // itself: the help while it is held, unless a panel is open already).
+    // itself: the help while it is held, unless a panel is open already), "keys:off" / "keys:on" (Alt+X), "share"
+    // (Alt+C: the phone's screen, shared first if it is not).
     private fun hotkey(what: String) {
         when {
             what == "althold:on" -> if (Session.overlay.isEmpty() || Session.overlay == Panels.NOTE) {
@@ -1219,6 +1221,9 @@ class ScouterService : Service() {
                 if (Session.overlay == Panels.HELP) panelClose()
             }
             what == Panels.HELP || what == Panels.SETTINGS -> panelOpen(what)
+            what == "keys:off" -> note("Keyboard off: Alt+X turns it on")
+            what == "keys:on" -> note("Keyboard on")
+            what == "share" -> phoneScreen()
             what.startsWith("key:") -> panelKey(what.removePrefix("key:"))
             what == "lookup" -> lookUpOnly()
             what.startsWith("bright:") -> bright(what.removePrefix("bright:").toIntOrNull() ?: 0)
@@ -1658,14 +1663,24 @@ class ScouterService : Service() {
         val dir = if (settings.scrollNatural) dir0 else -dir0
         val lines = settings.scrollSpeed.coerceIn(1, 10) * steps
         val g = region()
-        val row = if (g[3] > 0 && ptrY >= 0) (ptrY / g[3]).toInt() else 0
-        val col = if (g[2] > 0) (ptrX / g[2]).toInt() else 0
-        if (ptrY < 0 && pointerBar >= 0) return barClick(if (dir < 0) "up" else "down")
+        // Where the wheel turns: under the pointer, or (it off) the terminal's middle.
+        val y = if (Session.pointer) ptrY else g[1] / 2f
+        val x = if (Session.pointer) ptrX else g[0] / 2f
+        val row = if (g[3] > 0 && y >= 0) (y / g[3]).toInt() else 0
+        val col = if (g[2] > 0) (x / g[2]).toInt() else 0
+        if (Session.pointer && ptrY < 0 && pointerBar >= 0) return barClick(if (dir < 0) "up" else "down")
         // The wheel: each event about 3 lines in tmux.
         val wheel = maxOf(1, (lines + 2) / 3)
         var taken = true
         repeat(wheel) { if (taken) taken = Native.mouse(if (dir < 0) 64 else 65, row, col) }
         if (taken) return
+        // tmux's mouse is off (only the pointer turned it on): on now, so the next scroll goes as the wheel at once;
+        // this one through its copy mode.
+        val t = SystemClock.uptimeMillis()
+        if (settings.tmuxMouse && t - mouseAskedAt > 20000) {
+            mouseAskedAt = t
+            tabs("mouse")
+        }
         val s = settings.active() ?: return
         if (Tabs.session(s) == null || terms[s.id]?.status != "connected") {
             Session.tabs = "scrolling needs tmux (or a program that takes the mouse)"
@@ -1675,6 +1690,8 @@ class ScouterService : Service() {
         scrollPending += dir * lines
         if (!scrolling) scrollFlush(s)
     }
+
+    private var mouseAskedAt = -20000L
 
     private fun scrollFlush(s: Settings.Server) {
         val n = scrollPending

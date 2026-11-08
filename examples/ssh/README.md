@@ -236,8 +236,9 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   notification (Android's RemoteInput), Escape cancels.
 - **Scrolling** (two fingers on the trackpad, its wheel; Settings, *Cursor speed*: speed, acceleration, scroll speed,
   natural scrolling): to the terminal's program as the mouse's wheel when it takes the mouse, else tmux's own history
-  (copy mode, ended by itself at the bottom) over the server's kept SSH connection; over the dashboard the tab before
-  or after.
+  (copy mode, ended by itself at the bottom) over the server's kept SSH connection, and tmux's mouse is switched on
+  then (*Mouse in tmux*) so the next scroll goes as the wheel at once; over the dashboard the tab before or after.
+  With the pointer off the wheel turns at the terminal's middle.
 - **Typing on the glasses** (*Type on the glasses*, Settings, *Keyboard and trackpad*, on by default; VoxKeys): while
   the terminal is the glasses' source (looking up or down), a keyboard paired with the phone types into it whatever app is in front
   (Keyboard.kt's key stream, as keyboard mode does); the Alt shortcuts stay shortcuts. Alt+K sends the keys to the
@@ -254,6 +255,12 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   pointer. With the phone's
   cursor on, typing goes to the phone's app: Space, and Enter once something was typed; an arrow key makes the keys
   the cursor's again.
+- **Keyboard off / on**: Alt+X; while off, the keyboard's keys do nothing anywhere (Alt+X aside), for a keyboard
+  in a bag or on the table. A note on the glasses says which.
+- **Sharing the phone's screen** (Alt+C, or choosing the phone's screen any way while it is not shared): Android's
+  question comes up and VoxKeys taps its Start (Start now, Share screen) itself, looking for it at each window
+  change and every 200 ms for 15 s, only in the system UI's dialog that names Vox; then the app that was in front
+  comes back.
 - **Closing**: Alt+Q closes the source shown (a terminal's connection, the phone's sharing, a server's screen) and
   the glasses go to the next one still open; a closed one stays closed until it is chosen again.
 - **Look-up only**: Alt+Z (or Alt+L) switches between *Always visible* and look-up only (the terminal shows when

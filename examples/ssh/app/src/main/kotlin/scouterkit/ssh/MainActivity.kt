@@ -30,6 +30,7 @@ class MainActivity : Activity() {
     private lateinit var powerDisc: FrameLayout
     private lateinit var powerIcon: IconView
     private var powerShown: Boolean? = null
+    private var shareAway = false // the share was asked from outside the app: back to what was in front after
     private var sharingShown: Boolean? = null
     private lateinit var statusLine: TextView
     private lateinit var bannerBox: LinearLayout
@@ -1474,6 +1475,7 @@ class MainActivity : Activity() {
         }
         if (intent.getBooleanExtra(EXTRA_SHARE, false)) {
             intent.removeExtra(EXTRA_SHARE)
+            shareAway = true
             return shareScreen()
         }
         if (!BuildConfig.DEBUG) return
@@ -1576,7 +1578,10 @@ class MainActivity : Activity() {
             if (result == RESULT_OK && data != null) {
                 startingAt = android.os.SystemClock.elapsedRealtime()
                 ScouterService.sendScreen(this, result, data)
+                // Asked from elsewhere (a hotkey, the glasses): the app that was in front comes back.
+                if (shareAway) moveTaskToBack(true)
             } else note = "Screen sharing was not allowed."
+            shareAway = false
             show()
         }
     }
@@ -1603,6 +1608,7 @@ class MainActivity : Activity() {
         val ask = if (android.os.Build.VERSION.SDK_INT >= 34)
             projection.createScreenCaptureIntent(android.media.projection.MediaProjectionConfig.createConfigForDefaultDisplay())
         else projection.createScreenCaptureIntent()
+        VoxKeys.confirmShare() // its Start tapped for the user (VoxKeys on)
         startActivityForResult(ask, SCREEN_REQUEST)
     }
 
