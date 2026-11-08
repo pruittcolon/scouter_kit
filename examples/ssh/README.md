@@ -267,6 +267,13 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   on a screen a picture composed into its frames (`ScreenMirror::SetOverlay`, the capture asked for a frame), so
   what is under them keeps running and they come and go at once. The terminal shows whatever the head's angle
   while one is open.
+- **The charging case's log** (Settings, *Troubleshooting*, *Charging case log*; `CaseLogActivity.kt`): the case's
+  USB-C port (a USB-to-serial chip inside it, the one Even's case updater uses) carries what its firmware prints at
+  115200 baud: each arm's NFC charging state, the arm's battery report (VRECT, level, charge flag, current), card
+  lost, no answer, two tags seen, the case's battery and temperature. With the case on the phone by a USB-C data
+  cable the screen reads it (CH34x, CP210x, FTDI or CDC set up directly, no library), sums each arm up with what
+  each finding means, and keeps a copy in Android/data/<package>/files/caselog.txt. Android offers Vox when such
+  a chip is plugged in.
 - **Display off and on** (Alt+0): the CRT close plays to its end before the panels go off (`PanelsOffAfterFx`), and
   the picture opens from the middle when it comes back.
 

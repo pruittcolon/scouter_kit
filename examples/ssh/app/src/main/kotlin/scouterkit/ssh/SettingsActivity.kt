@@ -243,6 +243,9 @@ class SettingsActivity : Activity() {
         trouble.addView(button("Open Developer options") {
             runCatching { startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
         })
+        trouble.addView(button("Charging case log (connect the case by USB-C)") {
+            startActivity(Intent(this, CaseLogActivity::class.java))
+        })
         diagnostics = text("", 11.5f, Ui.FAINT, Ui.MONO).apply { setPadding(0, dp(10), 0, 0) }
         trouble.addView(diagnostics)
 
