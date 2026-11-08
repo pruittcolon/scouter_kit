@@ -829,8 +829,8 @@ class MainActivity : Activity() {
         carBox.addView(text("In the car, press Next on the steering wheel, wait for the chime, talk, then press Next " +
             "again to send. Claude's answer is read aloud through the car; the music pauses meanwhile and comes back " +
             "after. Next while Claude talks: ask again. Play / pause stops the answer, Previous hears it again. " +
-            "Previous otherwise starts a new conversation (a new Claude tab, shown on the glasses). It listens on the " +
-            "glasses' microphone.", 13f, Ui.MUTED).apply { setPadding(0, dp(4), 0, dp(6)) })
+            "Previous otherwise starts a new conversation (a new Claude tab). It listens on the glasses' microphone; " +
+            "while Car mode is on the glasses' display stays off, since you are driving.", 13f, Ui.MUTED).apply { setPadding(0, dp(4), 0, dp(6)) })
         carBox.addView(segmented(listOf("auto" to "When the car connects", "on" to "Always", "off" to "Off"), settings.carMode) {
             settings.carMode = it
             ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "car_check")

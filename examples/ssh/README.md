@@ -336,8 +336,10 @@ choose from), else Android's text-to-speech (its best installed voice). Chimes, 
 (rising), sent (falling), a soft tick while Claude thinks, a low pair for a problem, a step down when nothing was
 sent. Next while Claude speaks or thinks asks again; play / pause stops the answer or cancels; Previous says the
 answer again. Idle, play / pause goes to the music app and Previous starts a new conversation: a new tmux tab in
-front running a fresh `claude --model sonnet` (quicker for talk; the glasses show it), where the next question
-goes (a chat: its session forgotten). The car's screen shows what Vox does, or what
+front running a fresh `claude --model sonnet` (quicker for talk), where the next question goes (a chat: its
+session forgotten). While Car mode is on the glasses' display stays off (driving): it goes dark when Car mode comes
+on or the glasses connect, panels and the phone waking don't light it, nothing of Car mode's is drawn on them, and
+it comes back when Car mode ends (only the user turning it on lights it meanwhile). The car's screen shows what Vox does, or what
 plays.
 
 ## From the phone alone (Termux, the phone's screen)

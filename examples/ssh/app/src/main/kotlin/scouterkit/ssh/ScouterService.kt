@@ -640,6 +640,7 @@ class ScouterService : Service() {
         work.removeCallbacks(batteryTicker)
         work.postDelayed(batteryTicker, 3000)
         header() // the dashboard on the new terminal
+        if (car != null) display(false, "car mode") // driving: nothing on the glasses
     }
 
     // An arm's bond is gone, or its encryption failed: no reconnect and no pairing (Android would pair again by
@@ -2234,6 +2235,7 @@ class ScouterService : Service() {
 
     private var car: CarMode? = null
     private var carListener: VoiceListener? = null
+    private var carBlanked = false // Car mode turned the glasses' display off
     private val carDevices = HashMap<String, String>() // a car's Bluetooth address: its name
 
     private val carHost = object : CarHost {
@@ -2256,7 +2258,11 @@ class ScouterService : Service() {
         override fun carStopListening() {
             carListener?.stop()
         }
-        override fun carBand(text: String, hold: Boolean) = voiceSay(text, hold)
+        // Not on the glasses while driving: the app's Voice tab shows it.
+        override fun carBand(text: String, hold: Boolean) {
+            Session.voice = text
+            Session.changed()
+        }
         override fun carServer(): Settings.Server? {
             val list = settings.servers()
             return list.firstOrNull { it.id == settings.carServer } ?: list.firstOrNull { it.local } ?: settings.active()
@@ -2367,11 +2373,16 @@ class ScouterService : Service() {
             val greet = settings.carGreets < 3
             if (greet) settings.carGreets = settings.carGreets + 1
             car = CarMode(this, carHost).also { it.start(greet) }
+            // Driving: the glasses go dark (back on when Car mode ends, if it was Car mode that turned them off).
+            carBlanked = !Session.blank
+            display(false, "car mode")
         } else if (!want && car != null) {
             Log.i(TAG, "car mode off")
             car?.release()
             car = null
             carListener?.stop()
+            if (carBlanked) display(true, "car mode off")
+            carBlanked = false
         }
         carHost.carChanged()
     }
@@ -2639,6 +2650,9 @@ class ScouterService : Service() {
     // The display on or off; why: for the status line.
     private fun display(on: Boolean, why: String) {
         if (!on == Session.blank) return
+        // Car mode (driving): the glasses stay dark; only the user turning them on (the app, a hotkey, voice, a
+        // TouchBar action) lights them, never a panel or the phone waking.
+        if (on && car != null && (why == "panel" || why == "phone on")) return
         if (!on) panelClose()
         // A CRT switching off (the picture closes to a line, then a dot) or on (it opens from the middle).
         if (settings.animations && glassesWith != null)
