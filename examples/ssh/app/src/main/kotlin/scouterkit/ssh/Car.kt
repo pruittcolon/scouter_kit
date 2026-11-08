@@ -237,9 +237,11 @@ class CarSpeech(private val context: Context, private val onDone: (String) -> Un
     fun speak(text: String, id: String) {
         stop()
         val rate = settings.carRate.coerceIn(60, 160) / 100f
-        val parts = split(clean(text), 300)
-        if (useKokoro()) return kokoro(parts, rate, id)
-        android(parts, rate, id)
+        val said = clean(text)
+        // Kokoro: one sentence (or a clause of a long one) at a time, so each is made while the one before plays
+        // (a long piece took seconds to make and left a gap after the first sentence).
+        if (useKokoro()) return kokoro(phrases(said, 140), rate, id)
+        android(split(said, 300), rate, id)
     }
 
     private fun android(parts: List<String>, rate: Float, id: String) {
@@ -274,7 +276,7 @@ class CarSpeech(private val context: Context, private val onDone: (String) -> Un
                     val a = runCatching { synchronized(KokoroModel) { k.generate(p, sid, rate) } }
                         .onFailure { Log.w(ScouterService.TAG, "car: Kokoro: ${it.message}") }.getOrNull()
                     if (a != null && a.samples.isNotEmpty()) {
-                        if (made == 0) Log.i(ScouterService.TAG, "car: Kokoro (voice $sid) made its first ${a.samples.size * 1000L / hz} ms " +
+                        Log.i(ScouterService.TAG, "car: Kokoro (voice $sid) made ${a.samples.size * 1000L / hz} ms of speech " +
                             "in ${SystemClock.uptimeMillis() - t0} ms")
                         made++
                         queue.put(a.samples)
@@ -345,7 +347,30 @@ class CarSpeech(private val context: Context, private val onDone: (String) -> Un
             .replace(Regex("\\s+"), " ")
             .trim()
 
-        // Sentences, joined up to max characters (Kokoro starts on the first one at once).
+        // Each sentence on its own, a long one cut at its commas or semicolons into pieces of up to about max.
+        fun phrases(text: String, max: Int): List<String> {
+            if (text.isEmpty()) return listOf("Done.")
+            val out = mutableListOf<String>()
+            for (s in text.split(Regex("(?<=[.!?])\\s+"))) {
+                if (s.isBlank()) continue
+                if (s.length <= max) {
+                    out += s
+                    continue
+                }
+                val sb = StringBuilder()
+                for (c in s.split(Regex("(?<=[,;:])\\s+"))) {
+                    if (sb.isNotEmpty() && sb.length + c.length + 1 > max) {
+                        out += sb.toString()
+                        sb.setLength(0)
+                    }
+                    if (c.length > max) c.chunked(max).forEach { out += it } else sb.append(if (sb.isEmpty()) c else " $c")
+                }
+                if (sb.isNotEmpty()) out += sb.toString()
+            }
+            return out.ifEmpty { listOf("Done.") }
+        }
+
+        // Sentences, joined up to max characters (Android's voice).
         fun split(text: String, max: Int): List<String> {
             if (text.isEmpty()) return listOf("Done.")
             val out = mutableListOf<String>()
