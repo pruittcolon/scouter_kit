@@ -27,6 +27,9 @@ object Media {
 
     @Volatile var now: Now? = null
     @Volatile var onChange: (() -> Unit)? = null
+    // Another app's playing started (Car mode takes the car's buttons back then).
+    @Volatile var onStarted: (() -> Unit)? = null
+    private var wasPlaying = false
     private val main = Handler(Looper.getMainLooper())
     private var manager: MediaSessionManager? = null
     private var controller: MediaController? = null
@@ -70,8 +73,10 @@ object Media {
         runCatching { pick(m.getActiveSessions(ComponentName(c, VoxNotifications::class.java))) }
     }
 
-    // The session to show: one that plays, else the first (Android lists the most recent first).
-    private fun pick(list: List<MediaController>) {
+    // The session to show: one that plays, else the first (Android lists the most recent first); not Vox's own
+    // (Car mode's, which shows the car what plays).
+    private fun pick(all: List<MediaController>) {
+        val list = all.filter { it.packageName != appContext?.packageName }
         val best = list.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING } ?: list.firstOrNull()
         if (best?.sessionToken != controller?.sessionToken) {
             controller?.unregisterCallback(callback)
@@ -87,9 +92,13 @@ object Media {
         val state = c?.playbackState
         if (c == null || (meta == null && state == null)) {
             now = null
+            wasPlaying = false
             onChange?.invoke()
             return
         }
+        val playing = state?.state == PlaybackState.STATE_PLAYING
+        if (playing && !wasPlaying) onStarted?.invoke()
+        wasPlaying = playing
         val title = meta?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: meta?.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE) ?: ""
         val artist = meta?.getString(MediaMetadata.METADATA_KEY_ARTIST) ?: meta?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST)
             ?: meta?.getString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE) ?: ""

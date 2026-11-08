@@ -62,6 +62,7 @@ class MainActivity : Activity() {
     private lateinit var defaultChip: TextView
     private var screenBuiltFor: String? = null // the look the Screen tab's controls were made with
     private lateinit var voiceState: TextView
+    private lateinit var carState: TextView
     private lateinit var voiceModel: TextView
     private lateinit var modelButton: TextView
     private lateinit var micDisc: FrameLayout
@@ -812,6 +813,32 @@ class MainActivity : Activity() {
         model.addView(row)
         page.addView(model)
 
+        // Car mode (Car.kt): Claude by voice through the car.
+        val carBox = page.section("Car mode", "voice_car", "mic", open = true)
+        carState = text("", 15f, Ui.TEXT, Ui.BOLD)
+        carBox.addView(carState)
+        carBox.addView(text("In the car, the steering wheel's Next button talks to Claude: press it and talk; it sends " +
+            "when you pause (or press Next again, or hold Next while you talk). Claude's answer is read aloud through the " +
+            "car and the music ducks meanwhile; chimes say when it listens, sends and thinks. Play / pause sends, or stops " +
+            "the answer; Previous hears it again. Say \"new conversation\" to start over. It listens on the glasses' " +
+            "microphone.", 13f, Ui.MUTED).apply { setPadding(0, dp(4), 0, dp(6)) })
+        carBox.addView(segmented(listOf("auto" to "When the car connects", "on" to "Always", "off" to "Off"), settings.carMode) {
+            settings.carMode = it
+            ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "car_check")
+            showVoice()
+        })
+        val servers = settings.servers()
+        if (servers.size > 1) {
+            carBox.addView(text("Claude runs on", 13f, Ui.FAINT).apply { setPadding(0, dp(6), 0, 0) })
+            val chosen = servers.firstOrNull { it.id == settings.carServer } ?: servers.firstOrNull { it.local } ?: settings.active()
+            carBox.addView(segmented(servers.map { it.id to it.name }, chosen?.id ?: "") { settings.carServer = it })
+        }
+        carBox.addView(slider("Speaking speed", 60, 160, settings.carRate, { "$it%" }) { settings.carRate = it })
+        carBox.addView(chipRow(
+            chip("Test the sound", true) { ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "car_test") },
+            chip("New conversation", false) { ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "car_new") },
+        ))
+
         val cmds = page.section("Your commands", "voice_cmds", "list", open = true)
         commandsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         cmds.addView(commandsBox)
@@ -868,6 +895,14 @@ class MainActivity : Activity() {
         val r = dp(18).toFloat()
         modelButton.background = ripple(if (ready) rounded(Ui.RAISED, r, dp(1), Ui.STROKE) else accentGradient(r), r)
         modelButton.setTextColor(if (ready) Ui.TEXT else Ui.ON_ACCENT)
+        val car = when (Session.car) {
+            "" -> if (Settings(this).carMode == "off") "Off" else "Waiting for the car (its Bluetooth audio)"
+            "listening" -> "Listening…"
+            "thinking" -> "Claude is thinking…"
+            "speaking" -> "Speaking"
+            else -> "On" + (if (Session.carName.isNotEmpty()) " · ${Session.carName}" else "") + ": press Next to talk"
+        }
+        if (::carState.isInitialized && carState.text.toString() != car) carState.text = car
         val said = Session.voice.replace(ScouterService.MIC, "").trim()
         voiceState.text = (if (Session.listening) said.ifEmpty { "Listening…" } else said.ifEmpty { "Tap to speak" }) +
             if (Session.dictating) " · dictating" else ""

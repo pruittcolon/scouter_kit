@@ -51,6 +51,8 @@ object Session {
     @Volatile var voice = "" // voice: what the band says (or last said)
     @Volatile var listening = false
     @Volatile var dictating = false // what is said is typed into the terminal
+    @Volatile var car = "" // Car mode: "" off, else its state (idle, listening, thinking, speaking)
+    @Volatile var carName = "" // the car connected (its Bluetooth name), or ""
     @Volatile var pointer = false // the pointer is on (its keys move and click it)
     @Volatile var tabs = "" // the last tab action's problem, if any
     // The glasses' cursor on the phone's screen, in 1/10000 of its width and height (-1: none): drawn into the
@@ -234,8 +236,14 @@ class ScouterService : Service() {
         }
         settings.listen(lookPrefs)
         work.postDelayed(windowPoll, 3000)
-        Media.onChange = { work.post { dash() } }
+        Media.onChange = { work.post { dash(); car?.show() } }
+        Media.onStarted = { work.post { car?.reclaim() } }
         Media.start(this)
+        registerReceiver(carLink, IntentFilter().apply {
+            addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+            addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+        })
+        carScan()
         work.postDelayed(mediaTick, 1000)
         work.postDelayed(tunesTick, 500)
         LookUp.onChange = { work.post { header() } }
@@ -333,6 +341,13 @@ class ScouterService : Service() {
             // Voice: "listen" (one command; again: stop), "stop", or "always" (Settings.voiceAlways changed).
             ACTION_VOICE -> work.post {
                 when (intent.getStringExtra("mode")) {
+                    "car_check" -> carCheck()
+                    "car_test" -> carTest()
+                    "car_new" -> {
+                        settings.carSession = ""
+                        car?.newConversation()
+                    }
+                    "car_talk" -> car?.talk()
                     "stop" -> stopListening()
                     "always" -> {
                         if (!settings.voiceAlways && listener?.once == false) stopListening()
@@ -391,6 +406,12 @@ class ScouterService : Service() {
         VoxKeys.onApp = null
         settings.unlisten(lookPrefs)
         work.removeCallbacks(windowPoll)
+        runCatching { unregisterReceiver(carLink) }
+        Media.onStarted = null
+        car?.release()
+        car = null
+        carListener?.stop()
+        Session.car = ""
         Media.onChange = null
         Media.stop()
         work.removeCallbacks(mediaTick)
@@ -2142,6 +2163,7 @@ class ScouterService : Service() {
     // Listening on the glasses' microphone: once (push to talk: a TouchBar gesture, Alt+Space, the app; again
     // stops it) or always (Settings.voiceAlways: phrases that start with "Vox").
     private fun listen(once: Boolean) {
+        if (carListener != null) return // Car mode has the microphone
         if (listener != null || voiceLoading) {
             if (once) stopListening()
             return
@@ -2198,10 +2220,153 @@ class ScouterService : Service() {
 
     // Always listening: on while the glasses are up and the setting is on (not again within 30 s of a failure).
     private fun voiceAlways() {
-        if (!settings.voiceAlways || listener != null || voiceLoading || ended || Session.glasses != "ready") return
+        if (!settings.voiceAlways || listener != null || carListener != null || voiceLoading || ended || Session.glasses != "ready") return
         if (!VoiceModel.available || !VoiceModel.ready(this)) return
         if (SystemClock.elapsedRealtime() - voiceFailedAt < 30000) return
         listen(false)
+    }
+
+    // ------------------------------------------------ car mode (Car.kt)
+
+    private var car: CarMode? = null
+    private var carListener: VoiceListener? = null
+    private val carDevices = HashMap<String, String>() // a car's Bluetooth address: its name
+
+    private val carHost = object : CarHost {
+        override val handler get() = work
+        override fun carListen(onPartial: (String) -> Unit, onPhrase: (String) -> Unit, onSpeaking: (Boolean) -> Unit,
+                               onEnd: (String) -> Unit) = carMic(onPartial, onPhrase, onSpeaking, onEnd, 0)
+        override fun carStopListening() {
+            carListener?.stop()
+        }
+        override fun carBand(text: String, hold: Boolean) = voiceSay(text, hold)
+        override fun carServer(): Settings.Server? {
+            val list = settings.servers()
+            return list.firstOrNull { it.id == settings.carServer } ?: list.firstOrNull { it.local } ?: settings.active()
+        }
+        override fun carVault() = vault
+        override fun carChanged() {
+            Session.car = car?.state?.name?.lowercase() ?: ""
+            Session.changed()
+        }
+    }
+
+    // The glasses' microphone for Car mode: always listening gives it up first (its microphone let go before this
+    // one starts: tries again every 100 ms for up to 2 s).
+    private fun carMic(onPartial: (String) -> Unit, onPhrase: (String) -> Unit, onSpeaking: (Boolean) -> Unit,
+                       onEnd: (String) -> Unit, tries: Int) {
+        if (!VoiceModel.available) return onEnd("This Vox has no speech engine")
+        if (!VoiceModel.ready(this)) return onEnd("Download the speech model in Vox, on the Voice tab, first")
+        if (Session.glasses != "ready") return onEnd("Connect the glasses to talk to Claude")
+        if (carListener != null) return onEnd("")
+        if (listener != null || voiceLoading) {
+            listener?.stop()
+            if (tries >= 20) return onEnd("The microphone is busy")
+            work.postDelayed({ carMic(onPartial, onPhrase, onSpeaking, onEnd, tries + 1) }, 100)
+            return
+        }
+        voiceLoading = true
+        Thread {
+            val engine = voiceEngine ?: runCatching { VoiceEngine(this) }.getOrElse { e ->
+                work.post {
+                    voiceLoading = false
+                    onEnd("The speech model did not load: ${e.message}")
+                }
+                return@Thread
+            }
+            voiceEngine = engine
+            work.post {
+                voiceLoading = false
+                if (ended) return@post onEnd("")
+                lateinit var l: VoiceListener
+                l = VoiceListener(engine, settings.voiceRealtime, false, onPartial = onPartial, onPhrase = onPhrase,
+                    onEnd = { why ->
+                        work.post {
+                            if (carListener === l) carListener = null
+                            Session.listening = listener != null
+                            Session.changed()
+                            onEnd(why)
+                            work.postDelayed({ voiceAlways() }, 1500)
+                        }
+                    },
+                    onSpeaking = onSpeaking, flushOnStop = true)
+                carListener = l
+                Session.listening = true
+                Session.changed()
+                l.start()
+            }
+        }.start()
+    }
+
+    // A car's audio connected or gone (Bluetooth class car audio or hands-free).
+    private val carLink = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            val d: BluetoothDevice = (if (Build.VERSION.SDK_INT >= 33) i.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+            else @Suppress("DEPRECATION") i.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)) ?: return
+            val name = runCatching { d.name }.getOrNull() ?: "the car"
+            Log.i(TAG, "bt: $name ${i.action?.substringAfterLast('.')}, class " +
+                Integer.toHexString(runCatching { d.bluetoothClass?.deviceClass ?: 0 }.getOrDefault(0)))
+            if (!CarMode.isCar(d)) return
+            work.post {
+                if (i.action == BluetoothDevice.ACTION_ACL_CONNECTED) carDevices[d.address] = name else carDevices.remove(d.address)
+                Log.i(TAG, "car: ${if (i.action == BluetoothDevice.ACTION_ACL_CONNECTED) "connected" else "gone"} ($name)")
+                carCheck()
+            }
+        }
+    }
+
+    // A car connected already when Vox starts: its audio profiles' devices.
+    private fun carScan() {
+        val bt = getSystemService(BluetoothManager::class.java)?.adapter ?: return
+        for (profile in listOf(android.bluetooth.BluetoothProfile.A2DP, android.bluetooth.BluetoothProfile.HEADSET)) runCatching {
+            bt.getProfileProxy(this, object : android.bluetooth.BluetoothProfile.ServiceListener {
+                override fun onServiceConnected(p: Int, proxy: android.bluetooth.BluetoothProfile) {
+                    val found = runCatching {
+                        proxy.connectedDevices.filter { CarMode.isCar(it) }.map { it.address to (runCatching { it.name }.getOrNull() ?: "the car") }
+                    }.getOrDefault(emptyList())
+                    runCatching { bt.closeProfileProxy(p, proxy) }
+                    work.post {
+                        found.forEach { (a, n) -> carDevices[a] = n }
+                        carCheck()
+                    }
+                }
+                override fun onServiceDisconnected(p: Int) {}
+            }, profile)
+        }
+        work.post { carCheck() }
+    }
+
+    // On while a car is connected (Settings.carMode "auto"), or always ("on"), or never.
+    private fun carCheck() {
+        if (ended) return
+        val want = when (settings.carMode) {
+            "on" -> true
+            "off" -> false
+            else -> carDevices.isNotEmpty()
+        }
+        Session.carName = carDevices.values.firstOrNull() ?: ""
+        if (want && car == null) {
+            Log.i(TAG, "car mode on")
+            val greet = settings.carGreets < 3
+            if (greet) settings.carGreets = settings.carGreets + 1
+            car = CarMode(this, carHost).also { it.start(greet) }
+        } else if (!want && car != null) {
+            Log.i(TAG, "car mode off")
+            car?.release()
+            car = null
+            carListener?.stop()
+        }
+        carHost.carChanged()
+    }
+
+    // The Voice tab's test: the chimes and a line in the car's voice (without Car mode on too).
+    private fun carTest() {
+        car?.let { return it.test() }
+        CarSounds.play(CarSounds.Sound.LISTEN)
+        work.postDelayed({ CarSounds.play(CarSounds.Sound.SEND) }, 700)
+        val speech = CarSpeech(this) {}
+        work.postDelayed({ speech.speak("This is how Claude sounds in the car.", settings.carRate.coerceIn(60, 160) / 100f, "test") }, 1500)
+        work.postDelayed({ speech.release() }, 9000)
     }
 
     // A phrase: a command (always listening: only after "Vox"), or, while dictating, text for the terminal.

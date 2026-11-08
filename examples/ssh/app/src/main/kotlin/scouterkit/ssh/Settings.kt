@@ -347,6 +347,15 @@ class Settings(context: Context) {
         prefs.edit().putString("voice_commands", a.toString()).apply()
     }
 
+    // Car mode (Car.kt): "auto" (when a car's Bluetooth audio connects), "on", "off"; the server Claude runs on (its
+    // id; empty: this phone's, else the one in use), how fast answers are read (%), the car's conversation (Claude's
+    // session id; empty: a new one).
+    var carMode: String by Text("car_mode", "auto")
+    var carServer: String by Text("car_server", "")
+    var carRate: Int by Number("car_rate", 105)
+    var carSession: String by Text("car_session", "")
+    var carGreets: Int by Number("car_greets", 0) // times Car mode said how it works (the first three)
+
     // The pointer turns tmux's mouse on (so clicks reach tmux: tabs, panes, scrolling).
     var tmuxMouse: Boolean
         get() = prefs.getBoolean("tmux_mouse", true)

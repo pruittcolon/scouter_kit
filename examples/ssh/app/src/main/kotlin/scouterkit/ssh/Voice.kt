@@ -171,7 +171,8 @@ private class Floats {
 // The glasses' microphone to phrases: Silero VAD cuts what is said at each pause and Parakeet reads the phrase;
 // with realtime on, the phrase so far is read again every 0.6 s while it is spoken (onPartial). once: until the
 // first phrase (push to talk; 8 s for it to start, 20 s in all), else until stop(). onEnd: why it ended ("" for
-// a phrase or stop()).
+// a phrase or stop()). onSpeaking: speech started (true) or a phrase ended (false). flushOnStop: stopped mid-phrase,
+// what was said of it so far is read too (Car mode: Next pressed while still talking).
 class VoiceListener(
     private val engine: VoiceEngine,
     private val realtime: Boolean,
@@ -179,6 +180,8 @@ class VoiceListener(
     private val onPartial: (String) -> Unit,
     private val onPhrase: (String) -> Unit,
     private val onEnd: (String) -> Unit,
+    private val onSpeaking: (Boolean) -> Unit = {},
+    private val flushOnStop: Boolean = false,
 ) {
     @Volatile private var stopped = false
 
@@ -232,6 +235,7 @@ class VoiceListener(
                         phrase.clear()
                         phrase.add(before.toArray(), before.size)
                         before.clear()
+                        onSpeaking(true)
                     }
                     if (speaking && realtime && now - lastPartial > 600 && phrase.size > 8000) {
                         lastPartial = now
@@ -243,6 +247,7 @@ class VoiceListener(
                         vad.pop()
                         speaking = false
                         phrase.clear()
+                        onSpeaking(false)
                         val t = engine.text(seg.samples)
                         if (t.isNotEmpty()) {
                             heard = true
@@ -256,6 +261,10 @@ class VoiceListener(
                     break
                 }
                 if (once && now - started > 20000) break
+            }
+            if (flushOnStop && stopped && speaking && phrase.size > 4800) {
+                val t = engine.text(phrase.toArray())
+                if (t.isNotEmpty()) onPhrase(t)
             }
         } catch (e: Exception) {
             why = e.message ?: "voice stopped"

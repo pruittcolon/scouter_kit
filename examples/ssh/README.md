@@ -309,6 +309,22 @@ SHA-256, resumed where it stopped).
   Enter, Escape, Tab, Control C, Up, Down, dictation (everything said is typed; "send" is Enter), and the user's
   own phrases (Voice tab: a phrase and what it does).
 
+### Car mode
+
+Claude by voice in the car (`Car.kt`; Voice tab, *Car mode*: when the car connects, always, or off). It comes on
+when a car's Bluetooth audio connects (Bluetooth class car audio or hands-free) and takes the car's media keys: a
+media session of its own, which Android gives the keys once Vox has played a moment of silence (the last app to
+start playing gets them; again whenever another app starts playing). Next (the steering wheel's skip) listens on
+the glasses' microphone, Parakeet as above; it sends after a pause of about a second and a half, at Next again, or
+when a held Next is let go. The words go to `claude -p --output-format json` on a saved server (this phone's by
+default; the prompt on stdin, `--append-system-prompt` asks for short spoken sentences without markdown, web
+search and fetch allowed, the conversation resumed by its session id until "new conversation"), over its own SSH
+connection. The answer is read aloud by Android's text-to-speech (the best installed voice for the phone's
+language, *Speaking speed*) through the car, the music ducked meanwhile (transient focus, may duck). Chimes, made
+in code: listening (rising), sent (falling), a soft tick while Claude thinks, a low pair for a problem, a step down
+when nothing was sent. Play / pause sends, cancels or stops the answer (idle: passed to the music app), Previous
+says the answer again (idle: the music's previous track). The car's screen shows what Vox does, or what plays.
+
 ## From the phone alone (Termux, the phone's screen)
 
 No keyer needed: the main screen's buttons start a session that runs until Stop (also in the notification),
