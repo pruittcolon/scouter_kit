@@ -2114,6 +2114,9 @@ class ScouterService : Service() {
         if (ended) return
         if (Media.now == null) Media.start(this) // notification access may have come since
         Weather.refresh(settings) { work.post { dash() } } // every 30 minutes
+        // The game score while a dashboard shows it (every 50 s around a game, else every 15 minutes).
+        if (settings.dashRows > 0 && Dashboard.layout(settings).widgets.any { it.type == Dashboard.SPORTS })
+            Sports.refresh(this, settings) { work.post { dash() } }
         Native.lookUpHeader(LookUp.lines(this, settings))
         dash()
     }

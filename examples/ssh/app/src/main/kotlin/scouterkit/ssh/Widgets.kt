@@ -2,6 +2,9 @@ package scouterkit.ssh
 
 import android.content.ContentUris
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.content.pm.PackageManager
 import android.os.SystemClock
 import android.provider.CalendarContract
@@ -189,5 +192,185 @@ object Timer {
         val s = (ms + 999) / 1000
         return if (s >= 3600) String.format(Locale.US, "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
         else String.format(Locale.US, "%d:%02d", s / 60, s % 60)
+    }
+}
+
+// The dashboard's game score (Dashboard.SPORTS): ESPN's public scoreboard (no account, no key) for the NFL team in
+// Settings.sportsTeam (its letters: NE). This week's game of that team from the league's scoreboard (live: the score,
+// quarter and clock, down and distance, who has the ball, the red zone), else its next game from the team's page.
+// Asked every 50 s while the game is on or within half an hour of its kickoff, else every 15 minutes, off the
+// caller's thread. Each team's logo is fetched once and made to show on the glasses: lit where the logo is, by its
+// brightness, so a navy logo isn't lost on their black.
+object Sports {
+    class Side(val abbr: String, val name: String, val score: String, val record: String, val home: Boolean, val logo: Bitmap?)
+    class Game(val state: String, val clock: String, val us: Side, val them: Side, val down: String, val ball: String,
+               val redZone: Boolean, val tv: String, val start: Long, val lastPlay: String) {
+        val away get() = if (us.home) them else us
+        val home get() = if (us.home) us else them
+    }
+
+    @Volatile var game: Game? = null
+    @Volatile var problem = ""
+    @Volatile private var fetchedAt = 0L
+    @Volatile private var fetchedFor = ""
+    @Volatile private var fetching = false
+    private val logos = HashMap<String, Bitmap?>()
+    private const val API = "https://site.api.espn.com/apis/site/v2/sports/football/nfl"
+
+    fun team(settings: Settings) = settings.sportsTeam.trim().uppercase(Locale.US).ifEmpty { "NE" }
+
+    fun refresh(context: Context, settings: Settings, force: Boolean = false, done: () -> Unit = {}) {
+        val team = team(settings)
+        val g = game
+        val soon = g != null && (g.state == "in" || (g.state == "pre" && g.start - System.currentTimeMillis() < 30 * 60_000L))
+        val every = when {
+            soon -> 50_000L
+            g == null -> 2 * 60_000L
+            else -> 15 * 60_000L
+        }
+        if (fetching || (!force && fetchedFor == team && SystemClock.elapsedRealtime() - fetchedAt < every)) return
+        fetching = true
+        Thread {
+            runCatching {
+                var ev = find(get("$API/scoreboard").optJSONArray("events"), team)
+                if (ev == null) ev = get("$API/teams/${team.lowercase(Locale.US)}").optJSONObject("team")
+                    ?.optJSONArray("nextEvent")?.optJSONObject(0)
+                game = parse(context, ev ?: throw IllegalStateException("no game found for $team"), team)
+                problem = ""
+            }.onFailure {
+                problem = it.message ?: "no score"
+                if (fetchedFor != team) game = null
+            }
+            fetchedAt = SystemClock.elapsedRealtime()
+            fetchedFor = team
+            fetching = false
+            done()
+        }.start()
+    }
+
+    private fun find(events: org.json.JSONArray?, team: String): JSONObject? {
+        if (events == null) return null
+        for (i in 0 until events.length()) {
+            val e = events.optJSONObject(i) ?: continue
+            val cs = e.optJSONArray("competitions")?.optJSONObject(0)?.optJSONArray("competitors") ?: continue
+            for (j in 0 until cs.length())
+                if (cs.optJSONObject(j)?.optJSONObject("team")?.optString("abbreviation").equals(team, true)) return e
+        }
+        return null
+    }
+
+    private fun parse(context: Context, ev: JSONObject, team: String): Game {
+        val comp = ev.getJSONArray("competitions").getJSONObject(0)
+        val status = comp.optJSONObject("status") ?: ev.optJSONObject("status") ?: JSONObject()
+        val type = status.optJSONObject("type") ?: JSONObject()
+        val state = type.optString("state", "pre")
+        val start = runCatching {
+            java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mmX", Locale.US).parse(ev.optString("date"))?.time
+        }.getOrNull() ?: 0L
+        val cs = comp.getJSONArray("competitors")
+        val sides = (0 until cs.length()).map { cs.getJSONObject(it) }
+        val ids = HashMap<String, String>()
+        fun side(c: JSONObject): Side {
+            val t = c.optJSONObject("team") ?: JSONObject()
+            val abbr = t.optString("abbreviation")
+            ids[t.optString("id")] = abbr
+            val score = c.opt("score").let { if (it is JSONObject) it.optString("displayValue") else it?.toString() ?: "" }
+            val record = c.optJSONArray("records")?.optJSONObject(0)?.optString("summary")
+                ?: c.optJSONArray("record")?.optJSONObject(0)?.optString("displayValue") ?: ""
+            val url = t.optString("logo").ifEmpty { t.optJSONArray("logos")?.optJSONObject(0)?.optString("href") ?: "" }
+            return Side(abbr, t.optString("shortDisplayName").ifEmpty { t.optString("displayName") }, score, record,
+                c.optString("homeAway") == "home", logo(context, abbr, url))
+        }
+        val all = sides.map { side(it) }
+        val us = all.firstOrNull { it.abbr.equals(team, true) } ?: all.first()
+        val them = all.firstOrNull { it !== us } ?: us
+        val sit = comp.optJSONObject("situation")
+        val clock = when (state) {
+            "in" -> {
+                val period = status.optInt("period")
+                when {
+                    type.optString("name").contains("HALFTIME") -> "HALFTIME"
+                    type.optString("name").contains("END_PERIOD") -> "END Q$period"
+                    period > 4 -> "OT ${status.optString("displayClock")}"
+                    period > 0 -> "Q$period ${status.optString("displayClock")}"
+                    else -> type.optString("shortDetail")
+                }
+            }
+            "post" -> type.optString("shortDetail").ifEmpty { "Final" }.uppercase(Locale.US)
+            else -> kickoff(start)
+        }
+        val tv = comp.optJSONArray("broadcasts")?.let { b ->
+            (0 until b.length()).mapNotNull { i ->
+                b.optJSONObject(i)?.let { o -> o.optJSONArray("names")?.optString(0) ?: o.optJSONObject("media")?.optString("shortName") }
+            }.firstOrNull { it.isNotEmpty() }
+        } ?: ""
+        return Game(state, clock, us, them, sit?.optString("downDistanceText")?.takeIf { it != "null" } ?: "",
+            ids[sit?.optString("possession") ?: ""] ?: "", sit?.optBoolean("isRedZone") ?: false, tv, start,
+            sit?.optJSONObject("lastPlay")?.optString("text") ?: "")
+    }
+
+    // "TODAY 4:25 PM", "SUN 1:00 PM" (this week), "NOV 15 1:00 PM".
+    fun kickoff(at: Long): String {
+        if (at <= 0) return "SCHEDULED"
+        val now = java.util.Calendar.getInstance()
+        val then = java.util.Calendar.getInstance().apply { timeInMillis = at }
+        val time = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(at))
+        val days = ((at - now.timeInMillis) / 86_400_000L)
+        val day = when {
+            now.get(java.util.Calendar.YEAR) == then.get(java.util.Calendar.YEAR) &&
+                now.get(java.util.Calendar.DAY_OF_YEAR) == then.get(java.util.Calendar.DAY_OF_YEAR) -> "Today"
+            days in 0..5 -> java.text.SimpleDateFormat("EEE", Locale.getDefault()).format(java.util.Date(at))
+            else -> java.text.SimpleDateFormat("MMM d", Locale.getDefault()).format(java.util.Date(at))
+        }
+        return "$day $time".uppercase(Locale.getDefault())
+    }
+
+    // A team's logo, small and lit for the glasses; kept (memory and the app's cache) once fetched.
+    private fun logo(context: Context, abbr: String, url: String): Bitmap? {
+        synchronized(logos) { if (logos.containsKey(abbr)) return logos[abbr] }
+        val file = java.io.File(context.cacheDir, "logos/$abbr.png")
+        val raw = runCatching {
+            if (file.length() > 0) BitmapFactory.decodeFile(file.path) else {
+                if (url.isEmpty()) return@runCatching null
+                val c = URL(url).openConnection() as HttpURLConnection
+                c.connectTimeout = 10000
+                c.readTimeout = 10000
+                val bytes = try { c.inputStream.readBytes() } finally { c.disconnect() }
+                file.parentFile?.mkdirs()
+                file.writeBytes(bytes)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            }
+        }.getOrNull()
+        val lit = raw?.let { lit(it) }
+        synchronized(logos) { logos[abbr] = lit }
+        return lit
+    }
+
+    // Grey by where the logo is (alpha) and how bright its colour is, never darker than about a third.
+    private fun lit(src: Bitmap): Bitmap {
+        val n = 64
+        val small = Bitmap.createScaledBitmap(src, n, n, true)
+        val px = IntArray(n * n)
+        small.getPixels(px, 0, n, 0, 0, n, n)
+        for (i in px.indices) {
+            val c = px[i]
+            val a = Color.alpha(c) / 255f
+            val v = maxOf(Color.red(c), Color.green(c), Color.blue(c)) / 255f
+            val g = (a * (0.38f + 0.62f * v) * 255).toInt().coerceIn(0, 255)
+            px[i] = Color.rgb(g, g, g)
+        }
+        return Bitmap.createBitmap(px, n, n, Bitmap.Config.ARGB_8888)
+    }
+
+    private fun get(url: String): JSONObject {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 10000
+        c.readTimeout = 10000
+        try {
+            if (c.responseCode != 200) throw IllegalStateException("the scores service said ${c.responseCode}")
+            return JSONObject(c.inputStream.bufferedReader().readText())
+        } finally {
+            c.disconnect()
+        }
     }
 }

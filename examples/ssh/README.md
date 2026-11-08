@@ -291,6 +291,12 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
 - **Display off and on** (Alt+0): the CRT close plays to its end before the panels go off (`PanelsOffAfterFx`), and
   the picture opens from the middle when it comes back.
 
+- **Game score** (dashboard widget *Game score*, style *Game day*; `Sports` in `Widgets.kt`): an NFL team's game
+  (Terminal tab, *Game score*: its letters, NE by default) from ESPN's public scoreboard, no key: away over home
+  with logos (lit by their brightness so dark logos show on the glasses), scores (records before kickoff), the side
+  with the ball and the red zone, the quarter and clock with down and distance, or kickoff and TV, or the final.
+  Asked every 50 s around a game, else every 15 minutes, only while a dashboard shows the widget.
+
 ## Voice
 
 Commands by voice through the glasses' microphone (the right arm; liblc3 decodes it, `SCOUTER_G1_MIC`), recognised

@@ -45,7 +45,7 @@ object Dashboard {
     private val CONDENSED: Typeface = Typeface.create("sans-serif-condensed", Typeface.NORMAL)
 
     // The styles, and the widgets a layout is made of (NOTES and MEDIA share the room the others leave, by weight).
-    val STYLES = listOf("classic" to "Classic", "day" to "Day", "media" to "Media", "tunes" to "Tunes",
+    val STYLES = listOf("classic" to "Classic", "day" to "Day", "game" to "Game day", "media" to "Media", "tunes" to "Tunes",
         "everything" to "Everything", "focus" to "Focus", "minimal" to "Minimal", "custom" to "Your own")
     const val CLOCK = "clock"
     const val NOTES = "notes"
@@ -56,8 +56,9 @@ object Dashboard {
     const val CALENDAR = "calendar"
     const val TIMER = "timer"
     const val TUNES = "tunes"
+    const val SPORTS = "sports"
     val WIDGETS = listOf(CLOCK to "Clock and date", NOTES to "Notifications", MEDIA to "Now playing",
-        WEATHER to "Weather", CALENDAR to "Calendar", TIMER to "Timer", TUNES to "Tunes bar",
+        WEATHER to "Weather", CALENDAR to "Calendar", TIMER to "Timer", SPORTS to "Game score", TUNES to "Tunes bar",
         BATTERY to "Glasses' batteries", PHONE to "Phone's battery")
     val FLEX = setOf(NOTES, MEDIA, CALENDAR, TUNES)
 
@@ -66,6 +67,7 @@ object Dashboard {
 
     fun layout(settings: Settings, style: String = settings.dashStyle): Layout = when (style) {
         "day" -> Layout(true, listOf(Widget(CLOCK), Widget(WEATHER), Widget(CALENDAR), Widget(BATTERY)))
+        "game" -> Layout(true, listOf(Widget(CLOCK), Widget(SPORTS), Widget(NOTES), Widget(BATTERY)))
         "media" -> Layout(true, listOf(Widget(CLOCK), Widget(MEDIA), Widget(BATTERY)))
         "tunes" -> Layout(false, listOf(Widget(MEDIA), Widget(TUNES, 2), Widget(CLOCK)))
         "everything" -> Layout(true, listOf(Widget(CLOCK), Widget(NOTES), Widget(MEDIA), Widget(BATTERY)))
@@ -245,6 +247,7 @@ object Dashboard {
                 CALENDAR -> calendar(context, c, r)
                 TIMER -> timer(c, r, hits, hover, mark, fill, line)
                 TUNES -> tunes(c, r, line, fill)
+                SPORTS -> sports(c, r, fill)
             }
             x += ww + gap
         }
@@ -276,7 +279,73 @@ object Dashboard {
     }
 
     // A fixed widget's width at this row height.
+    // The game (Sports): away over home, each with its logo, letters and score (records before kickoff), the side
+    // with the ball marked by a small football (brighter in the red zone); the leader lit, the other dimmer. Under
+    // them: the quarter and clock with the down and distance, or kickoff and TV, or the final.
+    private fun sports(c: Canvas, r: RectF, fill: Paint) {
+        val rowH = r.height()
+        val g = Sports.game
+        val small = paint(rowH * 0.15f, 9, CONDENSED, 0.12f)
+        if (g == null) {
+            c.drawText("GAME", r.left, r.top + rowH * 0.45f, paint(rowH * 0.3f, 12, THIN))
+            c.drawText(TextUtils.ellipsize((Sports.problem.ifEmpty { "Looking for the game…" }).uppercase(Locale.getDefault()),
+                small, r.width(), TextUtils.TruncateAt.END).toString(), r.left, r.top + rowH * 0.9f, small)
+            return
+        }
+        val live = g.state != "pre"
+        val a = g.away
+        val hm = g.home
+        val sa = a.score.toIntOrNull() ?: 0
+        val sh = hm.score.toIntOrNull() ?: 0
+        val lineH = rowH * 0.36f
+        val logoS = lineH * 0.9f
+        val bitmapPaint = Paint().apply { isFilterBitmap = true; isAntiAlias = true }
+        fun row(s: Sports.Side, top: Float, lead: Boolean, tied: Boolean) {
+            val level = when {
+                !live || tied -> 14
+                lead -> 15
+                g.state == "post" -> 7
+                else -> 10
+            }
+            var x = r.left
+            s.logo?.let {
+                val y = top + (lineH - logoS) / 2
+                bitmapPaint.alpha = 140 + level * 7
+                c.drawBitmap(it, null, RectF(x, y, x + logoS, y + logoS), bitmapPaint)
+                x += logoS + 5f
+            }
+            val name = paint(lineH * 0.6f, level, MEDIUM, 0.06f)
+            c.drawText(s.abbr, x, top + lineH * 0.72f, name)
+            x += name.measureText(s.abbr) + 5f
+            if (g.state == "in" && g.ball == s.abbr) { // the ball
+                val bw = lineH * 0.34f
+                val bh = lineH * 0.2f
+                val cy = top + lineH * 0.5f
+                fill.color = grey(if (g.redZone) 15 else 11)
+                c.drawOval(RectF(x, cy - bh / 2, x + bw, cy + bh / 2), fill)
+                fill.color = Color.BLACK
+                c.drawRect(x + bw * 0.46f, cy - bh * 0.32f, x + bw * 0.54f, cy + bh * 0.32f, fill)
+            }
+            val right = if (live) s.score else s.record
+            val p = if (live) paint(lineH * 0.82f, level, THIN).apply { setShadowLayer(2f, 0f, 0f, grey(3)) }
+                else paint(lineH * 0.42f, 9, CONDENSED, 0.08f)
+            c.drawText(right, r.right - p.measureText(right), top + lineH * (if (live) 0.8f else 0.68f), p)
+        }
+        val top = r.top + rowH * 0.02f
+        row(a, top, sa > sh, sa == sh)
+        row(hm, top + lineH, sh > sa, sa == sh)
+        val status = when (g.state) {
+            "in" -> listOf(g.clock, g.down).filter { it.isNotEmpty() }.joinToString("  ·  ")
+            "post" -> g.clock
+            else -> listOf(g.clock, g.tv.uppercase(Locale.getDefault())).filter { it.isNotEmpty() }.joinToString("  ·  ")
+        }
+        val sp = paint(rowH * 0.15f, if (g.state == "in") 13 else 9, CONDENSED, 0.12f)
+        c.drawText(TextUtils.ellipsize(status.uppercase(Locale.getDefault()), sp, r.width(), TextUtils.TruncateAt.END).toString(),
+            r.left, r.top + rowH * 0.95f, sp)
+    }
+
     private fun natural(context: Context, type: String, rowH: Float): Float = when (type) {
+        SPORTS -> rowH * 2.3f
         CLOCK -> {
             val (clock, ampm, date) = clockTexts(context)
             val big = paint(rowH * 0.58f, 15, THIN)

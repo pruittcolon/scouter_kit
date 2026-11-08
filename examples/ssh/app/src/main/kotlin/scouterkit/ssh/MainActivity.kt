@@ -52,6 +52,7 @@ class MainActivity : Activity() {
     private lateinit var dashPreview: android.widget.ImageView
     private lateinit var styleRow: LinearLayout
     private lateinit var weatherState: TextView
+    private lateinit var sportsState: TextView
     private lateinit var calendarState: TextView
     private lateinit var calendarButton: View
     private lateinit var layoutBox: LinearLayout
@@ -601,6 +602,22 @@ class MainActivity : Activity() {
         })
         weatherState = text("", 12.5f, Ui.FAINT)
         view.addView(weatherState)
+        view.addView(subhead("Game score"))
+        val team = field("Team", Sports.team(settings), "NFL letters, e.g. NE, GB, KC")
+        fun saveTeam() {
+            val v = team.text.toString().trim().uppercase(java.util.Locale.US)
+            if (v == settings.sportsTeam) return
+            settings.sportsTeam = v
+            sportsState.text = "Looking for the game…"
+            Sports.refresh(this, settings, force = true) { runOnUiThread { show(); lookUpChanged() } }
+        }
+        team.imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+        team.setOnEditorActionListener { _, _, _ -> saveTeam(); false }
+        team.setOnFocusChangeListener { _, has -> if (!has) saveTeam() }
+        view.addField(team)
+        sportsState = text("", 12.5f, Ui.FAINT)
+        view.addView(sportsState)
+        Sports.refresh(this, settings) { runOnUiThread { show() } }
         view.addView(subhead("Calendar"))
         calendarState = text("", 12.5f, Ui.FAINT)
         view.addView(calendarState)
@@ -1365,6 +1382,14 @@ class MainActivity : Activity() {
             Session.tabList.isEmpty() -> "Tabs are the tmux windows of the server in use."
             else -> "Tap a tab to show it, hold it to close it."
         }
+        if (::sportsState.isInitialized) sportsState.text = Sports.game?.let { g ->
+            val vs = "${g.away.name} at ${g.home.name}"
+            when (g.state) {
+                "in" -> "Live: ${g.away.abbr} ${g.away.score}, ${g.home.abbr} ${g.home.score} · ${g.clock}"
+                "post" -> "$vs · ${g.away.abbr} ${g.away.score}, ${g.home.abbr} ${g.home.score} (${g.clock.lowercase()})"
+                else -> "$vs · ${g.clock.lowercase()}" + (if (g.tv.isNotEmpty()) " on ${g.tv}" else "")
+            } + " · from ESPN. Add the Game score widget, or pick the Game day style."
+        } ?: Sports.problem.ifEmpty { "Looking for the game…" }
         weatherState.text = Weather.now?.let { "${it.temp}° ${Weather.word(it.code).lowercase()} in ${it.place} · from Open-Meteo, every 30 minutes" }
             ?: Weather.problem.ifEmpty { "Type a city for the weather widget." }
         val calendar = Agenda.allowed(this)
