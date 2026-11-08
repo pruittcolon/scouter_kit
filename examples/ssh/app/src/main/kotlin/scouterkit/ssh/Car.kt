@@ -251,6 +251,9 @@ class CarSpeech(private val context: Context, private val onDone: (String) -> Un
         if (ready) go() else pending = go
     }
 
+    // Made sentence by sentence on one thread (OfflineTts.generate: no callback, since sherpa-onnx's JNI looks for a
+    // lambda method that Kotlin 2's lambdas don't have, and nothing came out) and played on this one as each is
+    // ready, so the next is made while one plays. Nothing made at all: the phone's own voice says it instead.
     private fun kokoro(parts: List<String>, rate: Float, id: String) {
         val my = ++gen
         val sid = settings.carSpeaker
@@ -261,6 +264,24 @@ class CarSpeech(private val context: Context, private val onDone: (String) -> Un
                 return@Thread
             }
             val hz = k.sampleRate()
+            val queue = java.util.concurrent.LinkedBlockingQueue<FloatArray>()
+            val end = FloatArray(0)
+            var made = 0
+            Thread({
+                for (p in parts) {
+                    if (gen != my) break
+                    val t0 = SystemClock.uptimeMillis()
+                    val a = runCatching { synchronized(KokoroModel) { k.generate(p, sid, rate) } }
+                        .onFailure { Log.w(ScouterService.TAG, "car: Kokoro: ${it.message}") }.getOrNull()
+                    if (a != null && a.samples.isNotEmpty()) {
+                        if (made == 0) Log.i(ScouterService.TAG, "car: Kokoro (voice $sid) made its first ${a.samples.size * 1000L / hz} ms " +
+                            "in ${SystemClock.uptimeMillis() - t0} ms")
+                        made++
+                        queue.put(a.samples)
+                    }
+                }
+                queue.put(end)
+            }, "car-voice-make").start()
             val t = runCatching {
                 AudioTrack.Builder().setAudioAttributes(ATTRS)
                     .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_FLOAT).setSampleRate(hz)
@@ -276,17 +297,11 @@ class CarSpeech(private val context: Context, private val onDone: (String) -> Un
             t.write(lead, 0, lead.size, AudioTrack.WRITE_BLOCKING)
             t.play()
             var frames = lead.size.toLong()
-            for (p in parts) {
-                if (gen != my) break
-                runCatching {
-                    k.generateWithCallback(p, sid, rate) { samples ->
-                        if (gen != my) 0 else {
-                            t.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
-                            frames += samples.size
-                            1
-                        }
-                    }
-                }.onFailure { Log.w(ScouterService.TAG, "car: Kokoro: ${it.message}") }
+            while (gen == my) {
+                val s = queue.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
+                if (s === end) break
+                t.write(s, 0, s.size, AudioTrack.WRITE_BLOCKING)
+                frames += s.size
             }
             if (gen == my) {
                 runCatching { t.stop() } // plays out what was written
@@ -296,7 +311,9 @@ class CarSpeech(private val context: Context, private val onDone: (String) -> Un
             }
             runCatching { t.release() }
             if (track === t) track = null
-            if (gen == my) onDone(id)
+            if (gen != my) return@Thread
+            if (made == 0) Handler(Looper.getMainLooper()).post { if (gen == my) android(parts, rate, id) }
+            else onDone(id)
         }, "car-voice").start()
     }
 
