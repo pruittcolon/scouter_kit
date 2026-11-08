@@ -30,7 +30,7 @@ object Hotkeys {
     // until it is pressed again; the phone's screen on the glasses takes them as always.
     fun toGlasses(context: Context, e: KeyEvent): Boolean {
         if (!Keyboard.physical(e) || Session.keysToPhone || !ScouterService.running) return false
-        if (Session.glasses != "ready" || Session.blank || Session.showing != Settings.TERMINAL) return false
+        if (Session.glasses != "ready" || Session.blank || Session.showing != Settings.TERMINAL || Session.tunes) return false
         return Settings(context).keysToGlasses
     }
 
@@ -100,6 +100,11 @@ object Hotkeys {
             if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0)
                 VoxKeys.global(if (e.keyCode == KeyEvent.KEYCODE_DEL) AccessibilityService.GLOBAL_ACTION_BACK
                 else AccessibilityService.GLOBAL_ACTION_HOME)
+            return true
+        }
+        // Alt+U: Tunes, the synthwave scene, on or off.
+        if (e.keyCode == KeyEvent.KEYCODE_U) {
+            if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0) ScouterService.send(context, ScouterService.ACTION_TUNES)
             return true
         }
         // Alt+K: the keyboard to the phone's apps, or back to the glasses' terminal.

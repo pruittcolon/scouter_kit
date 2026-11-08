@@ -169,6 +169,15 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   left with a line that empties, −1 min, start / pause and +1 min for the pointer (a right click resets it); voice
   "timer 5 minutes", "set a timer for ten minutes", "pause the timer", "stop the timer"; when it ends the glasses
   say "Time's up". *Day* shows clock, weather, calendar and batteries.
+- **Tunes** (`native/tunes.cpp`, `Tunes.kt`; the Glasses tab's Tunes, Alt+U, "tunes mode" / "stop tunes"): a
+  synthwave scene the arms play by themselves in place of everything else, a frame every 33 ms: a sun cut by the
+  horizon whose lower stripes slide down, mountains at its sides, stars, and a perspective grid floor whose lines roll
+  toward you, nearer brighter. The phone sends only the music's pulse (the panel's brightness breathes with it) and
+  speed (the floor rolls faster), a few bytes each 60 ms. It follows (Settings, *Tunes*) the beat (a jump in the
+  bass of Android's output mix, a Visualizer: RECORD_AUDIO; nothing is recorded or kept), the volume, or a steady
+  tempo (60 ... 160 BPM, no permission) while something plays. The *Tunes bar* is the look-up screen's quiet version:
+  a small striped sun on a horizon with the music's twelve bands rising beside it (redrawn about five times a second
+  while it shows); the *Tunes* style puts it between now playing and the clock.
 - **Now playing** (`Media.kt`): the phone's media sessions (Spotify, YouTube, podcast and video players), listed to
   Vox's notification listener: the app, the title, the artist, the cover in the glasses' greys and a progress line
   (redrawn each second while it plays and shows), with before, play / pause and next as places the pointer clicks.
@@ -210,6 +219,10 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   middle, to click through and type. A right click on one with its own Reply (messages) writes a quick reply on
   the dashboard instead: typed (VoxKeys takes the keys meanwhile) or said (Alt+Space), Enter sends it through the
   notification (Android's RemoteInput), Escape cancels.
+- **Scrolling** (two fingers on the trackpad, its wheel; Settings, *Cursor speed*: speed, acceleration, scroll speed,
+  natural scrolling): to the terminal's program as the mouse's wheel when it takes the mouse, else tmux's own history
+  (copy mode, ended by itself at the bottom) over the server's kept SSH connection; over the dashboard the tab before
+  or after.
 - **Typing on the glasses** (*Type on the glasses*, Settings, *Keyboard and trackpad*, on by default; VoxKeys): while
   the terminal is the glasses' source (looking up or down), a keyboard paired with the phone types into it whatever app is in front
   (Keyboard.kt's key stream, as keyboard mode does); the Alt shortcuts stay shortcuts. Alt+K sends the keys to the

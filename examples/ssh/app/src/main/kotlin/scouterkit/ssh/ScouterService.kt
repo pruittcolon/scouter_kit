@@ -68,6 +68,7 @@ object Session {
     @Volatile var terms: Map<String, String> = emptyMap() // each terminal's state by server id (Term.status)
     @Volatile var keysToPhone = false // Alt+K: the keyboard types into the phone's apps even while the terminal shows
     @Volatile var pointerKeys = false // Alt+M put the pointer on: the arrows, Enter and Space are its
+    @Volatile var tunes = false // the synthwave scene is on the glasses
     @Volatile var heard = listOf<String>() // the last phrases, newest first
     // The devices Android reports near (ScouterCompanionService: keyer); null: unknown (none reported since the
     // process started, Bluetooth was off since, or keyer's link did not come after the last report).
@@ -233,6 +234,7 @@ class ScouterService : Service() {
         Media.onChange = { work.post { dash() } }
         Media.start(this)
         work.postDelayed(mediaTick, 1000)
+        work.postDelayed(tunesTick, 500)
         LookUp.onChange = { work.post { header() } }
         work.post(headerTick)
         work.postDelayed(tabPoll, 5000)
@@ -314,6 +316,8 @@ class ScouterService : Service() {
             // The pointer (extra "cmd": toggle, off, move:DX:DY, click, right, up, down) and tabs (extra "tab").
             ACTION_POINTER -> work.post { pointer(intent.getStringExtra("cmd").orEmpty()) }
             ACTION_TABS -> work.post { tabs(intent.getStringExtra("tab").orEmpty()) }
+            // Tunes on or off (extra "on": true / false, absent: the other way).
+            ACTION_TUNES -> work.post { tunesSet(intent.getStringExtra("on")?.toBoolean() ?: !Session.tunes) }
             // Alt+K: the keyboard's keys to the phone's apps, or back to the glasses' terminal.
             ACTION_KEYS -> work.post {
                 Session.keysToPhone = !Session.keysToPhone
@@ -389,6 +393,9 @@ class ScouterService : Service() {
         Media.onChange = null
         Media.stop()
         work.removeCallbacks(mediaTick)
+        work.removeCallbacks(tunesTick)
+        if (Session.tunes || tunesBar) Tunes.stop()
+        Session.tunes = false
         work.removeCallbacks(batteryTicker)
         runCatching { unregisterReceiver(lock) }
         runCatching { unregisterReceiver(bonds) }
@@ -951,7 +958,7 @@ class ScouterService : Service() {
     // (the phone's screen too) it is the phone's own pointer, as smooth as Android makes it.
     private fun trackpadMode() {
         VoxKeys.capture(!ended && settings.trackpad && glassesWith != null && Session.glasses == "ready" && !Session.blank &&
-            settings.show == Settings.TERMINAL)
+            settings.show == Settings.TERMINAL && !Session.tunes)
     }
 
     private var swipe = 0f
@@ -964,7 +971,8 @@ class ScouterService : Service() {
         when (kind) {
             VoxKeys.Trackpad.MOVE -> {
                 val v = kotlin.math.hypot(dx, dy)
-                val k = settings.trackpadSpeed.coerceIn(1, 10) / 5f * 0.9f * (1f + minOf(1.5f, v / 30f))
+                val accel = settings.trackpadAccel.coerceIn(0, 10) / 5f
+                val k = settings.trackpadSpeed.coerceIn(1, 10) / 5f * 0.9f * (1f + accel * minOf(1.5f, v / 30f))
                 if (!Session.pointer) pointerOn()
                 moveBy(dx * k, dy * k)
                 Session.changed()
@@ -973,16 +981,17 @@ class ScouterService : Service() {
                 if (!Session.pointer) return pointer("toggle")
                 pointer(if (kind == VoxKeys.Trackpad.RIGHT) "right" else "click")
             }
-            VoxKeys.Trackpad.WHEEL -> repeat(minOf(5, kotlin.math.abs(dy).toInt().coerceAtLeast(1))) {
-                pointer(if (dy > 0) "up" else "down")
-            }
+            VoxKeys.Trackpad.WHEEL -> scroll(if (dy > 0) -1 else 1, kotlin.math.abs(dy).toInt().coerceIn(1, 5))
             VoxKeys.Trackpad.SCROLL -> {
                 swipe += dy
                 val step = 28f
+                var steps = 0
                 while (kotlin.math.abs(swipe) >= step) {
-                    pointer(if (swipe > 0) "up" else "down")
+                    steps += if (swipe > 0) 1 else -1
                     swipe -= if (swipe > 0) step else -step
                 }
+                // Natural: the fingers going down bring the text down (back in its history).
+                if (steps != 0) scroll(if (steps > 0) -1 else 1, kotlin.math.abs(steps))
             }
         }
     }
@@ -1108,6 +1117,7 @@ class ScouterService : Service() {
     // that does not answer, the phone's screen not shared) shows its card; nothing switches by itself.
     private fun choose(key: String, style: Int = Fx.JUMP) {
         settings.phone = true
+        if (Session.tunes) tunesSet(false)
         val from = chosen()
         val fx = if (key != from || (key == Settings.PHONE && screen != null && settings.show != Settings.SCREEN)) style else Fx.NONE
         when {
@@ -1265,6 +1275,49 @@ class ScouterService : Service() {
             }
         }
         Session.changed()
+    }
+
+    // Scrolling the terminal: dir -1 back in its history (up), 1 forward; `steps` steps of Settings.scrollSpeed lines.
+    // To the program as the mouse's wheel when it takes the mouse (tmux with its mouse on), else tmux's own history
+    // over the server's kept SSH connection (steps that come meanwhile add up).
+    private var scrollPending = 0
+    private var scrolling = false
+    private fun scroll(dir0: Int, steps: Int) {
+        val dir = if (settings.scrollNatural) dir0 else -dir0
+        val lines = settings.scrollSpeed.coerceIn(1, 10) * steps
+        val g = region()
+        val row = if (g[3] > 0 && ptrY >= 0) (ptrY / g[3]).toInt() else 0
+        val col = if (g[2] > 0) (ptrX / g[2]).toInt() else 0
+        if (ptrY < 0 && pointerBar >= 0) return barClick(if (dir < 0) "up" else "down")
+        // The wheel: each event about 3 lines in tmux.
+        val wheel = maxOf(1, (lines + 2) / 3)
+        var taken = true
+        repeat(wheel) { if (taken) taken = Native.mouse(if (dir < 0) 64 else 65, row, col) }
+        if (taken) return
+        val s = settings.active() ?: return
+        if (Tabs.session(s) == null || terms[s.id]?.status != "connected") {
+            Session.tabs = "scrolling needs tmux (or a program that takes the mouse)"
+            Session.changed()
+            return
+        }
+        scrollPending += dir * lines
+        if (!scrolling) scrollFlush(s)
+    }
+
+    private fun scrollFlush(s: Settings.Server) {
+        val n = scrollPending
+        if (n == 0) return
+        scrollPending = 0
+        val session = Tabs.session(s) ?: return
+        val cmd = Tabs.command(if (n < 0) "scroll:up:${-n}" else "scroll:down:$n", session) ?: return
+        scrolling = true
+        Thread {
+            runCatching { Bootstrap(vault).runShared(s.host, s.port, s.user, cmd) }
+            work.post {
+                scrolling = false
+                scrollFlush(s)
+            }
+        }.start()
     }
 
     private fun moveBy(dx: Float, dy: Float) {
@@ -1805,6 +1858,7 @@ class ScouterService : Service() {
             VoiceCommands.TAB -> tabs(m.arg)
             VoiceCommands.POINTER -> pointer(m.arg)
             VoiceCommands.MEDIA -> if (!Media.control(m.arg)) voiceSay("Nothing is playing (Vox needs notification access)")
+            VoiceCommands.TUNES -> tunesSet(if (m.arg == "off") false else if (m.arg == "on") true else !Session.tunes)
             VoiceCommands.TIMER -> {
                 when (m.arg) {
                     "toggle" -> Timer.toggle()
@@ -1877,6 +1931,55 @@ class ScouterService : Service() {
             if (settings.dashRows == 0 || !Session.shown || settings.show != Settings.TERMINAL) return
             val types = Dashboard.layout(settings).widgets.map { it.type }
             if ((Media.now?.playing == true && Dashboard.MEDIA in types) || (Timer.running && Dashboard.TIMER in types)) dash()
+        }
+    }
+
+    // ------------------------------------------------ tunes
+
+    // The synthwave scene on the glasses (the arms play it; the music's pulse goes to them each tick), or what was
+    // there again.
+    private fun tunesSet(on: Boolean) {
+        if (on == Session.tunes) return
+        if (on) {
+            if (glassesWith == null) return
+            Native.tunes(true)?.let {
+                Log.w(TAG, "tunes: $it")
+                Session.gesture = "tunes: $it"
+                Session.changed()
+                return
+            }
+            if (Session.pointer) pointerOff()
+            Session.tunes = true
+            Tunes.start(this, settings.tunesMode)
+            Log.i(TAG, "tunes: on (${settings.tunesMode})")
+        } else {
+            Session.tunes = false
+            Tunes.stop()
+            Native.tunes(false)
+            Thread { Native.brightness(settings.brightness) }.start() // the scene breathed with it
+            header()
+            Log.i(TAG, "tunes: off")
+        }
+        update()
+    }
+
+    // Each 60 ms: the music's pulse to the scene; the Tunes bar on the dashboard followed (and drawn again about five
+    // times a second) while it shows.
+    private var tunesBar = false
+    private var tunesFrames = 0
+    private val tunesTick = object : Runnable {
+        override fun run() {
+            work.postDelayed(this, 60)
+            val bar = !Session.tunes && settings.dashRows > 0 && Session.shown && settings.show == Settings.TERMINAL &&
+                Dashboard.layout(settings).widgets.any { it.type == Dashboard.TUNES }
+            if (bar != tunesBar) {
+                tunesBar = bar
+                if (bar) Tunes.start(this@ScouterService, settings.tunesMode) else Tunes.stop()
+            }
+            if (!Session.tunes && !bar) return
+            val (pulse, speed) = Tunes.tick(settings.tunesMode, settings.tunesBpm)
+            if (Session.tunes) Native.tunesBeat(pulse, speed)
+            if (bar && ++tunesFrames % 3 == 0) dash()
         }
     }
 
@@ -2062,6 +2165,7 @@ class ScouterService : Service() {
             "xprop -id \"\$(xprop -root _NET_ACTIVE_WINDOW | sed 's/.*# //')\" WM_CLASS"
         const val ACTION_STOP = "scouterkit.ssh.STOP"
         const val ACTION_KEYS = "scouterkit.ssh.KEYS" // the keyboard to the phone's apps or the glasses' terminal (Alt+K)
+        const val ACTION_TUNES = "scouterkit.ssh.TUNES" // the synthwave scene on the glasses, or off (extra "on")
         const val ACTION_TRUST = "scouterkit.ssh.TRUST"
         const val ACTION_NEAR = "scouterkit.ssh.NEAR" // keyer came or went (Session.near)
         const val ACTION_SCREEN = "scouterkit.ssh.SCREEN" // the phone's screen on the glasses (EXTRA_CODE, EXTRA_DATA)

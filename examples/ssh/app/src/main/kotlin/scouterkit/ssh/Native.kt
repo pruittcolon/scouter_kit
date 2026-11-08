@@ -102,6 +102,10 @@ object Native {
     // card), else a screen; now: the terminal's next screen whatever brings it (its tabs), else the next session
     // or card shown, or the path that starts next.
     @JvmStatic external fun transition(style: Int, label: ByteArray?, lw: Int, lh: Int, toTerminal: Boolean, now: Boolean)
+    // Tunes: the synthwave scene on the glasses instead of everything else (on), or what was there again; an error
+    // or null. And the music's pulse and speed for it (0 ... 100).
+    @JvmStatic external fun tunes(on: Boolean): String?
+    @JvmStatic external fun tunesBeat(pulse: Int, speed: Int)
     // Transitions on or off (off: every switch at once).
     @JvmStatic external fun fxEnabled(on: Boolean)
     // The look-up view: the header's lines above the terminal (none: no header), and the fade in ms (0: none).

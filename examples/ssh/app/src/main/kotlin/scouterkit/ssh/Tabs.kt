@@ -41,6 +41,13 @@ object Tabs {
             }
             action.startsWith("select:") -> "tmux select-window -t $t:${action.removePrefix("select:").filter { it.isDigit() }}"
             action == "list" -> "tmux list-windows -t $t -F '#{window_index}|#{window_name}|#{window_active}'"
+            // Scrolling the pane's history N lines (copy mode, which ends by itself at the bottom).
+            action.startsWith("scroll:up:") -> action.removePrefix("scroll:up:").filter { it.isDigit() }.ifEmpty { return null }.let { n ->
+                "tmux copy-mode -e -t $t && tmux send-keys -t $t -X -N $n scroll-up"
+            }
+            action.startsWith("scroll:down:") -> action.removePrefix("scroll:down:").filter { it.isDigit() }.ifEmpty { return null }.let { n ->
+                "[ \"$(tmux display -p -t $t '#{pane_in_mode}')\" = 1 ] && tmux send-keys -t $t -X -N $n scroll-down"
+            }
             action == "mouse" -> "tmux set -g mouse on"
             action == "mouse_off" -> "tmux set -g mouse off"
             else -> return null

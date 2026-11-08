@@ -45,7 +45,7 @@ target_compile_definitions(scouter_kit PUBLIC SCOUTER_G1_MIC)
 target_link_libraries(scouter_kit PUBLIC lc3 m)
 
 # Object libraries link whole, so mosh's static registrations stay.
-add_library(ssh_core OBJECT mosh_client.cpp glasses.cpp keys.cpp terminal.cpp screen.cpp fx.cpp)
+add_library(ssh_core OBJECT mosh_client.cpp glasses.cpp keys.cpp terminal.cpp screen.cpp fx.cpp tunes.cpp)
 target_link_libraries(ssh_core PUBLIC mosh scouter_kit)
 
 if(ANDROID)

@@ -45,8 +45,8 @@ object Dashboard {
     private val CONDENSED: Typeface = Typeface.create("sans-serif-condensed", Typeface.NORMAL)
 
     // The styles, and the widgets a layout is made of (NOTES and MEDIA share the room the others leave, by weight).
-    val STYLES = listOf("classic" to "Classic", "day" to "Day", "media" to "Media", "everything" to "Everything",
-        "focus" to "Focus", "minimal" to "Minimal", "custom" to "Your own")
+    val STYLES = listOf("classic" to "Classic", "day" to "Day", "media" to "Media", "tunes" to "Tunes",
+        "everything" to "Everything", "focus" to "Focus", "minimal" to "Minimal", "custom" to "Your own")
     const val CLOCK = "clock"
     const val NOTES = "notes"
     const val MEDIA = "media"
@@ -55,10 +55,11 @@ object Dashboard {
     const val WEATHER = "weather"
     const val CALENDAR = "calendar"
     const val TIMER = "timer"
+    const val TUNES = "tunes"
     val WIDGETS = listOf(CLOCK to "Clock and date", NOTES to "Notifications", MEDIA to "Now playing",
-        WEATHER to "Weather", CALENDAR to "Calendar", TIMER to "Timer", BATTERY to "Glasses' batteries",
-        PHONE to "Phone's battery")
-    val FLEX = setOf(NOTES, MEDIA, CALENDAR)
+        WEATHER to "Weather", CALENDAR to "Calendar", TIMER to "Timer", TUNES to "Tunes bar",
+        BATTERY to "Glasses' batteries", PHONE to "Phone's battery")
+    val FLEX = setOf(NOTES, MEDIA, CALENDAR, TUNES)
 
     class Widget(val type: String, val weight: Int = 1)
     class Layout(val tabs: Boolean, val widgets: List<Widget>)
@@ -66,6 +67,7 @@ object Dashboard {
     fun layout(settings: Settings, style: String = settings.dashStyle): Layout = when (style) {
         "day" -> Layout(true, listOf(Widget(CLOCK), Widget(WEATHER), Widget(CALENDAR), Widget(BATTERY)))
         "media" -> Layout(true, listOf(Widget(CLOCK), Widget(MEDIA), Widget(BATTERY)))
+        "tunes" -> Layout(false, listOf(Widget(MEDIA), Widget(TUNES, 2), Widget(CLOCK)))
         "everything" -> Layout(true, listOf(Widget(CLOCK), Widget(NOTES), Widget(MEDIA), Widget(BATTERY)))
         "focus" -> Layout(false, listOf(Widget(CLOCK), Widget(NOTES, 2)))
         "minimal" -> Layout(false, listOf(Widget(CLOCK), Widget(PHONE), Widget(BATTERY)))
@@ -242,6 +244,7 @@ object Dashboard {
                 WEATHER -> weather(c, r, line)
                 CALENDAR -> calendar(context, c, r)
                 TIMER -> timer(c, r, hits, hover, mark, fill, line)
+                TUNES -> tunes(c, r, line, fill)
             }
             x += ww + gap
         }
@@ -411,6 +414,48 @@ object Dashboard {
             c.drawText(whenText, r.left, y, time)
             c.drawText(TextUtils.ellipsize(e.title.ifBlank { "(no title)" }, title, r.width() - timeW, TextUtils.TruncateAt.END).toString(),
                 r.left + timeW, y, title)
+        }
+    }
+
+    // The Tunes bar: a small synthwave horizon: a striped sun that brightens with the pulse, the music's bands rising
+    // from the horizon at both sides of it, and a floor under it.
+    private fun tunes(c: Canvas, r: RectF, line: Paint, fill: Paint) {
+        val rowH = r.height()
+        if (r.width() < 60f) return
+        val horizon = r.top + rowH * 0.66f
+        val cx = r.centerX()
+        val rad = rowH * 0.34f
+        val glow = (10 + 5 * Tunes.pulse).toInt().coerceIn(0, 15)
+        // The sun, cut by the horizon, three stripes in its lower part.
+        c.save()
+        c.clipRect(cx - rad - 1f, r.top, cx + rad + 1f, horizon)
+        fill.color = grey(glow)
+        c.drawCircle(cx, horizon - rad * 0.2f, rad, fill)
+        fill.color = Color.BLACK
+        for (k in 0 until 3) {
+            val y = horizon - rad * (0.15f + 0.22f * k)
+            c.drawRect(cx - rad - 1f, y, cx + rad + 1f, y + 1.2f + (2 - k) * 0.9f, fill)
+        }
+        c.restore()
+        // The bands: rising from the horizon, the lowest nearest the sun.
+        val bars = Tunes.bars
+        val room = (r.width() / 2 - rad - 6f).coerceAtLeast(0f)
+        val step = room / bars.size
+        if (step >= 2f) for (side in listOf(-1f, 1f)) for (b in bars.indices) {
+            val x = cx + side * (rad + 6f + step * (b + 0.5f))
+            val hgt = (rowH * 0.55f * bars[b]).coerceAtLeast(1f)
+            fill.color = grey((7 + 6 * bars[b]).toInt().coerceIn(0, 15))
+            c.drawRect(x - step * 0.3f, horizon - hgt, x + step * 0.3f, horizon, fill)
+        }
+        // The horizon and the floor.
+        line.color = grey(13)
+        c.drawLine(r.left, horizon, r.right, horizon, line)
+        line.color = grey(5)
+        for (k in -5..5) c.drawLine(cx + k * 3f, horizon, cx + k * r.width() / 9f, r.bottom, line)
+        line.color = grey(7)
+        for (y in floatArrayOf(0.35f, 0.75f)) {
+            val yy = horizon + (r.bottom - horizon) * y
+            c.drawLine(r.left, yy, r.right, yy, line)
         }
     }
 

@@ -294,6 +294,7 @@ object VoiceCommands {
     const val POINTER = "pointer" // arg: a pointer command (toggle, click, right, up, down)
     const val MEDIA = "media" // arg: toggle, next, prev (what plays on the phone)
     const val TIMER = "timer" // arg: SECONDS (set and start), toggle, reset
+    const val TUNES = "tunes" // arg: on, off, toggle
 
     // For the custom commands' editor: what a command can do (SOURCE is picked from the sources).
     val CHOICES = linkedMapOf(NEXT to "Next source", PREV to "Previous source", UP to "Terminal (this machine)",
@@ -305,7 +306,7 @@ object VoiceCommands {
         "tab:prev" to "Previous tab", "tab:close" to "Close the tab", "tab:claude" to "Claude's tab", "tab:cursor" to "Cursor's tab",
         "pointer:toggle" to "Pointer on / off", "pointer:click" to "Click", "media:toggle" to "Play / pause",
         "media:next" to "Next song", "media:prev" to "Previous song", "timer:toggle" to "Pause / go on with the timer",
-        "timer:reset" to "Stop the timer")
+        "timer:reset" to "Stop the timer", "tunes:toggle" to "Tunes on / off")
 
     // What the built-in commands are, for the Voice tab.
     const val HELP = "Next · Back · Phone terminal · Laptop terminal · Phone screen · Laptop screen (any saved server's " +
@@ -313,7 +314,7 @@ object VoiceCommands {
         "Type … · Run … (types it and Enter) · Claude … (types it and Enter) · Enter · Escape · Tab · Control C · Up · " +
         "Down · Dictate (everything you say is typed; \"send\" presses Enter, \"stop dictating\" ends it) · Stop listening · " +
         "New tab · Next tab · Previous tab · Tab 2 · Close tab · Claude tab · Cursor tab · Pointer · Click · Right click · " +
-        "Scroll up / down · Play · Pause · Next song · Previous song · Timer 5 minutes · Pause the timer · Stop the timer"
+        "Scroll up / down · Play · Pause · Next song · Previous song · Timer 5 minutes · Pause the timer · Stop the timer · Tunes mode · Stop tunes"
 
     fun normalize(s: String) = s.lowercase(Locale.US).replace(Regex("[^a-z0-9 ]"), " ").replace(Regex("\\s+"), " ").trim()
 
@@ -330,6 +331,7 @@ object VoiceCommands {
         TAB -> CHOICES["tab:$arg"] ?: "tab $arg"
         POINTER -> CHOICES["pointer:$arg"] ?: "pointer $arg"
         MEDIA -> CHOICES["media:$arg"] ?: "media $arg"
+        TUNES -> CHOICES["tunes:$arg"] ?: "tunes $arg"
         TIMER -> CHOICES["timer:$arg"] ?: arg.toLongOrNull()?.let { "timer ${Timer.text(it * 1000)}" } ?: "timer $arg"
         RUN -> "run \"$arg\""
         KEY -> arg
@@ -346,6 +348,7 @@ object VoiceCommands {
                 c.action.startsWith("pointer:") -> POINTER to c.action.removePrefix("pointer:")
                 c.action.startsWith("media:") -> MEDIA to c.action.removePrefix("media:")
                 c.action.startsWith("timer:") -> TIMER to c.action.removePrefix("timer:")
+                c.action.startsWith("tunes:") -> TUNES to c.action.removePrefix("tunes:")
                 else -> c.action to c.arg
             }
             return Match(action, arg, label(settings, action, arg))
@@ -402,6 +405,8 @@ object VoiceCommands {
         Regex("^(?:set |start )?(?:a |an )?(\\w+) (minute|second|hour) timer$").find(t)?.let { r ->
             amount(r.groupValues[1])?.let { n -> return m(TIMER, (n * when (r.groupValues[2].first()) { 's' -> 1; 'h' -> 3600; else -> 60 }).toString()) }
         }
+        if (t in listOf("tunes", "tunes mode", "synthwave", "synth wave", "vibe mode", "start tunes")) return m(TUNES, "on")
+        if (t in listOf("stop tunes", "tunes off", "stop the tunes", "exit tunes")) return m(TUNES, "off")
         if (t in listOf("pause the timer", "pause timer", "resume the timer", "resume timer", "start the timer")) return m(TIMER, "toggle")
         if (t in listOf("stop the timer", "stop timer", "cancel the timer", "cancel timer", "reset the timer", "reset timer")) return m(TIMER, "reset")
         // "<name> terminal" / "<name> screen" (show / open / go to / switch to the …).

@@ -20,6 +20,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- The look-up dashboard's calendar widget (asked for only when it is used). -->
     <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <!-- Tunes: the music's beat and volume from Android's output mix (Visualizer), asked for only when it is used. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Start by itself after the phone starts (Settings.autoStart). -->

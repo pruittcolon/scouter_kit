@@ -22,6 +22,7 @@
 #include "mosh_client.hpp"
 #include "screen.hpp"
 #include "terminal.hpp"
+#include "tunes.hpp"
 
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO, "scouter", __VA_ARGS__)
 
@@ -50,6 +51,9 @@ std::mutex g_term_mutex;                          // guards g_term and g_force
 std::shared_ptr<ssh::GlassesTerminal> g_term;
 bool g_force = false;
 // The phone's screen on the glasses instead of the terminal (screenStart), while wanted.
+// Tunes (Native.tunes): the synthwave scene instead of everything else while wanted. Guarded by g_screen_mutex.
+std::shared_ptr<ssh::TunesScene> g_tunes;
+bool g_tunes_wanted = false;
 std::mutex g_screen_mutex; // guards g_screen and g_screen_wanted
 std::shared_ptr<ssh::ScreenMirror> g_screen;
 bool g_screen_wanted = false;
@@ -378,7 +382,7 @@ bool StopScreen() {
   return screen != nullptr;
 }
 
-enum class Show { kNone, kTerminal, kScreen };
+enum class Show { kNone, kTerminal, kScreen, kTunes };
 
 Show Current() {
   {
@@ -386,7 +390,33 @@ Show Current() {
     if (g_term) return Show::kTerminal;
   }
   std::lock_guard<std::mutex> lock(g_screen_mutex);
-  return g_screen ? Show::kScreen : Show::kNone;
+  return g_tunes ? Show::kTunes : g_screen ? Show::kScreen : Show::kNone;
+}
+
+bool TunesWanted() {
+  std::lock_guard<std::mutex> lock(g_screen_mutex);
+  return g_tunes_wanted;
+}
+
+std::string StartTunes() {
+  auto t = std::make_shared<ssh::TunesScene>();
+  std::string error;
+  if (!t->Start(g_config.dx, g_config.dy, g_ignore_worn, &error)) {
+    LOG("tunes: %s", error.c_str());
+    return error;
+  }
+  std::lock_guard<std::mutex> lock(g_screen_mutex);
+  g_tunes = t;
+  return {};
+}
+
+void StopTunes() {
+  std::shared_ptr<ssh::TunesScene> t;
+  {
+    std::lock_guard<std::mutex> lock(g_screen_mutex);
+    t.swap(g_tunes);
+  }
+  if (t) t->Stop();
 }
 
 // What the glasses show, from the wishes (g_glasses_mutex held): nothing while the display is off, else the
@@ -394,12 +424,13 @@ Show Current() {
 // error). The input pump runs while the terminal does not.
 std::string Apply() {
   if (!g_glasses) return {};
-  Show want = g_blank ? Show::kNone : ScreenWanted() ? Show::kScreen : Show::kTerminal;
+  Show want = g_blank ? Show::kNone : TunesWanted() ? Show::kTunes : ScreenWanted() ? Show::kScreen : Show::kTerminal;
   Show now = Current();
   std::string error;
   if (now != want) {
     if (now == Show::kTerminal) StopTerminal(false, true);
     if (now == Show::kScreen) StopScreen();
+    if (now == Show::kTunes) StopTunes();
     if (want == Show::kNone) {
       scouter_kit::gray::Clear();
       scouter_kit::Flush();
@@ -409,6 +440,14 @@ std::string Apply() {
       g_pump.Stop();
       if (g_panels_off) Panels(true);
       g_panels_off = false;
+      if (want == Show::kTunes) {
+        error = StartTunes();
+        if (!error.empty()) {
+          std::lock_guard<std::mutex> lock(g_screen_mutex);
+          g_tunes_wanted = false;
+          want = ScreenWanted() ? Show::kScreen : Show::kTerminal;
+        }
+      }
       if (want == Show::kScreen) {
         error = StartScreen();
         if (!error.empty()) {
@@ -495,6 +534,7 @@ JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_glassesStart(JNIEnv *env, j
 JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_glassesStop(JNIEnv *, jclass, jboolean keep) {
   g_pump.Stop();
   StopScreen();
+  StopTunes();
   StopTerminal(keep);
   DropFonts();
   std::lock_guard<std::mutex> lock(g_glasses_mutex);
@@ -779,6 +819,28 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_transition(JNIEnv *env, jclass
   }
   std::lock_guard<std::mutex> l(g_fx_mutex);
   g_fx_pending = p;
+}
+
+// Tunes: the synthwave scene on the glasses instead of everything else (on), or what was there again. An error or
+// null.
+JNIEXPORT jstring JNICALL Java_scouterkit_ssh_Native_tunes(JNIEnv *env, jclass, jboolean on) {
+  std::lock_guard<std::mutex> lock(g_glasses_mutex);
+  {
+    std::lock_guard<std::mutex> l(g_screen_mutex);
+    g_tunes_wanted = on;
+  }
+  std::string error = Apply();
+  return error.empty() ? nullptr : env->NewStringUTF(error.c_str());
+}
+
+// The music's pulse and speed for the scene (0 ... 100 each).
+JNIEXPORT void JNICALL Java_scouterkit_ssh_Native_tunesBeat(JNIEnv *, jclass, jint pulse, jint speed) {
+  std::shared_ptr<ssh::TunesScene> t;
+  {
+    std::lock_guard<std::mutex> l(g_screen_mutex);
+    t = g_tunes;
+  }
+  if (t) t->Beat(pulse, speed);
 }
 
 // Transitions on or off (off: every switch at once).

@@ -6,6 +6,7 @@
 #include <thread>
 
 #include "../fx.hpp"
+#include "../tunes.hpp"
 
 namespace g1 = scouter_kit::g1;
 using ssh::Fx;
@@ -181,6 +182,40 @@ int main() {
     CHECK(st.errors == 0);
   }
   fx.Stop();
+
+  // Tunes: the scene draws itself and keeps moving (a later frame differs), the pulse sets the brightness, both
+  // eyes alike; stopped, the program is gone.
+  {
+    g1::Free(uint32_t(a4)); // room for the scene's picture
+    g1::Free(uint32_t(a1));
+    ssh::TunesScene t;
+    bool started = t.Start(100, 9, true, &error);
+    if (!started) std::printf("tunes: %s\n", error.c_str());
+    CHECK(started);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    auto lit = [](int arm) {
+      int n = 0;
+      for (int i = 0; i < 640 * 480; i++) n += g1::emulator::Panel(arm)[i] != 0;
+      return n;
+    };
+    CHECK(lit(0) > 20000 && lit(1) > 20000);
+    std::vector<uint8_t> a(g1::emulator::Panel(0), g1::emulator::Panel(0) + 640 * 480);
+    t.Beat(100, 100);
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    CHECK(!std::equal(a.begin(), a.end(), g1::emulator::Panel(0)));
+    g1::VmStatus vs{};
+    CHECK(g1::left.Status(&vs) && vs.state == 1); // running, not halted
+    if (vs.state != 1) std::printf("tunes: state %d halt %d at %u\n", vs.state, vs.halt_code, vs.next);
+    uint32_t b0 = 0, b1 = 0;
+    t.Beat(0, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    g1::left.Prop(g1::PROP_BRIGHTNESS, &b0);
+    t.Beat(100, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    g1::left.Prop(g1::PROP_BRIGHTNESS, &b1);
+    CHECK(b1 > b0);
+    t.Stop();
+  }
   g1::Deinit();
   std::printf(failures ? "%d failures\n" : "all tests passed (0 failures)\n", failures);
   return failures ? 1 : 0;

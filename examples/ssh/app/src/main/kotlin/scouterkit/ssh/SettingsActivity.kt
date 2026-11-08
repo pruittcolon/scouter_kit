@@ -100,7 +100,19 @@ class SettingsActivity : Activity() {
             settings.trackpad = it
             restart()
         })
-        hot.addView(slider("Trackpad speed", 1, 10, settings.trackpadSpeed, { "$it" }) { v -> settings.trackpadSpeed = v })
+
+        val speed = page.section("Cursor speed", "set_cursor", "pointer",
+            hint = "How the trackpad moves the glasses' arrow and scrolls the terminal.")
+        speed.addView(slider("Speed", 1, 10, settings.trackpadSpeed, { "$it" }) { v -> settings.trackpadSpeed = v })
+        speed.addView(slider("Acceleration", 0, 10, settings.trackpadAccel, { if (it == 0) "none" else "$it" }) { v ->
+            settings.trackpadAccel = v
+        })
+        speed.addView(slider("Scroll speed", 1, 10, settings.scrollSpeed, { "$it line" + if (it == 1) "" else "s" }) { v ->
+            settings.scrollSpeed = v
+        })
+        speed.addToggle(toggle("Natural scrolling", "The text follows your fingers, as on a phone", settings.scrollNatural) {
+            settings.scrollNatural = it
+        })
         hot.addToggle(toggle("Keyboard mode", "A paired keyboard types into the terminal while this app is open", settings.keyboard) {
             settings.keyboard = it
         })
@@ -110,6 +122,19 @@ class SettingsActivity : Activity() {
         hot.addView(chipRow(chip("Use the bonded keyer", false) {
             bondedKeyer()?.let { keyer.setText(it) } ?: run { keyer.error = "no bonded keyer: pair it in Android's Bluetooth settings" }
         }))
+
+        val tunes = page.section("Tunes", "set_tunes", "spark",
+            hint = "The synthwave scene (Glasses tab, Tunes; Alt+U; \"tunes mode\") and the Tunes bar on the look-up screen.")
+        tunes.addView(subhead("It follows"))
+        tunes.addView(segmented(listOf(Tunes.BEAT to "The beat", Tunes.VOLUME to "The volume", Tunes.STEADY to "A steady tempo"),
+            settings.tunesMode) { settings.tunesMode = it })
+        tunes.addView(slider("Steady tempo", 60, 160, settings.tunesBpm, { "$it BPM" }) { settings.tunesBpm = it })
+        tunesState = text("", 12.5f, Ui.FAINT)
+        tunes.addView(tunesState)
+        tunesButton = button("Allow the microphone (to follow the music)") {
+            requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), ASK)
+        }
+        tunes.addView(tunesButton)
 
         val key = page.section("SSH key", "set_key", "key", hint = "The phone's own key: the private half never leaves it.")
         keyState = text("", 13f, Ui.MUTED)
@@ -253,6 +278,10 @@ class SettingsActivity : Activity() {
         }
         showGlasses()
         showDiagnostics()
+        val mic = Tunes.allowed(this)
+        tunesState.text = if (mic) "Follows the music playing on the phone (Android's output mix; nothing is recorded or kept)."
+            else "Without the microphone it keeps a steady tempo."
+        tunesButton.visibility = if (mic) android.view.View.GONE else android.view.View.VISIBLE
         hotState.text = if (Hotkeys.everywhere(this)) "In every app: on" else "In every app: off (only while Vox is in front)"
         connect.isChecked = settings.glassesAllowed
         connect.isEnabled = settings.left.isNotEmpty() && settings.right.isNotEmpty()
@@ -342,6 +371,8 @@ class SettingsActivity : Activity() {
     private var asked = false
     private lateinit var termuxState: TextView
     private lateinit var diagnostics: TextView
+    private lateinit var tunesState: TextView
+    private lateinit var tunesButton: android.view.View
     private lateinit var permissions: TextView
     private lateinit var glassesState: TextView
     private lateinit var connect: Switch

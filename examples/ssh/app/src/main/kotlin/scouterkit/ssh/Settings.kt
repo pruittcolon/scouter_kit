@@ -144,6 +144,13 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("trackpad", true)
         set(v) = prefs.edit().putBoolean("trackpad", v).apply()
     var trackpadSpeed: Int by Number("trackpad_speed", 5)
+    // How much quicker strokes go further (0 none ... 10), lines a scroll step moves (1 ... 10), and the scroll's
+    // direction (natural: the content follows the fingers, as on a phone).
+    var trackpadAccel: Int by Number("trackpad_accel", 5)
+    var scrollSpeed: Int by Number("scroll_speed", 3)
+    var scrollNatural: Boolean
+        get() = prefs.getBoolean("scroll_natural", true)
+        set(v) = prefs.edit().putBoolean("scroll_natural", v).apply()
     // A keyboard paired with the phone types into the glasses' terminal while it shows (VoxKeys), whatever app is in
     // front.
     var keysToGlasses: Boolean
@@ -164,6 +171,9 @@ class Settings(context: Context) {
     // The dashboard's weather: the city, "c" or "f" (empty: by the phone's country), and the city's place as looked up
     // ("CITY|lat|lon|name").
     var weatherCity: String by Text("weather_city", "")
+    // Tunes (Tunes.kt): what the synthwave follows (Tunes.BEAT, VOLUME, STEADY) and the steady tempo.
+    var tunesMode: String by Text("tunes_mode", Tunes.BEAT)
+    var tunesBpm: Int by Number("tunes_bpm", 100)
     var weatherUnit: String by Text("weather_unit", "")
     var weatherPlace: String by Text("weather_place", "")
     // The dashboard's height on the glasses, 0 without it (even, as the native side takes it).

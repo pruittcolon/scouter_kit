@@ -41,6 +41,7 @@ class MainActivity : Activity() {
     private lateinit var alwaysAction: RoundAction
     private lateinit var voiceAction: RoundAction
     private lateinit var pointerAction: RoundAction
+    private lateinit var tunesAction: RoundAction
     private lateinit var serversBox: LinearLayout
     private lateinit var tabStrip: LinearLayout
     private var tabStripKey: String? = null
@@ -256,7 +257,8 @@ class MainActivity : Activity() {
         pointerAction = RoundAction(this, "pointer", "Pointer") {
             ScouterService.send(this, ScouterService.ACTION_POINTER, "cmd" to "toggle")
         }
-        for (a in listOf(displayAction, alwaysAction, voiceAction, pointerAction)) actions.addView(a, lp(0, weight = 1f))
+        tunesAction = RoundAction(this, "spark", "Tunes") { ScouterService.send(this, ScouterService.ACTION_TUNES) }
+        for (a in listOf(displayAction, alwaysAction, voiceAction, pointerAction, tunesAction)) actions.addView(a, lp(0, weight = 1f))
         page.addView(actions)
 
         val light = card()
@@ -1159,6 +1161,7 @@ class MainActivity : Activity() {
         }
         val title = when {
             !running -> "Vox"
+            Session.tunes -> "Tunes"
             Session.showing == Settings.SCREEN -> if (remoteShown) Session.source else "Phone · screen"
             else -> Session.source.ifEmpty { "${active?.name ?: "Terminal"} · terminal" }
         }
@@ -1166,6 +1169,7 @@ class MainActivity : Activity() {
             starting -> "Starting…"
             !running -> "Tap a source to start"
             Session.blank -> "Display off"
+            Session.tunes -> "\u266B  Synthwave on the glasses"
             Session.showing == Settings.TERMINAL && !Session.shown && !settings.phoneForce -> "Look up to see it"
             else -> ""
         }
@@ -1228,6 +1232,7 @@ class MainActivity : Activity() {
         alwaysAction.set(settings.phoneForce, if (settings.phoneForce) "Always on" else "Look up")
         voiceAction.set(Session.listening, if (Session.listening) "Listening" else "Voice")
         pointerAction.set(Session.pointer)
+        tunesAction.set(Session.tunes)
 
         // The look per app.
         val lk = Looks.key
