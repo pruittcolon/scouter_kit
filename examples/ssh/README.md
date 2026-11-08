@@ -335,7 +335,9 @@ checked by SHA-256, sherpa-onnx's `OfflineTts` made sentence by sentence and pla
 choose from), else Android's text-to-speech (its best installed voice). Chimes, made in code: Car mode on, listening
 (rising), sent (falling), a soft tick while Claude thinks, a low pair for a problem, a step down when nothing was
 sent. Next while Claude speaks or thinks asks again; play / pause stops the answer or cancels; Previous says the
-answer again (idle: play / pause and Previous go to the music app). The car's screen shows what Vox does, or what
+answer again. Idle, play / pause goes to the music app and Previous starts a new conversation: a new tmux tab in
+front running a fresh `claude --model sonnet` (quicker for talk; the glasses show it), where the next question
+goes (a chat: its session forgotten). The car's screen shows what Vox does, or what
 plays.
 
 ## From the phone alone (Termux, the phone's screen)

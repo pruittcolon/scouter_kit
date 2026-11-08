@@ -629,6 +629,20 @@ out(error="Claude is still working on it; the answer will be on the glasses.")
             "command -v tmux >/dev/null || { echo 'VOX: tmux is not installed there'; exit 0; }; " +
             "printf %s ${q(text)} | python3 -c ${q(TERMINAL_PY)} ${q(session)} $limit${if (dry) " dry" else ""} 2>&1"
 
+    // A new tab (tmux window) in `session` running a fresh Claude (Sonnet: quicker for talk), in front, so the next
+    // question goes to it;
+    // waits (12 s at most) for Claude's prompt.
+    fun newTab(vault: Vault, server: Settings.Server, session: String): Answer = run(vault, server, PATH + newTabScript(session))
+
+    fun newTabScript(session: String): String =
+        "S=${q(session)}; " +
+            "command -v tmux >/dev/null || { echo 'VOX: tmux is not installed there'; exit 0; }; " +
+            "tmux has-session -t \"\$S\" 2>/dev/null || { echo \"VOX: There is no Claude session called \$S running there.\"; exit 0; }; " +
+            "P=\$(tmux new-window -P -F '#{pane_id}' -c \"\$HOME\" -e \"PATH=\$PATH\" -t \"\$S:\" -n voice 'exec claude --model sonnet') || " +
+            "{ echo 'VOX: tmux could not open a tab'; exit 0; }; " +
+            "i=0; while [ \$i -lt 24 ]; do tmux capture-pane -p -t \"\$P\" 2>/dev/null | grep -q 'for shortcuts' && break; " +
+            "sleep 0.5; i=\$((i+1)); done; echo '{\"text\": \"ok\"}'"
+
     fun askTerminal(vault: Vault, server: Settings.Server, text: String, session: String): Answer =
         run(vault, server, terminalCommand(text, session, 240))
 
@@ -769,7 +783,7 @@ class CarMode(private val context: Context, private val host: CarHost) {
             KeyEvent.KEYCODE_MEDIA_PREVIOUS -> when (state) {
                 State.SPEAKING -> if (lastAnswer.isNotEmpty()) speak(lastAnswer, "answer")
                 State.STARTING, State.LISTENING, State.SENDING, State.THINKING -> cancel("Cancelled.", false)
-                State.IDLE -> Media.control("prev")
+                State.IDLE -> newConversation()
             }
             KeyEvent.KEYCODE_MEDIA_STOP -> if (state == State.IDLE) Media.control("toggle") else cancel("Stopped.", false)
         }
@@ -984,12 +998,36 @@ class CarMode(private val context: Context, private val host: CarHost) {
         h.postDelayed({ if (state == State.IDLE) say("Hi, this is how Claude sounds in the car.") }, 1500)
     }
 
+    // Previous (idle) or the Voice tab: a new conversation. The terminal: a new tab running a fresh Claude, in front
+    // (the glasses show it), where the next question goes; a chat: its session forgotten.
     fun newConversation() {
+        if (state != State.IDLE) return
         settings.carSession = ""
-        if (state == State.IDLE) {
+        if (settings.carTarget == "chat") {
             CarSounds.play(CarSounds.Sound.READY)
-            say("New conversation.")
+            return say("New conversation.")
         }
+        val server = host.carServer() ?: return fail("Add a server for Claude in Vox first.")
+        state = State.THINKING
+        asked = "A new conversation"
+        holdFocus()
+        host.carBand("$MIC Opening a new conversation…", true)
+        show()
+        h.postDelayed(pulse, 1200)
+        val id = ++request
+        val tmux = host.carTmux(server)
+        Log.i(ScouterService.TAG, "car: a new Claude tab in tmux $tmux on ${server.name}")
+        Thread {
+            val a = CarClaude.newTab(host.carVault(), server, tmux)
+            h.post {
+                if (id != request || state != State.THINKING) return@post
+                h.removeCallbacks(pulse)
+                if (a.error != null) return@post fail(a.error)
+                CarSounds.play(CarSounds.Sound.READY)
+                host.carBand("$MIC New conversation: press next to talk", false)
+                say("New conversation. Press next to talk.")
+            }
+        }.start()
     }
 
     companion object {
