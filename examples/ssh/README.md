@@ -324,8 +324,11 @@ start playing gets them). Vox plays it again half a second after any other playe
 `AudioPlaybackCallback`: Spotify resuming after an answer, a new track) and, on Android 13+, whenever Android says
 the keys went elsewhere (if it lets Vox know).
 
-Next listens on the glasses' microphone (Parakeet, loaded ahead when Car mode comes on); the listening chime plays
-once the microphone hears, so nothing said is lost. Next again sends (a chime at once; what was still being said is
+Next listens on the phone's own microphone by default (*Listen with*; the glasses' battery spared: `PhoneMic`,
+16 kHz, voice-recognition tuning), or the glasses' (Parakeet either way, loaded ahead when Car mode comes on); the
+listening chime plays once the microphone hears, so nothing said is lost. In the back, Android lets an app hear
+only through a microphone foreground service started while the app was in front: ScouterService adds that type
+whenever Vox comes to the front with the microphone allowed (and drops it again if Android refuses it later). Next again sends (a chime at once; what was still being said is
 read too). Nothing else ends a question but play / pause (sends) and two minutes. The words go, by default
 (*Talk to: this Claude*), into the Claude session running in the server's tmux (the conversation the glasses show,
 which goes on there): a small Python script on the server finds the pane running Claude, refuses while Claude

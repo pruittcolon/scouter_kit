@@ -363,6 +363,8 @@ class Settings(context: Context) {
     var carTarget: String by Text("car_target", "terminal")
     var carVoice: String by Text("car_voice", "kokoro")
     var carSpeaker: Int by Number("car_speaker", 3)
+    // Car mode listens on "phone" (its own microphone: the glasses' battery spared) or "glasses".
+    var carMic: String by Text("car_mic", "phone")
 
     // The pointer turns tmux's mouse on (so clicks reach tmux: tabs, panes, scrolling).
     var tmuxMouse: Boolean

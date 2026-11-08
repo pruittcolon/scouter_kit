@@ -275,7 +275,15 @@ class ScouterService : Service() {
         // Android 14+ refuses a connectedDevice service without its runtime prerequisite (Bluetooth), and 12+ one
         // started from the background without an exemption (keyer's association): then no service.
         try {
-            startForeground(NOTIFICATION, notification(), types()) // keeps mediaProjection while the screen is shared
+            // Keeps mediaProjection while the screen is shared (and the microphone once allowed: if Android won't
+            // now, in the back, without it).
+            try {
+                startForeground(NOTIFICATION, notification(), types())
+            } catch (e: SecurityException) {
+                if (!micService) throw e
+                micService = false
+                startForeground(NOTIFICATION, notification(), types())
+            }
         } catch (e: SecurityException) {
             return refused(e)
         } catch (e: IllegalStateException) {
@@ -342,6 +350,7 @@ class ScouterService : Service() {
             ACTION_VOICE -> work.post {
                 when (intent.getStringExtra("mode")) {
                     "car_check" -> carCheck()
+                    "mic_fg" -> micForeground()
                     "car_test" -> carTest()
                     "car_new" -> {
                         settings.carSession = ""
@@ -1151,12 +1160,30 @@ class ScouterService : Service() {
     }
 
     // The foreground service's types: the glasses link, and screen sharing while it runs (Android 14+ checks).
+    // And the microphone once Vox was in front with it allowed (Android lets a service in the back hear only when it
+    // became a microphone service while the app was open): Car mode's phone microphone.
     private fun types() = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
-        (if (screen != null) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION else 0)
+        (if (screen != null) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION else 0) or
+        (if (micService) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
+    @Volatile private var micService = false
 
     private fun foreground() = main.post {
-        if (!ended) runCatching { startForeground(NOTIFICATION, notification(), types()) }
-            .onFailure { Log.w(TAG, "foreground: ${it.message}") }
+        if (ended) return@post
+        runCatching { startForeground(NOTIFICATION, notification(), types()) }.onFailure {
+            Log.w(TAG, "foreground: ${it.message}")
+            if (micService) { // not allowed now: without the microphone
+                micService = false
+                runCatching { startForeground(NOTIFICATION, notification(), types()) }
+            }
+        }
+    }
+
+    // Vox in front (MainActivity): the service becomes a microphone service too, if the microphone is allowed.
+    private fun micForeground() {
+        if (micService || checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
+        micService = true
+        foreground()
+        Log.i(TAG, "car: the phone's microphone may be used in the back")
     }
 
     // Android's consent came (MainActivity): in the foreground as mediaProjection first (Android 14+ requires it
@@ -1166,8 +1193,12 @@ class ScouterService : Service() {
         val data = intent.getParcelableExtra<Intent>(EXTRA_DATA) ?: return
         val code = intent.getIntExtra(EXTRA_CODE, 0)
         try {
-            startForeground(NOTIFICATION, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+            val with = types() or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION // the microphone kept if it was
+            runCatching { startForeground(NOTIFICATION, notification(), with) }.onFailure {
+                if (!micService) throw it
+                micService = false
+                startForeground(NOTIFICATION, notification(), types() or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+            }
         } catch (e: Exception) {
             work.post { update(screen = "Android refused screen sharing: ${e.message}") }
             return
@@ -2283,7 +2314,8 @@ class ScouterService : Service() {
                        onSpeaking: (Boolean) -> Unit, onEnd: (String) -> Unit, tries: Int) {
         if (!VoiceModel.available) return onEnd("This Vox has no speech engine")
         if (!VoiceModel.ready(this)) return onEnd("Download the speech model in Vox, on the Voice tab, first")
-        if (Session.glasses != "ready") return onEnd("Connect the glasses to talk to Claude")
+        val phone = settings.carMic != "glasses"
+        if (!phone && Session.glasses != "ready") return onEnd("Connect the glasses to talk to Claude")
         if (carListener != null) return onEnd("")
         if (listener != null || voiceLoading) {
             listener?.stop()
@@ -2315,7 +2347,8 @@ class ScouterService : Service() {
                             work.postDelayed({ voiceAlways() }, 1500)
                         }
                     },
-                    onSpeaking = onSpeaking, flushOnStop = true, onLive = onLive)
+                    onSpeaking = onSpeaking, flushOnStop = true, onLive = onLive,
+                    mic = if (phone) PhoneMic(this@ScouterService) else GlassesMic)
                 carListener = l
                 Session.listening = true
                 Session.changed()

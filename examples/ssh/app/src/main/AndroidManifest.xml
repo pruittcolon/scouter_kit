@@ -13,6 +13,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <!-- The phone's screen on the glasses (Android's screen sharing). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- Car mode listening on the phone's own microphone while Vox is in the back. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- Termux on this phone as the server: its sshd started through Termux's RUN_COMMAND. -->
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
     <!-- Settings, "Let it run in the background": Android's own dialog. -->
@@ -102,7 +104,7 @@
         <service
             android:name=".ScouterService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|mediaProjection" />
+            android:foregroundServiceType="connectedDevice|mediaProjection|microphone" />
         <!-- Quick Settings: the glasses' display off / on. -->
         <service
             android:name=".GlassesTile"

@@ -155,6 +155,64 @@ class VoiceEngine(context: Context) {
     fun release() = recognizer.release()
 }
 
+// Where a listener hears: the glasses' microphone (the right arm, over Bluetooth) or the phone's own. start():
+// null when it hears, else why not; read(): samples at 16 kHz (0: none yet, < 0: it stopped).
+interface Mic {
+    fun start(): String?
+    fun read(out: FloatArray): Int
+    fun stop()
+}
+
+object GlassesMic : Mic {
+    override fun start() = if (Native.micStart()) null else "the glasses' microphone did not start (the right arm connected?)"
+    override fun read(out: FloatArray) = Native.micRead(out)
+    override fun stop() = Native.micStop()
+}
+
+// The phone's microphone (voice recognition tuning), 16 kHz floats. In the back, Android lets Vox hear only while its
+// service runs as a microphone service (ScouterService, once Vox was opened); else it gets silence: said as such.
+class PhoneMic(private val context: android.content.Context) : Mic {
+    private var rec: android.media.AudioRecord? = null
+
+    @android.annotation.SuppressLint("MissingPermission")
+    override fun start(): String? {
+        if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            return "Vox may not use the phone's microphone yet: allow it in Vox, on the Voice tab"
+        val fmt = android.media.AudioFormat.ENCODING_PCM_FLOAT
+        val ch = android.media.AudioFormat.CHANNEL_IN_MONO
+        val r = runCatching {
+            android.media.AudioRecord(android.media.MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000, ch, fmt,
+                maxOf(android.media.AudioRecord.getMinBufferSize(16000, ch, fmt), 16000 * 4))
+        }.getOrNull() ?: return "the phone's microphone did not start"
+        if (r.state != android.media.AudioRecord.STATE_INITIALIZED) {
+            r.release()
+            return "the phone's microphone did not start"
+        }
+        r.startRecording()
+        Thread.sleep(150)
+        val silenced = android.os.Build.VERSION.SDK_INT >= 29 && r.activeRecordingConfiguration?.isClientSilenced == true
+        if (r.recordingState != android.media.AudioRecord.RECORDSTATE_RECORDING || silenced) {
+            runCatching { r.stop() }
+            r.release()
+            return if (silenced) "Android keeps the phone's microphone from Vox in the back: open Vox once, then try again"
+                else "the phone's microphone is busy"
+        }
+        rec = r
+        return null
+    }
+
+    override fun read(out: FloatArray): Int {
+        val r = rec ?: return -1
+        val n = r.read(out, 0, minOf(out.size, 1600), android.media.AudioRecord.READ_BLOCKING)
+        return if (n < 0) -1 else n
+    }
+
+    override fun stop() {
+        rec?.let { r -> runCatching { r.stop() }; r.release() }
+        rec = null
+    }
+}
+
 // Floats that grow (the phrase being spoken).
 private class Floats {
     var data = FloatArray(16000)
@@ -190,6 +248,7 @@ class VoiceListener(
     private val onSpeaking: (Boolean) -> Unit = {},
     private val flushOnStop: Boolean = false,
     private val onLive: () -> Unit = {}, // the microphone is on (Car mode's chime)
+    private val mic: Mic = GlassesMic,
 ) {
     @Volatile private var stopped = false
 
@@ -204,8 +263,8 @@ class VoiceListener(
         var vad: Vad? = null
         try {
             vad = Vad(null, engine.vadConfig)
-            if (!Native.micStart()) {
-                why = "the glasses' microphone did not start (the right arm connected?)"
+            mic.start()?.let {
+                why = it
                 return
             }
             onLive()
@@ -219,9 +278,9 @@ class VoiceListener(
             var heard = false
             val started = android.os.SystemClock.elapsedRealtime()
             while (!stopped) {
-                val n = Native.micRead(got)
+                val n = mic.read(got)
                 if (n < 0) {
-                    why = "the glasses' microphone stopped"
+                    why = if (mic === GlassesMic) "the glasses' microphone stopped" else "the phone's microphone stopped"
                     break
                 }
                 val now = android.os.SystemClock.elapsedRealtime()
@@ -278,7 +337,7 @@ class VoiceListener(
         } catch (e: Exception) {
             why = e.message ?: "voice stopped"
         } finally {
-            runCatching { Native.micStop() }
+            runCatching { mic.stop() }
             runCatching { vad?.release() }
             onEnd(why)
         }

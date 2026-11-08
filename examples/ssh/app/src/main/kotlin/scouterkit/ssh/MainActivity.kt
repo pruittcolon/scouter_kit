@@ -16,6 +16,7 @@ import android.widget.TextView
 import java.io.File
 
 private const val SCREEN_REQUEST = 7 // the screen-sharing consent
+private const val MIC_REQUEST = 8 // Car mode's phone microphone
 
 // Vox's main screen, in tabs with icons: Glasses (what they show, live; the sources as a grid that Alt+arrows
 // walk; the display, always visible, voice and the pointer; brightness), Screen (the picture the glasses get and
@@ -846,12 +847,17 @@ class MainActivity : Activity() {
         carBox.addView(text("In the car, press Next on the steering wheel, wait for the chime, talk, then press Next " +
             "again to send. Claude's answer is read aloud through the car; the music pauses meanwhile and comes back " +
             "after. Next while Claude talks: ask again. Play / pause stops the answer, Previous hears it again. " +
-            "Previous otherwise starts a new conversation (a new Claude tab). It listens on the glasses' microphone; " +
-            "while Car mode is on the glasses' display stays off, since you are driving.", 13f, Ui.MUTED).apply { setPadding(0, dp(4), 0, dp(6)) })
+            "Previous otherwise starts a new conversation (a new Claude tab). It listens on the phone's microphone (or " +
+            "the glasses'); while Car mode is on the glasses' display stays off, since you are driving.", 13f, Ui.MUTED).apply { setPadding(0, dp(4), 0, dp(6)) })
         carBox.addView(segmented(listOf("auto" to "When the car connects", "on" to "Always", "off" to "Off"), settings.carMode) {
             settings.carMode = it
             ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "car_check")
             showVoice()
+        })
+        carBox.addView(text("Listen with", 13f, Ui.FAINT).apply { setPadding(0, dp(6), 0, 0) })
+        carBox.addView(segmented(listOf("phone" to "The phone's microphone", "glasses" to "The glasses'"), settings.carMic) {
+            settings.carMic = it
+            if (it == "phone") askMic()
         })
         carBox.addView(text("Talk to", 13f, Ui.FAINT).apply { setPadding(0, dp(6), 0, 0) })
         carBox.addView(segmented(listOf("terminal" to "This Claude (the terminal)", "chat" to "A separate chat"),
@@ -1190,6 +1196,10 @@ class MainActivity : Activity() {
         resumed = true
         Session.listeners += listener
         Session.foreground = true
+        // While Vox is in front: its service may become a microphone service (Car mode's phone microphone).
+        if (ScouterService.running && checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED)
+            ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "mic_fg")
         Preview.listener = previewListener
         gridKey = ""
         buildSources()
@@ -1471,6 +1481,13 @@ class MainActivity : Activity() {
             .setNegativeButton("Cancel", null).show()
     }
 
+    // Car mode on the phone's microphone: Android asks once; Vox's service then may hear in the back.
+    private fun askMic() {
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED)
+            ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "mic_fg")
+        else requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), MIC_REQUEST)
+    }
+
     // Car mode's voice (Kokoro), as the speech model is downloaded.
     private fun downloadCarVoice() {
         if (KokoroModel.progress >= 0) return
@@ -1574,6 +1591,8 @@ class MainActivity : Activity() {
             lookUpChanged()
             show()
         }
+        if (request == MIC_REQUEST && results.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED)
+            ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "mic_fg")
     }
 
     override fun onPause() {
