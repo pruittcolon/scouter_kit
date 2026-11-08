@@ -1196,6 +1196,8 @@ class MainActivity : Activity() {
             banners += Triple("glasses", "Pair your glasses (in the open case).", "Pair" to { startActivity(Intent(this, PairingActivity::class.java)) })
         if (running && Session.glasses == "ready" && !both) banners += Triple("glasses", "One arm is not connected.", null)
         if (settings.servers().isEmpty()) banners += Triple("server", "Add a server for the terminal.", "Add" to { editServer(null) })
+        if (!Hotkeys.everywhere(this)) banners += Triple("keyboard", "Turn on Vox in Accessibility so your keyboard and " +
+            "trackpad reach the glasses from any app.", "Turn on" to { openAccessibility() })
         note?.let { n -> banners += Triple("info", n, "OK" to { note = null; show() }) }
         val key = banners.joinToString("|") { it.first + it.second + (it.third?.first ?: "") }
         if (key != bannerKey) {
@@ -1312,6 +1314,14 @@ class MainActivity : Activity() {
         page.post { page.scrollTo(0, y) }
         sharingShown = null
         previewView.refresh()
+    }
+
+    // Vox's switch in Android's accessibility settings (its own page where Android has one).
+    private fun openAccessibility() {
+        val me = android.content.ComponentName(this, VoxKeys::class.java).flattenToString()
+        runCatching {
+            startActivity(Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS").putExtra(Intent.EXTRA_COMPONENT_NAME, me))
+        }.onFailure { runCatching { startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) } }
     }
 
     private fun title(t: String) {

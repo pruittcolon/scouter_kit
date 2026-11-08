@@ -206,6 +206,11 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   middle, to click through and type. A right click on one with its own Reply (messages) writes a quick reply on
   the dashboard instead: typed (VoxKeys takes the keys meanwhile) or said (Alt+Space), Enter sends it through the
   notification (Android's RemoteInput), Escape cancels.
+- **Typing on the glasses** (*Type on the glasses*, Settings, *Keyboard and trackpad*, on by default; VoxKeys): while
+  the glasses show the terminal on an eye, a keyboard paired with the phone types into it whatever app is in front
+  (Keyboard.kt's key stream, as keyboard mode does); the Alt shortcuts stay shortcuts. Alt+K sends the keys to the
+  phone's apps and back (the glasses say which). With the phone's screen on the glasses the keys are its app's.
+  Arrows, Enter and Space drive the pointer only after Alt+M; on by the trackpad, every key types.
 - **A mouse or a keyboard's trackpad** paired with the phone (*Trackpad on the glasses*, Settings, *Keyboard and trackpad*, on
   by default; VoxKeys, Android 15+): while the glasses show the terminal (or a card) and it shows on an eye, VoxKeys
   takes the trackpad's events from the phone's apps and they drive the glasses' pointer: it glides a cell at a time

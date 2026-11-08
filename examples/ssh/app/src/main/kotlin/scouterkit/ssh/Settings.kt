@@ -144,6 +144,11 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("trackpad", true)
         set(v) = prefs.edit().putBoolean("trackpad", v).apply()
     var trackpadSpeed: Int by Number("trackpad_speed", 5)
+    // A keyboard paired with the phone types into the glasses' terminal while it shows (VoxKeys), whatever app is in
+    // front.
+    var keysToGlasses: Boolean
+        get() = prefs.getBoolean("keys_to_glasses", true)
+        set(v) = prefs.edit().putBoolean("keys_to_glasses", v).apply()
     // Transitions on the glasses when the source changes (Fx.kt).
     var animations: Boolean
         get() = prefs.getBoolean("animations", true)

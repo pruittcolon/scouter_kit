@@ -18,8 +18,23 @@ import android.view.accessibility.AccessibilityEvent
 // MainActivity takes them
 // while Vox is in front; VoxKeys (an accessibility service the user turns on) everywhere.
 object Hotkeys {
-    // The event was a shortcut (both its press and its release are ours then).
+    // The event was Vox's: a shortcut, or a key typed into the glasses' terminal (both its press and its release are
+    // ours then).
     fun handle(context: Context, e: KeyEvent): Boolean {
+        if (shortcut(context, e)) return true
+        return toGlasses(context, e) && Keyboard.send(e)
+    }
+
+    // The glasses show the terminal (on an eye now): a keyboard's keys are its, whatever app is in front on the
+    // phone (Alt+K sends them to the phone again until it is pressed again; the phone's screen on the glasses takes
+    // them as always).
+    fun toGlasses(context: Context, e: KeyEvent): Boolean {
+        if (!Keyboard.physical(e) || Session.keysToPhone || !ScouterService.running) return false
+        if (Session.glasses != "ready" || Session.blank || Session.showing != Settings.TERMINAL || !Session.shown) return false
+        return Settings(context).keysToGlasses
+    }
+
+    private fun shortcut(context: Context, e: KeyEvent): Boolean {
         val settings = Settings(context)
         if (!settings.hotkeys) return false
         // A quick reply being written on the dashboard: every key is its (Alt+Space / Alt+V still listen).
@@ -50,9 +65,9 @@ object Hotkeys {
                 }
             }
         }
-        // The pointer's keys while it is on (no Alt): arrows move it (Shift: by 5), Enter or Space clicks (Shift+Enter:
-        // right click), Page Up / Down scroll, Escape ends it.
-        if (Session.pointer && !e.isAltPressed && !e.isCtrlPressed && !e.isMetaPressed) {
+        // The pointer's keys while Alt+M put it on (no Alt): arrows move it (Shift: by 5), Enter or Space clicks
+        // (Shift+Enter: right click), Page Up / Down scroll, Escape ends it. On by the trackpad, the keys type.
+        if (Session.pointer && Session.pointerKeys && !e.isAltPressed && !e.isCtrlPressed && !e.isMetaPressed) {
             val step = if (e.isShiftPressed) 5 else 1
             val cmd = when (e.keyCode) {
                 KeyEvent.KEYCODE_DPAD_LEFT -> "move:${-step}:0"
@@ -87,6 +102,11 @@ object Hotkeys {
                 else AccessibilityService.GLOBAL_ACTION_HOME)
             return true
         }
+        // Alt+K: the keyboard to the phone's apps, or back to the glasses' terminal.
+        if (e.keyCode == KeyEvent.KEYCODE_K) {
+            if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0) ScouterService.send(context, ScouterService.ACTION_KEYS)
+            return true
+        }
         // Alt+Q closes the source shown (a terminal's connection, a screen's sharing).
         if (e.keyCode == KeyEvent.KEYCODE_Q) {
             if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0) ScouterService.send(context, ScouterService.ACTION_CLOSE)
@@ -103,7 +123,7 @@ object Hotkeys {
         if (tab != null || e.keyCode == KeyEvent.KEYCODE_M) {
             if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0) {
                 if (tab != null) ScouterService.send(context, ScouterService.ACTION_TABS, "tab" to tab)
-                else ScouterService.send(context, ScouterService.ACTION_POINTER, "cmd" to "toggle")
+                else ScouterService.send(context, ScouterService.ACTION_POINTER, "cmd" to "keys")
             }
             return true
         }

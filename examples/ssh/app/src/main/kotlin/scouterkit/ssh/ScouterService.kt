@@ -66,6 +66,8 @@ object Session {
     @Volatile var replyStatus = ""
     @Volatile var tabList = listOf<Tabs.Tab>() // the terminal's tabs (tmux windows), for the dashboard
     @Volatile var terms: Map<String, String> = emptyMap() // each terminal's state by server id (Term.status)
+    @Volatile var keysToPhone = false // Alt+K: the keyboard types into the phone's apps even while the terminal shows
+    @Volatile var pointerKeys = false // Alt+M put the pointer on: the arrows, Enter and Space are its
     @Volatile var heard = listOf<String>() // the last phrases, newest first
     // The devices Android reports near (ScouterCompanionService: keyer); null: unknown (none reported since the
     // process started, Bluetooth was off since, or keyer's link did not come after the last report).
@@ -312,6 +314,11 @@ class ScouterService : Service() {
             // The pointer (extra "cmd": toggle, off, move:DX:DY, click, right, up, down) and tabs (extra "tab").
             ACTION_POINTER -> work.post { pointer(intent.getStringExtra("cmd").orEmpty()) }
             ACTION_TABS -> work.post { tabs(intent.getStringExtra("tab").orEmpty()) }
+            // Alt+K: the keyboard's keys to the phone's apps, or back to the glasses' terminal.
+            ACTION_KEYS -> work.post {
+                Session.keysToPhone = !Session.keysToPhone
+                voiceSay(if (Session.keysToPhone) "\u2328 Keyboard: phone (Alt+K for the glasses)" else "\u2328 Keyboard: glasses")
+            }
             // The look-up view's settings changed: the header and the fade again.
             ACTION_LOOK_UP -> work.post {
                 Native.fxEnabled(settings.animations)
@@ -1245,6 +1252,11 @@ class ScouterService : Service() {
         }
         when (parts[0]) {
             "toggle" -> if (Session.pointer) pointerOff() else pointerOn()
+            // Alt+M: the pointer with the keys (arrows, Enter, Space), or off.
+            "keys" -> if (Session.pointer && Session.pointerKeys) pointerOff() else {
+                if (!Session.pointer) pointerOn()
+                Session.pointerKeys = true
+            }
             "off" -> pointerOff()
             "move" -> {
                 if (!Session.pointer) pointerOn()
@@ -1458,6 +1470,10 @@ class ScouterService : Service() {
     private fun phonePointer(parts: List<String>) {
         when (parts[0]) {
             "toggle" -> if (Session.pointer) pointerOff() else pointerOn()
+            "keys" -> if (Session.pointer && Session.pointerKeys) pointerOff() else {
+                if (!Session.pointer) pointerOn()
+                Session.pointerKeys = true
+            }
             "off" -> pointerOff()
             "move" -> {
                 if (!Session.pointer) pointerOn()
@@ -1519,6 +1535,7 @@ class ScouterService : Service() {
 
     private fun pointerOn() {
         Session.pointer = true
+        Session.pointerKeys = false
         if (onPhone()) {
             cursorX = 5000
             cursorY = 5000
@@ -1532,6 +1549,7 @@ class ScouterService : Service() {
 
     private fun pointerOff() {
         Session.pointer = false
+        Session.pointerKeys = false
         work.removeCallbacks(pointerIdle)
         Native.pointer(-1, -1)
         hideCursor()
@@ -2094,6 +2112,7 @@ class ScouterService : Service() {
             "[ -f \"/run/user/\$U/gdm/Xauthority\" ]; then export XAUTHORITY=\"/run/user/\$U/gdm/Xauthority\"; fi; " +
             "xprop -id \"\$(xprop -root _NET_ACTIVE_WINDOW | sed 's/.*# //')\" WM_CLASS"
         const val ACTION_STOP = "scouterkit.ssh.STOP"
+        const val ACTION_KEYS = "scouterkit.ssh.KEYS" // the keyboard to the phone's apps or the glasses' terminal (Alt+K)
         const val ACTION_TRUST = "scouterkit.ssh.TRUST"
         const val ACTION_NEAR = "scouterkit.ssh.NEAR" // keyer came or went (Session.near)
         const val ACTION_SCREEN = "scouterkit.ssh.SCREEN" // the phone's screen on the glasses (EXTRA_CODE, EXTRA_DATA)

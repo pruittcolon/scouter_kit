@@ -91,6 +91,10 @@ class SettingsActivity : Activity() {
         hot.addView(text("Accessibility, Installed apps, Vox keyboard shortcuts: on. It filters keys and the trackpad and " +
             "notes which app is in front (its name, for the look per app); it reads nothing on the screen. If Android " +
             "says the setting is restricted: Apps, Vox, ⋮, Allow restricted settings.", 12f, Ui.FAINT).apply { setPadding(0, dp(6), 0, 0) })
+        hot.addToggle(toggle("Type on the glasses", "While the glasses show the terminal, the keyboard types into it " +
+            "whatever app is in front (Alt+K: to the phone and back)", settings.keysToGlasses) {
+            settings.keysToGlasses = it
+        })
         hot.addToggle(toggle("Trackpad on the glasses", "While they show the terminal, a trackpad or mouse moves their " +
             "pointer (tap: click, two fingers: right click and scroll)", settings.trackpad) {
             settings.trackpad = it
