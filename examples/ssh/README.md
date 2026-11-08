@@ -207,7 +207,7 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   the dashboard instead: typed (VoxKeys takes the keys meanwhile) or said (Alt+Space), Enter sends it through the
   notification (Android's RemoteInput), Escape cancels.
 - **Typing on the glasses** (*Type on the glasses*, Settings, *Keyboard and trackpad*, on by default; VoxKeys): while
-  the glasses show the terminal on an eye, a keyboard paired with the phone types into it whatever app is in front
+  the terminal is the glasses' source (looking up or down), a keyboard paired with the phone types into it whatever app is in front
   (Keyboard.kt's key stream, as keyboard mode does); the Alt shortcuts stay shortcuts. Alt+K sends the keys to the
   phone's apps and back (the glasses say which). With the phone's screen on the glasses the keys are its app's.
   Arrows, Enter and Space drive the pointer only after Alt+M; on by the trackpad, every key types.
@@ -217,8 +217,9 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   (fractions kept, quicker strokes go further; *Trackpad speed*), goes up onto the dashboard and there a place at a
   time (tabs, +, PHONE, the notifications), a tap or click clicks, a two-finger tap (the secondary button)
   right-clicks, the wheel and two-finger swipes scroll; a click while the pointer is off only shows it. On the
-  phone's screen it is Android's own pointer again, which clicks as always, and the glasses draw the cursor where
-  it is. With the pointer on, typing goes to the phone's app: Space, and Enter once something was typed; an arrow
+  phone's screen it moves the cursor the glasses draw there, and its clicks are taps, long presses and swipes on the
+  phone (VoxKeys' gestures). It is taken only while the glasses show the terminal or the phone's screen (Android
+  14+ motion event sources: no app gets it meanwhile); otherwise it is the phone's own pointer. With the pointer on, typing goes to the phone's app: Space, and Enter once something was typed; an arrow
   key makes the keys the cursor's again.
 - **Closing**: Alt+Q closes the source shown (a terminal's connection, the phone's sharing, a server's screen) and
   the glasses go to the next one still open; a closed one stays closed until it is chosen again.

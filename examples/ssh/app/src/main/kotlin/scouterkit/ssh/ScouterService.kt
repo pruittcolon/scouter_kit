@@ -947,12 +947,11 @@ class ScouterService : Service() {
 
     // ------------------------------------------------ the trackpad
 
-    // A trackpad or mouse paired with the phone: taken for the glasses' pointer while they show the terminal (or a
-    // card) and the user sees it; otherwise it is the phone's own pointer (on the phone's screen the glasses draw
-    // where it is).
+    // A trackpad or mouse paired with the phone: taken while the glasses show the terminal (their pointer) or the
+    // phone's screen (a cursor drawn there, its clicks taps); otherwise it is the phone's own pointer.
     private fun trackpadMode() {
-        VoxKeys.capture(!ended && settings.trackpad && glassesWith != null && !Session.blank &&
-            settings.show == Settings.TERMINAL && Session.shown)
+        VoxKeys.capture(!ended && settings.trackpad && glassesWith != null && Session.glasses == "ready" && !Session.blank &&
+            (settings.show == Settings.TERMINAL || onPhone()))
     }
 
     private var glideX = 0f
@@ -964,6 +963,7 @@ class ScouterService : Service() {
     // further) and a place at a time on the dashboard; a tap clicks, a right click (two fingers) right-clicks, the
     // wheel and two-finger swipes scroll. A click while the pointer is off only shows it.
     private fun trackpad(kind: Int, dx: Float, dy: Float) {
+        if (onPhone()) return phoneTrackpad(kind, dx, dy)
         when (kind) {
             VoxKeys.Trackpad.MOVE -> glide(dx, dy)
             VoxKeys.Trackpad.CLICK, VoxKeys.Trackpad.RIGHT -> {
@@ -982,6 +982,34 @@ class ScouterService : Service() {
                 }
             }
         }
+    }
+
+    // The phone's screen on the glasses: the trackpad moves the cursor drawn there (its pixels as the phone's), a
+    // click taps the phone there, a right click is a long press, the wheel and two fingers scroll.
+    private var phoneSwipe = 0f
+    private fun phoneTrackpad(kind: Int, dx: Float, dy: Float) {
+        when (kind) {
+            VoxKeys.Trackpad.MOVE -> {
+                val b = getSystemService(android.view.WindowManager::class.java).maximumWindowMetrics.bounds
+                if (b.width() <= 1 || b.height() <= 1) return
+                if (!Session.pointer) Session.pointer = true
+                val k = settings.trackpadSpeed.coerceIn(1, 10) / 5f * (1f + minOf(1.5f, kotlin.math.hypot(dx, dy) / 40f))
+                cursorX = (cursorX + dx * k / b.width() * 10000).toInt().coerceIn(0, 10000)
+                cursorY = (cursorY + dy * k / b.height() * 10000).toInt().coerceIn(0, 10000)
+                showCursor()
+            }
+            VoxKeys.Trackpad.CLICK -> phonePointer(listOf("click"))
+            VoxKeys.Trackpad.RIGHT -> phonePointer(listOf("right"))
+            VoxKeys.Trackpad.WHEEL -> phonePointer(listOf(if (dy > 0) "up" else "down"))
+            VoxKeys.Trackpad.SCROLL -> {
+                phoneSwipe += dy
+                if (kotlin.math.abs(phoneSwipe) >= 40f) {
+                    phonePointer(listOf(if (phoneSwipe > 0) "up" else "down"))
+                    phoneSwipe = 0f
+                }
+            }
+        }
+        Session.changed()
     }
 
     private fun glide(dx: Float, dy: Float) {

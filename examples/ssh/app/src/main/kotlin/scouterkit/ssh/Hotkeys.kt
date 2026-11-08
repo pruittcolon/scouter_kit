@@ -25,12 +25,12 @@ object Hotkeys {
         return toGlasses(context, e) && Keyboard.send(e)
     }
 
-    // The glasses show the terminal (on an eye now): a keyboard's keys are its, whatever app is in front on the
-    // phone (Alt+K sends them to the phone again until it is pressed again; the phone's screen on the glasses takes
-    // them as always).
+    // The glasses' source is the terminal: a keyboard's keys are its, whatever app is in front on the phone and
+    // wherever the head points (looking down at the keys hides it for a moment). Alt+K sends them to the phone again
+    // until it is pressed again; the phone's screen on the glasses takes them as always.
     fun toGlasses(context: Context, e: KeyEvent): Boolean {
         if (!Keyboard.physical(e) || Session.keysToPhone || !ScouterService.running) return false
-        if (Session.glasses != "ready" || Session.blank || Session.showing != Settings.TERMINAL || !Session.shown) return false
+        if (Session.glasses != "ready" || Session.blank || Session.showing != Settings.TERMINAL) return false
         return Settings(context).keysToGlasses
     }
 
@@ -189,19 +189,18 @@ class VoxKeys : AccessibilityService() {
         watchMouse(wantCapture)
     }
 
-    // Android 15+: the mouse's events watched (observed sources: they go on to the phone's apps too), or taken.
+    // Android 14+: the mouse's events taken (they reach no app meanwhile: the glasses' pointer or cursor uses them,
+    // its clicks become taps), or left to the phone.
     private fun watchMouse(take: Boolean) {
-        if (android.os.Build.VERSION.SDK_INT < 35) return
+        if (android.os.Build.VERSION.SDK_INT < 34) return
         val info = serviceInfo ?: return
         try {
-            info.motionEventSources = InputDevice.SOURCE_MOUSE
-            info.javaClass.getMethod("setObservedMotionEventSources", Int::class.javaPrimitiveType)
-                .invoke(info, if (take) 0 else InputDevice.SOURCE_MOUSE)
+            info.motionEventSources = if (take) InputDevice.SOURCE_MOUSE else 0
             serviceInfo = info
             captured = take
-            android.util.Log.i(ScouterService.TAG, "trackpad: " + if (take) "the glasses' pointer" else "the phone's pointer")
+            seen = false
+            android.util.Log.i(ScouterService.TAG, "trackpad: " + if (take) "the glasses'" else "the phone's")
         } catch (e: Throwable) {
-            // Never left taking the mouse: nothing watched.
             android.util.Log.w(ScouterService.TAG, "mouse: ${e.message}")
             captured = false
             runCatching {
@@ -210,6 +209,8 @@ class VoxKeys : AccessibilityService() {
             }
         }
     }
+
+    private var seen = false // the first taken event, logged
 
     private var lastX = Float.NaN
     private var lastY = Float.NaN
@@ -222,6 +223,10 @@ class VoxKeys : AccessibilityService() {
             return
         }
         val pad = onTrackpad ?: return
+        if (!seen) {
+            seen = true
+            android.util.Log.i(ScouterService.TAG, "trackpad: events coming (${event.device?.name})")
+        }
         // How far it moved: the device's own relative motion (unclamped), else from Android's pointer.
         var dx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
         var dy = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
