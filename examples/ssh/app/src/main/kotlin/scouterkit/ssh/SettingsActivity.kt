@@ -246,6 +246,40 @@ class SettingsActivity : Activity() {
         trouble.addView(button("Charging case log (connect the case by USB-C)") {
             startActivity(Intent(this, CaseLogActivity::class.java))
         })
+        // Vox's own log: to Claude (the phone's server, ~/vox-logs) or shared; updates from here.
+        val logState = text("", 12.5f, Ui.FAINT)
+        trouble.addView(chipRow(
+            chip("Send the log to Claude", true) {
+                logState.text = "Sending…"
+                Thread {
+                    val f = LogBook.capture(this, "sent from Settings")
+                    val (saved, why) = LogBook.send(this, Vault(this), f)
+                    runOnUiThread { logState.text = if (saved != null) "Sent: Claude can read it ($saved)." else "Not sent: $why" }
+                }.start()
+            },
+            chip("Share the log", false) {
+                Thread {
+                    val t = LogBook.text(LogBook.capture(this, "shared from Settings"))
+                    runOnUiThread {
+                        runCatching {
+                            startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
+                                .putExtra(Intent.EXTRA_TEXT, t), "Share Vox's log"))
+                        }
+                    }
+                }.start()
+            },
+        ))
+        trouble.addView(logState)
+        val updateState = text("", 12.5f, Ui.FAINT)
+        fun updated() = runOnUiThread { updateState.text = Updater.state }
+        trouble.addView(chipRow(
+            chip("Check for an update", true) { Updater.check(this) { updated() } },
+            chip("Install it", false) {
+                if (Updater.url == null) Updater.check(this) { updated(); if (Updater.url != null) Updater.install(this) { updated() } }
+                else Updater.install(this) { updated() }
+            },
+        ))
+        trouble.addView(updateState)
         diagnostics = text("", 11.5f, Ui.FAINT, Ui.MONO).apply { setPadding(0, dp(10), 0, 0) }
         trouble.addView(diagnostics)
 

@@ -297,6 +297,17 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   with the ball and the red zone, the quarter and clock with down and distance, or kickoff and TV, or the final.
   Asked every 50 s around a game, else every 15 minutes, only while a dashboard shows the widget.
 
+- **Keeping itself going** (`Reliability.kt`, Settings, *Troubleshooting*; nothing of it runs on the glasses):
+  Vox's log (logcat of its own process, with a header of what it was doing) is shared, or sent to the phone's own
+  server where Claude reads it (`~/vox-logs/latest.txt`, over SSH with the log on stdin); a crash keeps its log and
+  sends it the next time Vox runs. The watchdog (every minute) checks the phone's SSH server's port and, when it
+  stopped, starts it again through Termux (the user's `ssh` shortcut, sshd in the Ubuntu proot, where there is one;
+  else Termux's sshd), at most every three minutes. *Check for an update* asks the project's release page (GitHub,
+  no account) and *Install it* downloads the newer build and hands it to Android's package installer, which asks
+  once and keeps the app's data (Vox needs "install unknown apps" for that, once).
+- **Looking up, near the angle**: the arm reads the head again when its range is left; while the terminal shows, a
+  reading back inside the hysteresis band keeps it up (the range written again) instead of hiding it.
+
 ## Voice
 
 Commands by voice through the glasses' microphone (the right arm; liblc3 decodes it, `SCOUTER_G1_MIC`), recognised

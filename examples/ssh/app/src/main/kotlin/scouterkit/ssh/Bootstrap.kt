@@ -100,6 +100,25 @@ class Bootstrap(private val vault: Vault) {
     }
 
     // A short command's output (tmux for the tabs), on a connection of its own; at most 15 s.
+    // A command with bytes on its stdin (Vox's log sent to the server), on its own connection.
+    fun runWithInput(host: String, port: Int, user: String, command: String, input: ByteArray): String {
+        val session = connect(host, port, user)
+        session.timeout = 15000
+        try {
+            val channel = session.openChannel("exec") as ChannelExec
+            channel.setCommand(command)
+            channel.setInputStream(java.io.ByteArrayInputStream(input))
+            channel.setErrStream(java.io.ByteArrayOutputStream())
+            val out = channel.inputStream
+            channel.connect(15000)
+            val text = out.readBytes().toString(Charsets.UTF_8)
+            channel.disconnect()
+            return text
+        } finally {
+            session.disconnect()
+        }
+    }
+
     fun run(host: String, port: Int, user: String, command: String): String {
         val session = connect(host, port, user)
         session.timeout = 15000

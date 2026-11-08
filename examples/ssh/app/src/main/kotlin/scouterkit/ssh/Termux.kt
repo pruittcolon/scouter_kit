@@ -26,6 +26,9 @@ object Termux {
     private const val HOME = "/data/data/com.termux/files/home"
     private const val RESULT = "scouterkit.ssh.TERMUX_RESULT"
     private const val SSHD = "pgrep -x sshd >/dev/null || sshd -o ListenAddress=127.0.0.1"
+    // The phone's server started again: the user's own `ssh` shortcut where there is one (sshd in the Ubuntu proot,
+    // the server the glasses use), else Termux's sshd.
+    const val START = "if [ -x \"${'$'}PREFIX/bin/ssh\" ] && grep -q proot \"${'$'}PREFIX/bin/ssh\"; then \"${'$'}PREFIX/bin/ssh\"; else $SSHD; fi"
 
     fun installed(c: Context) = runCatching { c.packageManager.getPackageInfo(PACKAGE, 0) }.isSuccess
 
@@ -95,7 +98,7 @@ object Termux {
     // Before a session: sshd up (started if not), waits for its port up to 8 s. Off the main thread.
     fun ensureSshd(c: Context): String? {
         if (listening()) return null
-        run(c, SSHD)?.let { return it }
+        run(c, START)?.let { return it }
         val end = SystemClock.elapsedRealtime() + 8000
         while (SystemClock.elapsedRealtime() < end) {
             Thread.sleep(300)
@@ -104,7 +107,7 @@ object Termux {
         return "the SSH server on 127.0.0.1:8022 is not running: start it (in Ubuntu: /usr/sbin/sshd)"
     }
 
-    private fun listening() = runCatching { Socket().use { it.connect(InetSocketAddress(HOST, PORT), 300) } }.isSuccess
+    fun listening() = runCatching { Socket().use { it.connect(InetSocketAddress(HOST, PORT), 300) } }.isSuccess
 
     // From the setup script's output: SHA256 fingerprints.
     fun fingerprints(output: String) = Regex("SHA256:[A-Za-z0-9+/]{43}").findAll(output).map { it.value }.toSet()

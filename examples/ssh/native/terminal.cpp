@@ -632,12 +632,20 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.End();
 
   // TILT: PITCH left its range. Up: the head is up; down from up: the hold (looking up again ends it).
-  auto tilt = p.NewLabel(), head_up = p.NewLabel(), done = p.NewLabel();
+  // The head is read again here: near the threshold that reading can be back inside the hysteresis band, so up
+  // stays up while the head is at least kHysteresis below the angle (its range written again, so the next crossing
+  // fires), and only below that goes down; down, it goes up from the angle.
+  auto tilt = p.NewLabel(), head_up = p.NewLabel(), done = p.NewLabel(), going_down = p.NewLabel();
   p.Bind(tilt);
   p.Mov(peer, c(0));
   p.SysRead(R(0), pitch);
   p.Beq(R(0), c(g1::UNKNOWN), done);
   p.BgeS(R(0), n(angle), head_up);
+  p.Bne(up, c(1), going_down);
+  p.BltS(R(0), n(angle - kHysteresis), going_down);
+  p.Call(up_range);
+  p.End();
+  p.Bind(going_down);
   p.Call(down_range);
   p.Bne(up, c(1), done);
   p.Mov(up, c(2));

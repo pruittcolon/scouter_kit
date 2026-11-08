@@ -186,8 +186,24 @@ class ScouterService : Service() {
             poll()
             retryMosh()
             refresh()
+            keepServer()
             work.postDelayed(this, 60000)
         }
+    }
+
+    // The phone's own SSH server (the terminal's, Car mode's Claude): started again when it stopped (its proot
+    // session ended), at most every three minutes. A port check on the phone, nothing on the glasses.
+    private var serverStartAt = 0L
+    private fun keepServer() {
+        if (settings.servers().none { it.local } || !Termux.permitted(this)) return
+        Thread {
+            if (Termux.listening()) return@Thread
+            val now = SystemClock.elapsedRealtime()
+            if (now - serverStartAt < 180_000) return@Thread
+            serverStartAt = now
+            Log.i(TAG, "server: the phone's SSH server is down: starting it again")
+            Termux.run(this, Termux.START)?.let { Log.w(TAG, "server: $it") }
+        }.start()
     }
     // A network came (back): a session that could not start is tried again; a running one roams by itself.
     private val network = object : android.net.ConnectivityManager.NetworkCallback() {
@@ -223,6 +239,17 @@ class ScouterService : Service() {
         running = true
         settings = Settings(this)
         vault = Vault(this)
+        // A crash: its log kept, and sent to the phone's server the next time (LogBook).
+        if (!crashWatch) {
+            crashWatch = true
+            val previous = Thread.getDefaultUncaughtExceptionHandler()
+            Thread.setDefaultUncaughtExceptionHandler { t, e ->
+                runCatching { Log.e(TAG, "crash in ${t.name}", e) }
+                LogBook.crash(applicationContext, e)
+                previous?.uncaughtException(t, e)
+            }
+        }
+        work.postDelayed({ LogBook.sendPending(this, vault) }, 20000)
         Native.onChanged = { work.post { poll() } }
         Native.onGesture = { a, g -> work.post { gesture(a, g) } }
         VoxKeys.onMouse = { x, y -> mouse(x, y) }
@@ -2804,6 +2831,7 @@ class ScouterService : Service() {
     }
 
     companion object {
+        @Volatile private var crashWatch = false
         const val TAG = "scouter"
         const val PARK_MS = 5 * 60_000L // a server's screen kept connected while another source shows
         const val CHANNEL = "session"
