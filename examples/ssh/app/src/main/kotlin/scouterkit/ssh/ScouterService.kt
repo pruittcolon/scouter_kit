@@ -348,6 +348,10 @@ class ScouterService : Service() {
                         car?.newConversation()
                     }
                     "car_talk" -> car?.talk()
+                    "car_voice" -> Thread { // Kokoro downloaded (the Voice tab): loaded ahead while Car mode is on
+                        KokoroModel.unload()
+                        if (car != null) KokoroModel.load(this)
+                    }.start()
                     "stop" -> stopListening()
                     "always" -> {
                         if (!settings.voiceAlways && listener?.once == false) stopListening()
@@ -2234,8 +2238,21 @@ class ScouterService : Service() {
 
     private val carHost = object : CarHost {
         override val handler get() = work
-        override fun carListen(onPartial: (String) -> Unit, onPhrase: (String) -> Unit, onSpeaking: (Boolean) -> Unit,
-                               onEnd: (String) -> Unit) = carMic(onPartial, onPhrase, onSpeaking, onEnd, 0)
+        override fun carListen(onLive: () -> Unit, onPartial: (String) -> Unit, onPhrase: (String) -> Unit,
+                               onSpeaking: (Boolean) -> Unit, onEnd: (String) -> Unit) =
+            carMic(onLive, onPartial, onPhrase, onSpeaking, onEnd, 0)
+        override fun carPreload() {
+            if (voiceEngine != null || voiceLoading || !VoiceModel.available || !VoiceModel.ready(this@ScouterService)) return
+            voiceLoading = true
+            Thread {
+                val e = runCatching { VoiceEngine(this@ScouterService) }.getOrNull()
+                work.post {
+                    if (voiceEngine == null) voiceEngine = e
+                    voiceLoading = false
+                }
+            }.start()
+        }
+        override fun carTmux(server: Settings.Server) = Tabs.session(server) ?: "claude"
         override fun carStopListening() {
             carListener?.stop()
         }
@@ -2253,16 +2270,16 @@ class ScouterService : Service() {
 
     // The glasses' microphone for Car mode: always listening gives it up first (its microphone let go before this
     // one starts: tries again every 100 ms for up to 2 s).
-    private fun carMic(onPartial: (String) -> Unit, onPhrase: (String) -> Unit, onSpeaking: (Boolean) -> Unit,
-                       onEnd: (String) -> Unit, tries: Int) {
+    private fun carMic(onLive: () -> Unit, onPartial: (String) -> Unit, onPhrase: (String) -> Unit,
+                       onSpeaking: (Boolean) -> Unit, onEnd: (String) -> Unit, tries: Int) {
         if (!VoiceModel.available) return onEnd("This Vox has no speech engine")
         if (!VoiceModel.ready(this)) return onEnd("Download the speech model in Vox, on the Voice tab, first")
         if (Session.glasses != "ready") return onEnd("Connect the glasses to talk to Claude")
         if (carListener != null) return onEnd("")
         if (listener != null || voiceLoading) {
             listener?.stop()
-            if (tries >= 20) return onEnd("The microphone is busy")
-            work.postDelayed({ carMic(onPartial, onPhrase, onSpeaking, onEnd, tries + 1) }, 100)
+            if (tries >= 100) return onEnd("The microphone is busy") // the model loading ahead: up to 10 s
+            work.postDelayed({ carMic(onLive, onPartial, onPhrase, onSpeaking, onEnd, tries + 1) }, 100)
             return
         }
         voiceLoading = true
@@ -2289,7 +2306,7 @@ class ScouterService : Service() {
                             work.postDelayed({ voiceAlways() }, 1500)
                         }
                     },
-                    onSpeaking = onSpeaking, flushOnStop = true)
+                    onSpeaking = onSpeaking, flushOnStop = true, onLive = onLive)
                 carListener = l
                 Session.listening = true
                 Session.changed()
@@ -2365,8 +2382,8 @@ class ScouterService : Service() {
         CarSounds.play(CarSounds.Sound.LISTEN)
         work.postDelayed({ CarSounds.play(CarSounds.Sound.SEND) }, 700)
         val speech = CarSpeech(this) {}
-        work.postDelayed({ speech.speak("This is how Claude sounds in the car.", settings.carRate.coerceIn(60, 160) / 100f, "test") }, 1500)
-        work.postDelayed({ speech.release() }, 9000)
+        work.postDelayed({ speech.speak("Hi, this is how Claude sounds in the car.", "test") }, 1500)
+        work.postDelayed({ speech.release() }, 15000)
     }
 
     // A phrase: a command (always listening: only after "Vox"), or, while dictating, text for the terminal.

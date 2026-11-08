@@ -63,6 +63,15 @@ class MainActivity : Activity() {
     private var screenBuiltFor: String? = null // the look the Screen tab's controls were made with
     private lateinit var voiceState: TextView
     private lateinit var carState: TextView
+    private lateinit var carVoiceText: TextView
+    private lateinit var carVoiceButton: TextView
+    // While Car mode's voice downloads: its progress.
+    private val carVoiceTicker = object : Runnable {
+        override fun run() {
+            showVoice()
+            if (KokoroModel.progress >= 0) content.postDelayed(this, 500)
+        }
+    }
     private lateinit var voiceModel: TextView
     private lateinit var modelButton: TextView
     private lateinit var micDisc: FrameLayout
@@ -817,22 +826,54 @@ class MainActivity : Activity() {
         val carBox = page.section("Car mode", "voice_car", "mic", open = true)
         carState = text("", 15f, Ui.TEXT, Ui.BOLD)
         carBox.addView(carState)
-        carBox.addView(text("In the car, the steering wheel's Next button talks to Claude: press it and talk; it sends " +
-            "when you pause (or press Next again, or hold Next while you talk). Claude's answer is read aloud through the " +
-            "car and the music ducks meanwhile; chimes say when it listens, sends and thinks. Play / pause sends, or stops " +
-            "the answer; Previous hears it again. Say \"new conversation\" to start over. It listens on the glasses' " +
-            "microphone.", 13f, Ui.MUTED).apply { setPadding(0, dp(4), 0, dp(6)) })
+        carBox.addView(text("In the car, press Next on the steering wheel, wait for the chime, talk, then press Next " +
+            "again to send. Claude's answer is read aloud through the car; the music pauses meanwhile and comes back " +
+            "after. Next while Claude talks: ask again. Play / pause stops the answer, Previous hears it again. It " +
+            "listens on the glasses' microphone.", 13f, Ui.MUTED).apply { setPadding(0, dp(4), 0, dp(6)) })
         carBox.addView(segmented(listOf("auto" to "When the car connects", "on" to "Always", "off" to "Off"), settings.carMode) {
             settings.carMode = it
             ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "car_check")
             showVoice()
         })
+        carBox.addView(text("Talk to", 13f, Ui.FAINT).apply { setPadding(0, dp(6), 0, 0) })
+        carBox.addView(segmented(listOf("terminal" to "This Claude (the terminal)", "chat" to "A separate chat"),
+            settings.carTarget) { settings.carTarget = it })
         val servers = settings.servers()
         if (servers.size > 1) {
             carBox.addView(text("Claude runs on", 13f, Ui.FAINT).apply { setPadding(0, dp(6), 0, 0) })
             val chosen = servers.firstOrNull { it.id == settings.carServer } ?: servers.firstOrNull { it.local } ?: settings.active()
             carBox.addView(segmented(servers.map { it.id to it.name }, chosen?.id ?: "") { settings.carServer = it })
         }
+        // The voice: Kokoro (downloaded once), its speaker, or the phone's own.
+        carBox.addView(text("Voice", 13f, Ui.FAINT).apply { setPadding(0, dp(8), 0, 0) })
+        val voiceRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        carVoiceText = text("", 12.5f, Ui.MUTED)
+        voiceRow.addView(carVoiceText, lp(0, weight = 1f))
+        carVoiceButton = chip("Download", true) {
+            if (KokoroModel.ready(this)) dialog().setTitle("Delete the car voice?")
+                .setMessage("Car mode uses the phone's own voice then; you can download it again.")
+                .setPositiveButton("Delete") { _, _ ->
+                    KokoroModel.delete(this)
+                    ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "car_voice")
+                    showVoice()
+                }
+                .setNegativeButton("Cancel", null).show()
+            else downloadCarVoice()
+        }
+        voiceRow.addView(carVoiceButton)
+        carBox.addView(voiceRow)
+        carBox.addView(segmented(KokoroModel.VOICES.take(5).map { (id, name) -> id.toString() to name },
+            settings.carSpeaker.toString()) { settings.carSpeaker = it.toInt(); settings.carVoice = "kokoro" })
+        carBox.addView(segmented(KokoroModel.VOICES.drop(5).map { (id, name) -> id.toString() to name } +
+            listOf("android" to "Phone's"), if (settings.carVoice == "android") "android" else settings.carSpeaker.toString()) {
+            if (it == "android") settings.carVoice = "android" else {
+                settings.carSpeaker = it.toInt()
+                settings.carVoice = "kokoro"
+            }
+        })
         carBox.addView(slider("Speaking speed", 60, 160, settings.carRate, { "$it%" }) { settings.carRate = it })
         carBox.addView(chipRow(
             chip("Test the sound", true) { ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "car_test") },
@@ -903,6 +944,18 @@ class MainActivity : Activity() {
             else -> "On" + (if (Session.carName.isNotEmpty()) " · ${Session.carName}" else "") + ": press Next to talk"
         }
         if (::carState.isInitialized && carState.text.toString() != car) carState.text = car
+        if (::carVoiceText.isInitialized) {
+            val kReady = KokoroModel.ready(this)
+            carVoiceText.text = when {
+                !VoiceModel.available -> "This build has no speech engine: the phone's voice"
+                KokoroModel.progress >= 0 -> "Downloading Kokoro… ${KokoroModel.progress / 1_000_000} of ${KokoroModel.bytes / 1_000_000} MB"
+                kReady -> "Kokoro, natural and offline · ${KokoroModel.bytes / 1_000_000} MB"
+                KokoroModel.problem != null -> "Not downloaded: ${KokoroModel.problem}"
+                else -> "Kokoro sounds far more natural: ${KokoroModel.bytes / 1_000_000} MB, once (until then, the phone's voice)"
+            }
+            carVoiceButton.visibility = if (VoiceModel.available && KokoroModel.progress < 0) View.VISIBLE else View.GONE
+            carVoiceButton.text = if (kReady) "Delete" else "Download"
+        }
         val said = Session.voice.replace(ScouterService.MIC, "").trim()
         voiceState.text = (if (Session.listening) said.ifEmpty { "Listening…" } else said.ifEmpty { "Tap to speak" }) +
             if (Session.dictating) " · dictating" else ""
@@ -1388,6 +1441,26 @@ class MainActivity : Activity() {
                     runOnUiThread { showVoice() }
                 }.start()
                 content.post(modelTicker)
+            }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    // Car mode's voice (Kokoro), as the speech model is downloaded.
+    private fun downloadCarVoice() {
+        if (KokoroModel.progress >= 0) return
+        dialog().setTitle("Download the car voice?")
+            .setMessage("Kokoro: ${KokoroModel.bytes / 1_000_000} MB from Hugging Face, each file checked. Wi-Fi is best. " +
+                "It goes on where it stopped if interrupted.")
+            .setPositiveButton("Download") { _, _ ->
+                KokoroModel.progress = 0
+                Thread {
+                    KokoroModel.download(applicationContext)
+                    runOnUiThread {
+                        showVoice()
+                        ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "car_voice")
+                    }
+                }.start()
+                content.post(carVoiceTicker)
             }
             .setNegativeButton("Cancel", null).show()
     }

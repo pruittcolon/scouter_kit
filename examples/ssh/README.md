@@ -314,16 +314,29 @@ SHA-256, resumed where it stopped).
 Claude by voice in the car (`Car.kt`; Voice tab, *Car mode*: when the car connects, always, or off). It comes on
 when a car's Bluetooth audio connects (Bluetooth class car audio or hands-free) and takes the car's media keys: a
 media session of its own, which Android gives the keys once Vox has played a moment of silence (the last app to
-start playing gets them; again whenever another app starts playing). Next (the steering wheel's skip) listens on
-the glasses' microphone, Parakeet as above; it sends after a pause of about a second and a half, at Next again, or
-when a held Next is let go. The words go to `claude -p --output-format json` on a saved server (this phone's by
-default; the prompt on stdin, `--append-system-prompt` asks for short spoken sentences without markdown, web
-search and fetch allowed, the conversation resumed by its session id until "new conversation"), over its own SSH
-connection. The answer is read aloud by Android's text-to-speech (the best installed voice for the phone's
-language, *Speaking speed*) through the car, the music ducked meanwhile (transient focus, may duck). Chimes, made
-in code: listening (rising), sent (falling), a soft tick while Claude thinks, a low pair for a problem, a step down
-when nothing was sent. Play / pause sends, cancels or stops the answer (idle: passed to the music app), Previous
-says the answer again (idle: the music's previous track). The car's screen shows what Vox does, or what plays.
+start playing gets them). Vox plays it again half a second after any other player starts (an
+`AudioPlaybackCallback`: Spotify resuming after an answer, a new track) and, on Android 13+, whenever Android says
+the keys went elsewhere (if it lets Vox know).
+
+Next listens on the glasses' microphone (Parakeet, loaded ahead when Car mode comes on); the listening chime plays
+once the microphone hears, so nothing said is lost. Next again sends (a chime at once; what was still being said is
+read too). Nothing else ends a question but play / pause (sends) and two minutes. The words go, by default
+(*Talk to: this Claude*), into the Claude session running in the server's tmux (the conversation the glasses show,
+which goes on there): a small Python script on the server finds the pane running Claude, refuses while Claude
+waits for an OK on its screen, types the words with a note that they came by voice from the car and asks for a
+short spoken answer, and reads Claude's reply from that session's transcript (`~/.claude/projects/*/*.jsonl`: the
+text after its last tool use, once the turn ends; four minutes at most). *A separate chat* uses
+`claude -p --output-format json` instead (a spoken-style system prompt, web search and fetch allowed, its own
+conversation resumed by session id until "new conversation").
+
+The answer is read aloud through the car with the music paused (transient focus; it resumes after): in Kokoro's
+voice once downloaded (Kokoro 82M v1.0, int8, about 150 MB from Hugging Face at a pinned revision, each file
+checked by SHA-256, sherpa-onnx's `OfflineTts` made sentence by sentence and played as it comes; nine speakers to
+choose from), else Android's text-to-speech (its best installed voice). Chimes, made in code: Car mode on, listening
+(rising), sent (falling), a soft tick while Claude thinks, a low pair for a problem, a step down when nothing was
+sent. Next while Claude speaks or thinks asks again; play / pause stops the answer or cancels; Previous says the
+answer again (idle: play / pause and Previous go to the music app). The car's screen shows what Vox does, or what
+plays.
 
 ## From the phone alone (Termux, the phone's screen)
 

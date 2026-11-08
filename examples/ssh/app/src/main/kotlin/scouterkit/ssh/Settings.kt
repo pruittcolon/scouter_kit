@@ -355,6 +355,12 @@ class Settings(context: Context) {
     var carRate: Int by Number("car_rate", 105)
     var carSession: String by Text("car_session", "")
     var carGreets: Int by Number("car_greets", 0) // times Car mode said how it works (the first three)
+    // Where the words go: "terminal" (typed into the server's Claude session in tmux: the conversation goes on) or
+    // "chat" (a voice chat of its own, claude -p); the voice: "kokoro" (once downloaded) or "android"; Kokoro's
+    // speaker (KokoroModel.VOICES).
+    var carTarget: String by Text("car_target", "terminal")
+    var carVoice: String by Text("car_voice", "kokoro")
+    var carSpeaker: Int by Number("car_speaker", 3)
 
     // The pointer turns tmux's mouse on (so clicks reach tmux: tabs, panes, scrolling).
     var tmuxMouse: Boolean

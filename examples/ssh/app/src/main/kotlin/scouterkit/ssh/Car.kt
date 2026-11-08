@@ -6,9 +6,11 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioPlaybackConfiguration
 import android.media.AudioTrack
 import android.media.MediaMetadata
 import android.media.session.MediaSession
+import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.os.Build
 import android.os.Handler
@@ -18,16 +20,23 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import android.view.KeyEvent
+import com.k2fsa.sherpa.onnx.OfflineTts
+import com.k2fsa.sherpa.onnx.OfflineTtsConfig
+import com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig
+import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
+import java.io.File
 import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.exp
 import kotlin.math.sin
 
 // Car mode: talking to Claude in the car. The car's Next button (the steering wheel's skip) starts listening on the
-// glasses' microphone (Parakeet, as all of Vox's voice); a pause of about a second and a half, or Next again, sends
-// what was said to Claude (`claude -p` on a saved server, one conversation kept going), and the answer is read
-// aloud through the car while the music ducks. Chimes say what happens: listening, sent, thinking, a problem.
-// It comes on by itself when a car's Bluetooth audio connects (Settings.carMode "auto"), or always ("on").
+// glasses' microphone (Parakeet, as all of Vox's voice) and Next again sends what was said to Claude: by default
+// typed into the Claude session running in the server's tmux (the conversation the glasses show, so it goes on
+// there), else a voice chat of its own (`claude -p`). The answer is read aloud through the car, in Kokoro's voice
+// once it is downloaded (else Android's), with the music paused meanwhile. Chimes say what happens: listening,
+// sent, thinking, a problem. It comes on by itself when a car's Bluetooth audio connects (Settings.carMode "auto"),
+// or always ("on").
 
 // The chimes, made here: soft bell-like sines (a quick attack, a long tail), through the car like the speech.
 object CarSounds {
@@ -106,11 +115,88 @@ object CarSounds {
     }
 }
 
-// The answer aloud: Android's text-to-speech (its best voice installed for the phone's language), through the car.
-class CarSpeech(context: Context, private val onDone: (String) -> Unit) {
+// Kokoro (82M, v1.0, int8, as converted for sherpa-onnx; Apache-2.0): the car's voice, downloaded once (about
+// 150 MB) like the speech model, each file checked by its SHA-256. English only: the US lexicon and the espeak-ng
+// data English needs.
+object KokoroModel {
+    private const val HF =
+        "https://huggingface.co/csukuangfj/kokoro-int8-multi-lang-v1_0/resolve/57adb37fc0e8d4bd430cfc1b8f8c2294945b9af2"
+    private fun part(name: String, size: Long, sha: String) = VoiceModel.Part(name, "$HF/$name", size, sha)
+    val parts = listOf(
+        part("model.int8.onnx", 114202993, "75635ea3b85a32d00094dcdd61a258aba87c160f7c264c304a7b3ae9d734195e"),
+        part("voices.bin", 28200960, "1c5a5b983d3d50d8586d437a51f3faa2da7919ce76a013c081e65671a3447c29"),
+        part("tokens.txt", 687, "6ebb6bb288f20f3ae8d004d3c2ca27697da27c037d75e81a60e2a6a663f95425"),
+        part("lexicon-us-en.txt", 5956885, "7daaab53a181be9885b853a8582bf1838186317e5dadacbcef9c426d6fa0da14"),
+        part("LICENSE", 11358, "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"),
+        part("espeak-ng-data/phondata", 550424, "4e0288957874029a8c3c9f41a8f517ad4bf18127046decbdd4b9d1d6807ce3a3"),
+        part("espeak-ng-data/phonindex", 39074, "3ca7b8fa3b42624e4b0f152707e7a39245fce569aa99ea47c055d9e622fcf0c4"),
+        part("espeak-ng-data/phontab", 55796, "886f3fa402cb0ba73d483aa8ad000af47a6b7cc06293c75a97913fba68a530f6"),
+        part("espeak-ng-data/intonations", 2040, "3f8af65fd3eda9759a10f021d61361c120871f463515229c925995c7f90918cc"),
+        part("espeak-ng-data/en_dict", 166944, "71bd330ba8a2e3e8076e631508208ef49449d6147c17b7bd2b4b1e1468292e35"),
+        part("espeak-ng-data/lang/gmw/en", 140, "4605d5330801de3641c6e366d15f129ea1f5ffbce8722642aba01ace07ab9c83"),
+        part("espeak-ng-data/lang/gmw/en-US", 257, "41534c2a22df5dd4f1052ff9e1a33a3ea7bff5a26b5c02bdad5ba8ddb7524704"),
+    )
+    val bytes = parts.sumOf { it.size }
+
+    // The voices offered (Kokoro's speaker ids in this model).
+    val VOICES = listOf(3 to "Heart", 2 to "Bella", 6 to "Nicole", 9 to "Sarah", 16 to "Michael", 14 to "Fenrir",
+        18 to "Puck", 21 to "Emma (UK)", 26 to "George (UK)")
+
+    @Volatile var progress = -1L
+    @Volatile var problem: String? = null
+
+    fun dir(context: Context) = File(context.filesDir, "voice/kokoro-int8-multi-lang-v1_0")
+    fun ready(context: Context) = parts.all { File(dir(context), it.name).length() == it.size }
+
+    fun download(context: Context): String? {
+        problem = null
+        try {
+            VoiceModel.fetch(dir(context), parts) { progress = it }
+            return null
+        } catch (e: Exception) {
+            problem = e.message ?: "the download stopped"
+            return problem
+        } finally {
+            progress = -1
+        }
+    }
+
+    fun delete(context: Context) {
+        dir(context).deleteRecursively()
+    }
+
+    // Loaded once (a second or two), kept while Car mode is on.
+    @Volatile private var tts: OfflineTts? = null
+
+    @Synchronized
+    fun load(context: Context): OfflineTts? {
+        tts?.let { return it }
+        if (!VoiceModel.available || !ready(context)) return null
+        val d = dir(context)
+        return runCatching {
+            OfflineTts(null, OfflineTtsConfig(model = OfflineTtsModelConfig(kokoro = OfflineTtsKokoroModelConfig(
+                model = File(d, "model.int8.onnx").path, voices = File(d, "voices.bin").path,
+                tokens = File(d, "tokens.txt").path, dataDir = File(d, "espeak-ng-data").path,
+                lexicon = File(d, "lexicon-us-en.txt").path), numThreads = 4), maxNumSentences = 1))
+        }.onFailure { Log.w(ScouterService.TAG, "car: Kokoro did not load: ${it.message}") }.getOrNull().also { tts = it }
+    }
+
+    @Synchronized
+    fun unload() {
+        runCatching { tts?.release() }
+        tts = null
+    }
+}
+
+// The answer aloud, through the car: Kokoro's voice (Settings.carSpeaker) once downloaded, made sentence by
+// sentence and played as it comes; else Android's text-to-speech (its best installed voice for the language).
+class CarSpeech(private val context: Context, private val onDone: (String) -> Unit) {
+    private val settings = Settings(context)
     @Volatile private var ready = false
     private var pending: (() -> Unit)? = null
     private var last = ""
+    @Volatile private var gen = 0
+    @Volatile private var track: AudioTrack? = null
     private val tts: TextToSpeech = TextToSpeech(context.applicationContext) { status ->
         if (status != TextToSpeech.SUCCESS) return@TextToSpeech
         setUp()
@@ -120,8 +206,7 @@ class CarSpeech(context: Context, private val onDone: (String) -> Unit) {
     }
 
     private fun setUp() {
-        tts.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+        tts.setAudioAttributes(ATTRS)
         val loc = Locale.getDefault()
         runCatching {
             tts.voices?.filter {
@@ -139,24 +224,87 @@ class CarSpeech(context: Context, private val onDone: (String) -> Unit) {
     }
 
     private fun finished(id: String?) {
-        if (id != null && id == last) onDone(id)
+        if (id != null && id == last) onDone(id.substringBefore('#'))
     }
 
-    // Said in sentences (each within the engine's limit); onDone(id) after the last.
-    fun speak(text: String, rate: Float, id: String) {
+    // Kokoro loaded ahead (Car mode coming on), so the first answer starts at once.
+    fun preload() {
+        if (useKokoro()) Thread { KokoroModel.load(context) }.start()
+    }
+
+    private fun useKokoro() = settings.carVoice != "android" && KokoroModel.ready(context)
+
+    fun speak(text: String, id: String) {
+        stop()
+        val rate = settings.carRate.coerceIn(60, 160) / 100f
+        val parts = split(clean(text), 300)
+        if (useKokoro()) return kokoro(parts, rate, id)
+        android(parts, rate, id)
+    }
+
+    private fun android(parts: List<String>, rate: Float, id: String) {
         val go = {
             tts.setSpeechRate(rate)
-            val parts = split(clean(text), maxOf(200, TextToSpeech.getMaxSpeechInputLength() - 100))
             last = "$id#${parts.size - 1}"
-            tts.stop()
             for ((i, p) in parts.withIndex()) tts.speak(p, TextToSpeech.QUEUE_ADD, null, "$id#$i")
         }
         if (ready) go() else pending = go
     }
 
+    private fun kokoro(parts: List<String>, rate: Float, id: String) {
+        val my = ++gen
+        val sid = settings.carSpeaker
+        Thread({
+            val k = KokoroModel.load(context)
+            if (k == null) {
+                if (gen == my) Handler(Looper.getMainLooper()).post { if (gen == my) android(parts, rate, id) }
+                return@Thread
+            }
+            val hz = k.sampleRate()
+            val t = runCatching {
+                AudioTrack.Builder().setAudioAttributes(ATTRS)
+                    .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_FLOAT).setSampleRate(hz)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .setBufferSizeInBytes(maxOf(AudioTrack.getMinBufferSize(hz, AudioFormat.CHANNEL_OUT_MONO,
+                        AudioFormat.ENCODING_PCM_FLOAT), hz * 4 / 2))
+                    .build()
+            }.getOrNull() ?: return@Thread
+            track = t
+            // A moment of silence first: the car's speakers wake on the Bluetooth link.
+            val lead = FloatArray(hz / 8)
+            t.write(lead, 0, lead.size, AudioTrack.WRITE_BLOCKING)
+            t.play()
+            var frames = lead.size.toLong()
+            for (p in parts) {
+                if (gen != my) break
+                runCatching {
+                    k.generateWithCallback(p, sid, rate) { samples ->
+                        if (gen != my) 0 else {
+                            t.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
+                            frames += samples.size
+                            1
+                        }
+                    }
+                }.onFailure { Log.w(ScouterService.TAG, "car: Kokoro: ${it.message}") }
+            }
+            if (gen == my) {
+                runCatching { t.stop() } // plays out what was written
+                val until = SystemClock.uptimeMillis() + frames * 1000 / hz + 1500
+                while (gen == my && SystemClock.uptimeMillis() < until && runCatching { t.playbackHeadPosition.toLong() }.getOrDefault(frames) < frames)
+                    Thread.sleep(40)
+            }
+            runCatching { t.release() }
+            if (track === t) track = null
+            if (gen == my) onDone(id)
+        }, "car-voice").start()
+    }
+
     fun stop() {
+        gen++
         pending = null
         last = ""
+        track?.let { runCatching { it.pause(); it.flush() } }
         runCatching { tts.stop() }
     }
 
@@ -166,21 +314,27 @@ class CarSpeech(context: Context, private val onDone: (String) -> Unit) {
     }
 
     companion object {
-        // What reads badly aloud: markdown, code marks, links.
+        val ATTRS: AudioAttributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build()
+
+        // What reads badly aloud: markdown, code, links.
         fun clean(text: String): String = text
             .replace(Regex("```[\\s\\S]*?```"), " (some code) ")
+            .replace(Regex("`([^`]*)`"), "$1")
+            .replace(Regex("\\[([^\\]]*)\\]\\([^)]*\\)"), "$1")
             .replace(Regex("https?://\\S+"), "a link")
-            .replace(Regex("[*_`#>|]+"), "")
+            .replace(Regex("[*_#>|]+"), "")
             .replace(Regex("^\\s*[-•]\\s+", RegexOption.MULTILINE), "")
             .replace(Regex("\\s+"), " ")
             .trim()
 
+        // Sentences, joined up to max characters (Kokoro starts on the first one at once).
         fun split(text: String, max: Int): List<String> {
-            if (text.length <= max) return listOf(text.ifEmpty { "Done." })
+            if (text.isEmpty()) return listOf("Done.")
             val out = mutableListOf<String>()
             val sb = StringBuilder()
             for (s in text.split(Regex("(?<=[.!?])\\s+"))) {
-                if (sb.isNotEmpty() && sb.length + s.length + 1 > max) {
+                if (sb.isNotEmpty() && (sb.length + s.length + 1 > max || out.isEmpty())) {
                     out += sb.toString()
                     sb.setLength(0)
                 }
@@ -193,10 +347,29 @@ class CarSpeech(context: Context, private val onDone: (String) -> Unit) {
 }
 
 // The car's buttons (its media keys over Bluetooth) to Vox: a media session that also tells the car what to show.
-// Android hands the keys to the app that last started playing, so Vox plays a moment of silence to have them (and
-// again whenever another app starts playing); the music app's play / pause and previous are passed on to it.
-class CarButtons(context: Context, handler: Handler, private val onKey: (Int, Boolean) -> Unit) {
+// Android hands the keys to the app that last started playing, so Vox plays a moment of silence to have them, and
+// does so again half a second after any other player starts (Spotify resuming after an answer, a new track) and
+// whenever Android says the keys went elsewhere (where it lets Vox know). The music app's play / pause and previous
+// are passed on to it (Media).
+class CarButtons(private val context: Context, private val handler: Handler, private val onKey: (Int, Boolean) -> Unit) {
     private val session = MediaSession(context, "Vox car")
+    private val audio = context.getSystemService(AudioManager::class.java)
+    private val sessions = context.getSystemService(MediaSessionManager::class.java)
+    private var active: Set<AudioPlaybackConfiguration> = emptySet()
+    private var claimUntil = 0L
+    private var lastClaim = 0L
+    private val again = Runnable { claim() }
+
+    private val playback = object : AudioManager.AudioPlaybackCallback() {
+        override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
+            val now = configs?.toSet() ?: emptySet()
+            val started = now.any { it !in active }
+            active = now
+            if (started && SystemClock.uptimeMillis() > claimUntil) soon()
+        }
+    }
+
+    private var unwatchKeys: (() -> Unit)? = null
 
     init {
         session.setCallback(object : MediaSession.Callback() {
@@ -220,6 +393,24 @@ class CarButtons(context: Context, handler: Handler, private val onKey: (Int, Bo
         }, handler)
         show("Vox", "Press next to talk to Claude", false)
         session.isActive = true
+        runCatching { audio.registerAudioPlaybackCallback(playback, handler) }
+        if (Build.VERSION.SDK_INT >= 33) watchKeys()
+    }
+
+    // Android 13+: told when the media keys go to another app (if Android lets Vox know: it may not).
+    @android.annotation.TargetApi(33)
+    private fun watchKeys() {
+        val moved = MediaSessionManager.OnMediaKeyEventSessionChangedListener { pkg, _ ->
+            if (pkg != context.packageName) {
+                Log.i(ScouterService.TAG, "car: the media keys went to ${pkg.ifEmpty { "nobody" }}: taking them back")
+                soon()
+            }
+        }
+        runCatching {
+            sessions.addOnMediaKeyEventSessionChangedListener(java.util.concurrent.Executor { handler.post(it) }, moved)
+            unwatchKeys = { runCatching { sessions.removeOnMediaKeyEventSessionChangedListener(moved) } }
+            Log.i(ScouterService.TAG, "car: the media keys are at ${sessions.mediaKeyEventSessionPackageName.ifEmpty { "nobody" }}")
+        }.onFailure { Log.i(ScouterService.TAG, "car: cannot watch where the media keys go (${it.javaClass.simpleName})") }
     }
 
     private fun tap(code: Int) {
@@ -227,8 +418,17 @@ class CarButtons(context: Context, handler: Handler, private val onKey: (Int, Bo
         onKey(code, false)
     }
 
+    private fun soon() {
+        handler.removeCallbacks(again)
+        handler.postDelayed(again, 500)
+    }
+
     // The keys to Vox: a moment of silence played (the last app to start playing gets them).
     fun claim() {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastClaim < 800) return soon()
+        lastClaim = now
+        claimUntil = now + 1000
         Thread {
             runCatching {
                 val n = 44100 / 4
@@ -266,6 +466,9 @@ class CarButtons(context: Context, handler: Handler, private val onKey: (Int, Bo
     }
 
     fun release() {
+        handler.removeCallbacks(again)
+        runCatching { audio.unregisterAudioPlaybackCallback(playback) }
+        unwatchKeys?.invoke()
         runCatching {
             session.isActive = false
             session.release()
@@ -273,8 +476,10 @@ class CarButtons(context: Context, handler: Handler, private val onKey: (Int, Bo
     }
 }
 
-// Claude on a saved server: `claude -p` with JSON out, the car's conversation resumed (its session id kept), told
-// that its answer is heard while driving. The prompt goes in on stdin (nothing to escape for its options).
+// Claude on a saved server, two ways. The terminal (Settings.carTarget "terminal"): the words typed into the Claude
+// session running in the server's tmux (the conversation the glasses show), told they came by voice from the car,
+// and its reply read from that session's transcript once its turn ends (a small Python script there does both).
+// A chat ("chat"): `claude -p` with JSON out, a conversation of its own resumed by its session id.
 object CarClaude {
     class Answer(val text: String, val session: String?, val error: String?)
 
@@ -282,21 +487,139 @@ object CarClaude {
         "through the car's speakers. Answer in short, natural spoken sentences, usually one to four. No markdown, lists, " +
         "headings, code, URLs or emoji. If a full answer would be long, give the gist and offer to go on."
 
+    private const val PATH = "PATH=\"\$HOME/.local/bin:\$HOME/bin:\$HOME/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:\$PATH\"; export PATH; "
+
     private fun q(s: String) = "'" + s.replace("'", "'\\''") + "'"
 
-    fun command(text: String, session: String?): String {
+    fun chatCommand(text: String, session: String?): String {
         val resume = if (session.isNullOrEmpty()) "" else "--resume ${q(session)} "
-        return "PATH=\"\$HOME/.local/bin:\$HOME/bin:\$HOME/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:\$PATH\"; export PATH; " +
-            "cd ~ 2>/dev/null; command -v claude >/dev/null || { echo 'VOX: claude is not installed there'; exit 0; }; " +
+        return PATH + "cd ~ 2>/dev/null; command -v claude >/dev/null || { echo 'VOX: claude is not installed there'; exit 0; }; " +
             "printf %s ${q(text)} | claude -p --output-format json $resume--append-system-prompt ${q(PROMPT)} " +
             "--allowedTools 'WebSearch,WebFetch' 2>&1"
     }
 
-    fun ask(vault: Vault, server: Settings.Server, text: String, session: String?): Answer {
-        val first = run(vault, server, command(text, session))
+    // Typed into tmux session `session`'s Claude pane; waits up to `limit` s for the turn's end. Prints one line of
+    // JSON: {"text", "session"} or {"error"}. With "dry": only says which pane it would type into.
+    const val TERMINAL_PY = """
+import sys, os, json, glob, time, subprocess, re
+text = sys.stdin.read().strip()
+sess, limit = sys.argv[1], float(sys.argv[2])
+dry = len(sys.argv) > 3 and sys.argv[3] == "dry"
+TAG = "(By voice, from the car: answer briefly, in plain spoken sentences.) "
+NEEDLE = "from the car: answer briefly"
+def out(**k):
+    print(json.dumps(k))
+    sys.exit(0)
+def tmux(*a):
+    return subprocess.run(["tmux"] + list(a), capture_output=True, text=True)
+r = tmux("list-panes", "-s", "-t", sess, "-F", "#{pane_id} #{window_active} #{pane_active} #{pane_pid}")
+if r.returncode != 0:
+    out(error="There is no Claude session called " + sess + " running there.")
+panes = sorted([l.split() for l in r.stdout.split("\n") if len(l.split()) == 4], key=lambda x: (x[1] != "1", x[2] != "1"))
+procs, kids = {}, {}
+try:
+    for l in subprocess.run(["ps", "-eo", "pid=,ppid=,args="], capture_output=True, text=True).stdout.split("\n"):
+        f = l.split(None, 2)
+        if len(f) >= 2:
+            procs[f[0]] = f[2] if len(f) > 2 else ""
+            kids.setdefault(f[1], []).append(f[0])
+except Exception:
+    pass
+def runs_claude(pid):
+    todo, seen = [pid], set()
+    while todo:
+        p = todo.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        a = procs.get(p, "")
+        first = a.split(" ")[0] if a else ""
+        if first.endswith("claude") or "/claude/versions/" in a or "claude-keepalive" in a:
+            return True
+        todo += kids.get(p, [])
+    return False
+pane = next((p[0] for p in panes if runs_claude(p[3])), panes[0][0] if panes else None)
+if pane is None:
+    out(error="There is no Claude session called " + sess + " running there.")
+screen = tmux("capture-pane", "-p", "-t", pane).stdout
+tail = "\n".join(screen.rstrip("\n").split("\n")[-25:])
+if re.search(r"Do you want to|1\. Yes", tail):
+    out(error="Claude is waiting for your OK on the screen.")
+if dry:
+    out(text="pane " + pane)
+home = os.path.expanduser("~")
+def sizes():
+    found, now = {}, time.time()
+    for p in glob.glob(os.path.join(home, ".claude", "projects", "*", "*.jsonl")):
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        if now - st.st_mtime < 3 * 86400:
+            found[p] = st.st_size
+    return found
+before = sizes()
+tmux("send-keys", "-t", pane, "-l", TAG + text)
+time.sleep(0.4)
+tmux("send-keys", "-t", pane, "Enter")
+deadline = time.time() + limit
+target, off = None, 0
+while target is None and time.time() < deadline:
+    time.sleep(0.6)
+    for p, size in sizes().items():
+        b = before.get(p, 0)
+        if size > b:
+            with open(p, "rb") as f:
+                f.seek(b)
+                chunk = f.read().decode("utf-8", "replace")
+            if NEEDLE in chunk:
+                target, off = p, b
+                break
+if target is None:
+    out(error="Claude did not take the message.")
+while time.time() < deadline:
+    with open(target, "rb") as f:
+        f.seek(off)
+        data = f.read().decode("utf-8", "replace")
+    seen, texts, done = False, [], False
+    for l in data.split("\n"):
+        if not seen:
+            seen = NEEDLE in l
+            continue
+        try:
+            j = json.loads(l)
+        except Exception:
+            continue
+        if j.get("type") == "assistant":
+            for c in (j.get("message") or {}).get("content") or []:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") == "text" and (c.get("text") or "").strip():
+                    texts.append(c["text"])
+                elif c.get("type") == "tool_use":
+                    texts = []
+        elif j.get("type") == "system" and j.get("subtype") == "turn_duration":
+            done = True
+            break
+    if done:
+        out(text="\n".join(texts).strip() or "Done.", session=os.path.basename(target)[:-6])
+    time.sleep(1.0)
+out(error="Claude is still working on it; the answer will be on the glasses.")
+"""
+
+    fun terminalCommand(text: String, session: String, limit: Int, dry: Boolean = false): String =
+        PATH + "command -v python3 >/dev/null || { echo 'VOX: python3 is not installed there'; exit 0; }; " +
+            "command -v tmux >/dev/null || { echo 'VOX: tmux is not installed there'; exit 0; }; " +
+            "printf %s ${q(text)} | python3 -c ${q(TERMINAL_PY)} ${q(session)} $limit${if (dry) " dry" else ""} 2>&1"
+
+    fun askTerminal(vault: Vault, server: Settings.Server, text: String, session: String): Answer =
+        run(vault, server, terminalCommand(text, session, 240))
+
+    fun askChat(vault: Vault, server: Settings.Server, text: String, session: String?): Answer {
+        val first = run(vault, server, chatCommand(text, session))
         // A conversation the server no longer has: a new one.
         if (first.error != null && !session.isNullOrEmpty() && first.error.contains("session", true))
-            return run(vault, server, command(text, null))
+            return run(vault, server, chatCommand(text, null))
         return first
     }
 
@@ -306,15 +629,15 @@ object CarClaude {
         } catch (e: Bootstrap.UnknownHost) {
             return Answer("", null, "${s.name} is not trusted yet: open its terminal once in Vox")
         } catch (e: Exception) {
-            return Answer("", null, "I can't reach ${s.name}: ${e.message ?: "no connection"}")
+            return Answer("", null, "I can't reach ${s.name}. ${e.message ?: ""}".trim())
         }
         out.lines().firstOrNull { it.startsWith("VOX: ") }?.let { return Answer("", null, it.removePrefix("VOX: ")) }
-        // The result: one line of JSON at the end (or, spread over lines, from its last opening brace at a line's start).
         val json = out.lines().lastOrNull { it.trimStart().startsWith("{") }?.let { runCatching { org.json.JSONObject(it.trim()) }.getOrNull() }
             ?: out.lastIndexOf("\n{").takeIf { it >= 0 }?.let { runCatching { org.json.JSONObject(out.substring(it + 1)) }.getOrNull() }
             ?: return Answer("", null, out.lines().lastOrNull { it.isNotBlank() }?.take(200) ?: "Claude gave no answer")
-        val result = json.optString("result")
-        val id = json.optString("session_id").ifEmpty { null }
+        if (json.has("error") && !json.has("result")) return Answer("", null, json.optString("error"))
+        val result = json.optString("result").ifEmpty { json.optString("text") }
+        val id = json.optString("session_id").ifEmpty { json.optString("session") }.ifEmpty { null }
         if (json.optBoolean("is_error") || result.isEmpty())
             return Answer("", id, result.ifEmpty { json.optString("subtype").ifEmpty { "Claude had a problem" } })
         return Answer(result, id, null)
@@ -322,20 +645,25 @@ object CarClaude {
 }
 
 // What Car mode needs from the service: the glasses' microphone through Vox's voice, the band on the glasses, the
-// server Claude runs on.
+// server Claude runs on and its tmux session.
 interface CarHost {
     val handler: Handler
-    // A listener on the glasses' microphone that runs until carStopListening; onEnd(why) ("" stopped) once.
-    fun carListen(onPartial: (String) -> Unit, onPhrase: (String) -> Unit, onSpeaking: (Boolean) -> Unit, onEnd: (String) -> Unit)
+    // A listener on the glasses' microphone until carStopListening: onLive once it hears, onEnd(why) ("" stopped)
+    // once.
+    fun carListen(onLive: () -> Unit, onPartial: (String) -> Unit, onPhrase: (String) -> Unit, onSpeaking: (Boolean) -> Unit,
+                  onEnd: (String) -> Unit)
     fun carStopListening()
+    fun carPreload() // the speech model loaded ahead
     fun carBand(text: String, hold: Boolean)
     fun carServer(): Settings.Server?
+    fun carTmux(server: Settings.Server): String // the tmux session Claude runs in there
     fun carVault(): Vault
     fun carChanged()
 }
 
+// Next: listen. Next again: send. Nothing else starts or ends a question, so it does what the button says.
 class CarMode(private val context: Context, private val host: CarHost) {
-    enum class State { IDLE, LISTENING, THINKING, SPEAKING }
+    enum class State { IDLE, STARTING, LISTENING, SENDING, THINKING, SPEAKING }
 
     @Volatile var state = State.IDLE
         private set
@@ -351,28 +679,29 @@ class CarMode(private val context: Context, private val host: CarHost) {
     private var request = 0
     private var asked = ""
     private var lastAnswer = ""
-    private var nextDownAt = 0L
-    private var listenAt = 0L
+    private var lastKey = 0L
+    private var lastKeyCode = 0
 
-    private val startMic = Runnable { mic() }
-    private val sendSoon = Runnable { finish() }
-    private val noSpeech = Runnable { if (state == State.LISTENING && said.isBlank() && partial.isEmpty()) cancel("I didn't hear anything") }
-    private val tooLong = Runnable { if (state == State.LISTENING) finish() }
+    private val noSpeech = Runnable { if (state == State.LISTENING && said.isBlank() && partial.isEmpty()) cancel("I didn't hear anything.") }
+    private val tooLong = Runnable { if (state == State.LISTENING) send() }
+    private val slowMic = Runnable { if (state == State.STARTING) host.carBand("$MIC One moment…", true) }
     private val pulse = object : Runnable {
         override fun run() {
             if (state != State.THINKING) return
             CarSounds.play(CarSounds.Sound.THINK)
-            h.postDelayed(this, 2400)
+            h.postDelayed(this, 2600)
         }
     }
 
     fun start(greet: Boolean) {
         buttons.claim()
+        host.carPreload()
+        speech.preload()
         show()
         if (greet) {
             CarSounds.play(CarSounds.Sound.ON)
-            h.postDelayed({ if (state == State.IDLE) say("Car mode. Press next to talk to Claude.") }, 900)
-        }
+            h.postDelayed({ if (state == State.IDLE) say("Car mode. Press next to talk to Claude, and next again to send.") }, 900)
+        } else CarSounds.play(CarSounds.Sound.ON)
     }
 
     fun release() {
@@ -380,9 +709,10 @@ class CarMode(private val context: Context, private val host: CarHost) {
         speech.release()
         buttons.release()
         dropFocus()
+        Thread { KokoroModel.unload() }.start()
     }
 
-    // Another app started playing: the keys back to Vox (its play / pause and previous are passed on to it).
+    // Media says another app started playing: the keys back (CarButtons also sees players start by itself).
     fun reclaim() = buttons.claim()
 
     // What the car shows: Vox's state, or (idle) what plays.
@@ -391,7 +721,9 @@ class CarMode(private val context: Context, private val host: CarHost) {
         when (state) {
             State.IDLE -> if (now != null && now.title.isNotEmpty()) buttons.show(now.title, now.artist, now.playing)
                 else buttons.show("Vox", "Press next to talk to Claude", false)
-            State.LISTENING -> buttons.show("Listening…", (said.toString() + partial).trim().ifEmpty { "Talk to Claude" }, true)
+            State.STARTING -> buttons.show("One moment…", "Getting the microphone", true)
+            State.LISTENING -> buttons.show("Listening… (next sends)", (said.toString() + partial).trim().ifEmpty { "Talk to Claude" }, true)
+            State.SENDING -> buttons.show("Sending…", said.toString().trim(), true)
             State.THINKING -> buttons.show("Claude is thinking…", asked, true)
             State.SPEAKING -> buttons.show("Claude", lastAnswer.take(120), true)
         }
@@ -401,41 +733,37 @@ class CarMode(private val context: Context, private val host: CarHost) {
     // ------------------------------------------------ the buttons
 
     private fun key(code: Int, down: Boolean) {
+        if (!down) return
         val now = SystemClock.uptimeMillis()
+        // A car that sends a press twice (key and action, or a bounce): one.
+        if (code == lastKeyCode && now - lastKey < 600) return
+        lastKey = now
+        lastKeyCode = code
+        Log.i(ScouterService.TAG, "car: ${KeyEvent.keyCodeToString(code)} while ${state.name.lowercase()}")
         when (code) {
-            KeyEvent.KEYCODE_MEDIA_NEXT -> if (down) {
-                nextDownAt = now
-                talk()
-            } else if (state == State.LISTENING && now - nextDownAt > 700 && listenAt >= nextDownAt) finish() // held: let go sends
+            KeyEvent.KEYCODE_MEDIA_NEXT -> talk()
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE,
-            KeyEvent.KEYCODE_HEADSETHOOK -> if (down) when (state) {
-                State.LISTENING -> finish()
-                State.THINKING -> cancel("Cancelled")
+            KeyEvent.KEYCODE_HEADSETHOOK -> when (state) {
+                State.STARTING, State.LISTENING -> send()
+                State.SENDING, State.THINKING -> cancel("Cancelled.", false)
                 State.SPEAKING -> quiet()
                 State.IDLE -> Media.control("toggle")
             }
-            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> if (down) when (state) {
-                State.SPEAKING -> if (lastAnswer.isNotEmpty()) speak(lastAnswer)
-                State.LISTENING, State.THINKING -> cancel("Cancelled")
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> when (state) {
+                State.SPEAKING -> if (lastAnswer.isNotEmpty()) speak(lastAnswer, "answer")
+                State.STARTING, State.LISTENING, State.SENDING, State.THINKING -> cancel("Cancelled.", false)
                 State.IDLE -> Media.control("prev")
             }
-            KeyEvent.KEYCODE_MEDIA_STOP -> if (down) if (state == State.IDLE) Media.control("toggle") else cancel("Stopped")
+            KeyEvent.KEYCODE_MEDIA_STOP -> if (state == State.IDLE) Media.control("toggle") else cancel("Stopped.", false)
         }
     }
 
-    // Next: talk (listening, it sends; thinking or speaking, a new question instead).
+    // Next: idle, it listens; listening, it sends; thinking or speaking, a new question instead.
     fun talk() {
         when (state) {
-            State.IDLE -> listen()
-            State.LISTENING -> finish()
-            State.THINKING -> {
-                request++
-                listen()
-            }
-            State.SPEAKING -> {
-                speech.stop()
-                listen()
-            }
+            State.IDLE, State.THINKING, State.SPEAKING -> listen()
+            State.STARTING, State.LISTENING -> send()
+            State.SENDING -> {}
         }
     }
 
@@ -443,25 +771,30 @@ class CarMode(private val context: Context, private val host: CarHost) {
 
     private fun listen() {
         reset()
-        state = State.LISTENING
-        listenAt = SystemClock.uptimeMillis()
+        state = State.STARTING
         holdFocus()
-        CarSounds.play(CarSounds.Sound.LISTEN)
-        host.carBand("$MIC Listening… (talk to Claude)", true)
+        host.carBand("$MIC Getting the microphone…", true)
         show()
-        h.postDelayed(startMic, 300) // after the chime
-        h.postDelayed(noSpeech, 9000)
-        h.postDelayed(tooLong, 60000)
-    }
-
-    private fun mic() {
-        if (state != State.LISTENING) return
+        h.postDelayed(slowMic, 700)
         micOn = true
         host.carListen(
+            onLive = { h.post { live() } },
             onPartial = { t -> h.post { if (state == State.LISTENING && micOn) heardSoFar(t) } },
             onPhrase = { t -> h.post { phrase(t) } },
-            onSpeaking = { on -> h.post { if (on && state == State.LISTENING) { h.removeCallbacks(sendSoon); h.removeCallbacks(noSpeech) } } },
+            onSpeaking = { on -> h.post { if (on && state == State.LISTENING) h.removeCallbacks(noSpeech) } },
             onEnd = { why -> h.post { micEnded(why) } })
+    }
+
+    // The microphone hears now: the chime (not before, so nothing said is lost).
+    private fun live() {
+        if (state != State.STARTING) return
+        h.removeCallbacks(slowMic)
+        state = State.LISTENING
+        CarSounds.play(CarSounds.Sound.LISTEN)
+        host.carBand("$MIC Listening… press next to send", true)
+        show()
+        h.postDelayed(noSpeech, 30000)
+        h.postDelayed(tooLong, 120000)
     }
 
     private fun heardSoFar(t: String) {
@@ -471,34 +804,37 @@ class CarMode(private val context: Context, private val host: CarHost) {
     }
 
     private fun phrase(t: String) {
-        if (state != State.LISTENING) return
+        if (state != State.LISTENING && state != State.SENDING) return
         said.append(t.trim()).append(' ')
         partial = ""
         host.carBand("$MIC ${said.trim()}…", true)
         show()
-        // A pause of about a second after the phrase: sent (more speech first: it waits for that).
-        h.removeCallbacks(sendSoon)
-        h.postDelayed(sendSoon, 1000)
     }
 
-    // Send now (Next again, play / pause, a pause in speech, a minute): the listener ends with its last words.
-    private fun finish() {
-        if (state != State.LISTENING) return
-        h.removeCallbacks(sendSoon)
+    // Next again (or play / pause, or two minutes): the chime at once, then the listener ends with its last words.
+    private fun send() {
         h.removeCallbacks(noSpeech)
         h.removeCallbacks(tooLong)
-        if (micOn) host.carStopListening() // micEnded asks
-        else {
-            h.removeCallbacks(startMic)
-            ask()
-        }
+        h.removeCallbacks(slowMic)
+        if (state == State.STARTING) return cancel("I wasn't listening yet. Press next, wait for the chime, then talk.")
+        if (state != State.LISTENING) return
+        state = State.SENDING
+        CarSounds.play(CarSounds.Sound.SEND)
+        host.carBand("$MIC Sending…", true)
+        show()
+        if (micOn) host.carStopListening() else ask() // micEnded asks
     }
 
     private fun micEnded(why: String) {
         micOn = false
-        if (state != State.LISTENING) return
-        if (why.isNotEmpty() && said.isBlank()) return fail(why)
-        ask()
+        when (state) {
+            State.SENDING -> ask()
+            State.STARTING, State.LISTENING -> if (why.isNotEmpty()) fail(why) else if (said.isNotBlank()) {
+                state = State.SENDING
+                ask()
+            } else cancel("I didn't hear anything.")
+            else -> {}
+        }
     }
 
     // ------------------------------------------------ Claude
@@ -507,65 +843,61 @@ class CarMode(private val context: Context, private val host: CarHost) {
         val text = said.toString().trim()
         said.setLength(0)
         partial = ""
-        if (text.isEmpty()) return cancel("I didn't catch that")
+        if (text.isEmpty()) return cancel("I didn't catch that.")
         val words = VoiceCommands.normalize(text)
-        if (words in NEW_CHAT) {
+        val terminal = settings.carTarget != "chat"
+        if (!terminal && words in NEW_CHAT) {
             settings.carSession = ""
-            state = State.SPEAKING
             CarSounds.play(CarSounds.Sound.READY)
             return say("New conversation.")
         }
-        if (words in NEVER_MIND) return cancel("Cancelled")
-        val server = host.carServer() ?: return fail("Add a server for Claude in Vox first")
+        if (words in NEVER_MIND) return cancel("Cancelled.", false)
+        val server = host.carServer() ?: return fail("Add a server for Claude in Vox first.")
         state = State.THINKING
         asked = text
-        CarSounds.play(CarSounds.Sound.SEND)
         host.carBand("$MIC “$text”  Claude is thinking…", true)
         show()
         h.postDelayed(pulse, 1800)
         val id = ++request
         val session = settings.carSession.ifEmpty { null }
-        Log.i(ScouterService.TAG, "car: asking Claude on ${server.name}")
+        val tmux = host.carTmux(server)
+        Log.i(ScouterService.TAG, "car: asking Claude on ${server.name} (${if (terminal) "tmux $tmux" else "chat"})")
         Thread {
             val t0 = SystemClock.uptimeMillis()
-            val a = CarClaude.ask(host.carVault(), server, text, session)
+            val a = if (terminal) CarClaude.askTerminal(host.carVault(), server, text, tmux)
+                else CarClaude.askChat(host.carVault(), server, text, session)
             Log.i(ScouterService.TAG, "car: answer in ${SystemClock.uptimeMillis() - t0} ms" + (a.error?.let { ": $it" } ?: ""))
-            h.post { answered(id, a) }
+            h.post { answered(id, a, terminal) }
         }.start()
     }
 
-    private fun answered(id: Int, a: CarClaude.Answer) {
+    private fun answered(id: Int, a: CarClaude.Answer, terminal: Boolean) {
         if (id != request || state != State.THINKING) return
         h.removeCallbacks(pulse)
-        a.session?.let { settings.carSession = it }
+        if (!terminal) a.session?.let { settings.carSession = it }
         if (a.error != null) return fail(a.error)
         lastAnswer = a.text
         host.carBand("Claude: ${a.text}", true)
-        speak(a.text)
+        speak(a.text, "answer")
     }
 
     // ------------------------------------------------ speaking
 
-    private fun speak(text: String) {
+    private fun speak(text: String, id: String) {
         state = State.SPEAKING
         holdFocus()
         show()
-        speech.speak(text, settings.carRate.coerceIn(60, 160) / 100f, "answer")
+        speech.speak(text, id)
     }
 
     // A line of Vox's own (not Claude's).
-    private fun say(text: String) {
-        state = State.SPEAKING
-        holdFocus()
-        show()
-        speech.speak(text, settings.carRate.coerceIn(60, 160) / 100f, "vox")
-    }
+    private fun say(text: String) = speak(text, "vox")
 
     private fun spoken(id: String) {
         if (state != State.SPEAKING) return
         state = State.IDLE
         dropFocus()
-        if (id.startsWith("answer")) host.carBand("Claude: $lastAnswer", false)
+        if (id == "answer") host.carBand("Claude: $lastAnswer", false)
         show()
     }
 
@@ -579,11 +911,12 @@ class CarMode(private val context: Context, private val host: CarHost) {
 
     // ------------------------------------------------ the end of a go
 
-    private fun cancel(why: String) {
+    // aloud: the reason is said too (not for a cancel the user asked for: the chime says it).
+    private fun cancel(why: String, aloud: Boolean = true) {
         reset()
         CarSounds.play(CarSounds.Sound.CANCEL)
         host.carBand("$MIC $why", false)
-        dropFocus()
+        if (aloud) h.postDelayed({ if (state == State.IDLE) say(why) }, 500) else dropFocus()
         show()
     }
 
@@ -596,12 +929,11 @@ class CarMode(private val context: Context, private val host: CarHost) {
         show()
     }
 
-    // Whatever runs stops (the request's answer is dropped when it comes).
+    // Whatever runs stops (a request's answer is dropped when it comes).
     private fun reset() {
-        h.removeCallbacks(startMic)
-        h.removeCallbacks(sendSoon)
         h.removeCallbacks(noSpeech)
         h.removeCallbacks(tooLong)
+        h.removeCallbacks(slowMic)
         h.removeCallbacks(pulse)
         if (micOn) host.carStopListening()
         micOn = false
@@ -612,12 +944,11 @@ class CarMode(private val context: Context, private val host: CarHost) {
         state = State.IDLE
     }
 
-    // The music ducks while Vox listens, thinks and speaks.
+    // The music pauses while Vox listens, thinks and speaks, and comes back after.
     private fun holdFocus() {
         if (focus != null) return
-        val f = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
-            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+        val f = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+            .setAudioAttributes(CarSpeech.ATTRS)
             .setOnAudioFocusChangeListener { }
             .build()
         if (audio.requestAudioFocus(f) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) focus = f
@@ -628,12 +959,12 @@ class CarMode(private val context: Context, private val host: CarHost) {
         focus = null
     }
 
-    // The voice test (Vox's Voice tab): the chimes and a line.
+    // The voice test (Vox's Voice tab): the chimes and a line in the chosen voice.
     fun test() {
         if (state != State.IDLE) return
         CarSounds.play(CarSounds.Sound.LISTEN)
         h.postDelayed({ CarSounds.play(CarSounds.Sound.SEND) }, 700)
-        h.postDelayed({ if (state == State.IDLE) say("This is how Claude sounds in the car.") }, 1500)
+        h.postDelayed({ if (state == State.IDLE) say("Hi, this is how Claude sounds in the car.") }, 1500)
     }
 
     fun newConversation() {

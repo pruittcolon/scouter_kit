@@ -46,45 +46,9 @@ object VoiceModel {
 
     // What is missing, going on from a partial file; blocks. Null when everything is in place, else why not.
     fun download(context: Context): String? {
-        val dir = dir(context).apply { mkdirs() }
-        var done = parts.filter { File(dir, it.name).length() == it.size }.sumOf { it.size }
-        progress = done
         problem = null
         try {
-            for (p in parts) {
-                val target = File(dir, p.name)
-                if (target.length() == p.size) continue
-                val part = File(dir, p.name + ".part")
-                if (part.length() >= p.size) part.delete()
-                var have = part.length()
-                val c = URL(p.url).openConnection() as HttpURLConnection
-                c.connectTimeout = 20000
-                c.readTimeout = 30000
-                if (have > 0) c.setRequestProperty("Range", "bytes=$have-")
-                val code = c.responseCode
-                if (code !in 200..299) throw IllegalStateException("${p.name}: the server answered $code")
-                val append = have > 0 && code == 206
-                if (!append) have = 0
-                c.inputStream.use { input ->
-                    java.io.FileOutputStream(part, append).use { out ->
-                        val buf = ByteArray(256 * 1024)
-                        while (true) {
-                            val n = input.read(buf)
-                            if (n < 0) break
-                            out.write(buf, 0, n)
-                            have += n
-                            progress = done + have
-                        }
-                    }
-                }
-                if (part.length() != p.size || sha256(part) != p.sha256) {
-                    part.delete()
-                    throw IllegalStateException("${p.name} did not arrive whole (size or SHA-256): try again")
-                }
-                if (!part.renameTo(target)) throw IllegalStateException("${p.name}: cannot keep it")
-                done += p.size
-                progress = done
-            }
+            fetch(dir(context), parts) { progress = it }
             return null
         } catch (e: Exception) {
             problem = e.message ?: "the download stopped"
@@ -96,6 +60,49 @@ object VoiceModel {
 
     fun delete(context: Context) {
         dir(context).deleteRecursively()
+    }
+
+    // Each part into dir (names may hold folders), going on from a partial file, checked by size and SHA-256;
+    // progress(bytes in place). Blocks; throws why it stopped. Shared with Car mode's voice (KokoroModel).
+    fun fetch(dir: File, parts: List<Part>, progress: (Long) -> Unit) {
+        dir.mkdirs()
+        var done = parts.filter { File(dir, it.name).length() == it.size }.sumOf { it.size }
+        progress(done)
+        for (p in parts) {
+            val target = File(dir, p.name)
+            if (target.length() == p.size) continue
+            target.parentFile?.mkdirs()
+            val part = File(dir, p.name + ".part")
+            if (part.length() >= p.size) part.delete()
+            var have = part.length()
+            val c = URL(p.url).openConnection() as HttpURLConnection
+            c.connectTimeout = 20000
+            c.readTimeout = 30000
+            if (have > 0) c.setRequestProperty("Range", "bytes=$have-")
+            val code = c.responseCode
+            if (code !in 200..299) throw IllegalStateException("${p.name}: the server answered $code")
+            val append = have > 0 && code == 206
+            if (!append) have = 0
+            c.inputStream.use { input ->
+                java.io.FileOutputStream(part, append).use { out ->
+                    val buf = ByteArray(256 * 1024)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        have += n
+                        progress(done + have)
+                    }
+                }
+            }
+            if (part.length() != p.size || sha256(part) != p.sha256) {
+                part.delete()
+                throw IllegalStateException("${p.name} did not arrive whole (size or SHA-256): try again")
+            }
+            if (!part.renameTo(target)) throw IllegalStateException("${p.name}: cannot keep it")
+            done += p.size
+            progress(done)
+        }
     }
 
     private fun sha256(f: File): String {
@@ -182,6 +189,7 @@ class VoiceListener(
     private val onEnd: (String) -> Unit,
     private val onSpeaking: (Boolean) -> Unit = {},
     private val flushOnStop: Boolean = false,
+    private val onLive: () -> Unit = {}, // the microphone is on (Car mode's chime)
 ) {
     @Volatile private var stopped = false
 
@@ -200,6 +208,7 @@ class VoiceListener(
                 why = "the glasses' microphone did not start (the right arm connected?)"
                 return
             }
+            onLive()
             val got = FloatArray(4800)
             val window = FloatArray(512)
             var fill = 0
