@@ -170,6 +170,15 @@ object Hotkeys {
                 ScouterService.send(context, ScouterService.ACTION_TABS, "tab" to if (e.keyCode == KeyEvent.KEYCODE_DPAD_LEFT) "prev" else "next")
             return true
         }
+        // Ctrl+Left, with a screen on the glasses (the phone's or a server's): back to the SSH terminal. In the
+        // terminal itself it is the word before, as ever.
+        if (e.isCtrlPressed && !e.isAltPressed && !e.isMetaPressed && !e.isShiftPressed &&
+            e.keyCode == KeyEvent.KEYCODE_DPAD_LEFT && Session.showing == Settings.SCREEN) {
+            if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0 && settings.active() != null)
+                ScouterService.send(context, ScouterService.ACTION_SOURCE,
+                    Shortcuts.EXTRA to "term:${settings.active()?.id}", "fx" to "left")
+            return true
+        }
         if (!e.isAltPressed || e.isCtrlPressed || e.isMetaPressed) return false
         // The phone's screen on the glasses: Alt+Backspace is Back, Alt+H Home, Alt+R Recents, Alt+N the
         // notifications (VoxKeys).
@@ -353,7 +362,8 @@ class VoxKeys : AccessibilityService() {
         val twoFinger = android.os.Build.VERSION.SDK_INT >= 34 &&
             event.classification == MotionEvent.CLASSIFICATION_TWO_FINGER_SWIPE
         when {
-            twoFinger -> pad(Trackpad.SCROLL, 0f, event.getAxisValue(MotionEvent.AXIS_GESTURE_SCROLL_Y_DISTANCE))
+            twoFinger -> pad(Trackpad.SCROLL, event.getAxisValue(MotionEvent.AXIS_GESTURE_SCROLL_X_DISTANCE),
+                event.getAxisValue(MotionEvent.AXIS_GESTURE_SCROLL_Y_DISTANCE))
             event.actionMasked == MotionEvent.ACTION_SCROLL -> {
                 val v = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
                 if (v != 0f) pad(Trackpad.WHEEL, 0f, v)
@@ -481,17 +491,22 @@ class VoxKeys : AccessibilityService() {
 
         // A scroll from x, y: a swipe of dy pixels (positive: the page goes on downward, as a wheel turned down),
         // started where the whole swipe fits on the screen; done (from the main thread) when it has run or was cut.
-        fun scroll(x: Float, y: Float, dy: Float, height: Float, done: (() -> Unit)? = null): Boolean {
+        fun scroll(x: Float, y: Float, dy: Float, height: Float, done: (() -> Unit)? = null, dx: Float = 0f, width: Float = 0f): Boolean {
             val s = instance ?: return false
             val d = dy.coerceIn(-(height - 4f), height - 4f)
             val from = if (d > 0) y.coerceIn(d + 2f, height - 2f) else y.coerceIn(2f, height - 2f + d)
             val to = (from - d).coerceIn(1f, height - 2f)
+            // Sideways too (two fingers going left or right): the same swipe, along x.
+            val w = if (width > 0f) width else x + 1f
+            val h = if (width > 0f) dx.coerceIn(-(w - 4f), w - 4f) else 0f
+            val fromX = if (h > 0) x.coerceIn(h + 2f, w - 2f) else x.coerceIn(2f, (w - 2f + h).coerceAtLeast(2f))
+            val toX = (fromX - h).coerceIn(1f, w - 2f)
             val path = Path().apply {
-                moveTo(x.coerceAtLeast(0f), from)
-                lineTo(x.coerceAtLeast(0f), to)
+                moveTo(fromX.coerceAtLeast(0f), from)
+                lineTo(toX.coerceAtLeast(0f), to)
             }
-            // About 1.5 px a millisecond: the page follows without a long fling.
-            val ms = (kotlin.math.abs(d) / 1.5f).toLong().coerceIn(120L, 450L)
+            // About 2 px a millisecond: the page follows quickly, without a long fling.
+            val ms = (maxOf(kotlin.math.abs(d), kotlin.math.abs(h)) / 2f).toLong().coerceIn(80L, 400L)
             val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, ms)).build()
             val callback = done?.let {
                 object : AccessibilityService.GestureResultCallback() {

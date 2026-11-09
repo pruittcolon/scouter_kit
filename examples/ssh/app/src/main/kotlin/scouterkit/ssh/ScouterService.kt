@@ -1119,7 +1119,7 @@ class ScouterService : Service() {
             // A notch: an eighth of the screen (positive dy: the wheel turned up, the page back).
             VoxKeys.Trackpad.WHEEL -> phoneScroll(-dy * screenBounds().height() / 8f * speed)
             // The fingers going down (natural) bring the page down: back.
-            VoxKeys.Trackpad.SCROLL -> phoneScroll(-dy * 3f * speed * natural)
+            VoxKeys.Trackpad.SCROLL -> phoneScroll(-dy * 3f * speed * natural, -dx * 3f * speed * natural)
         }
         Session.changed()
     }
@@ -1152,27 +1152,33 @@ class ScouterService : Service() {
     // what comes while one runs adds up for the next (a new gesture would cut the running one short).
     private var swipePending = 0f
     private var swiping = false
-    private fun phoneScroll(px: Float) {
+    private var swipePendingX = 0f
+    private fun phoneScroll(px: Float, pxX: Float = 0f) {
         swipePending += px
+        swipePendingX += pxX
         if (!swiping) swipeNext()
     }
 
     private fun swipeNext() {
         val b = screenBounds()
         val d = swipePending.coerceIn(-b.height() * 0.4f, b.height() * 0.4f)
-        if (kotlin.math.abs(d) < 6f) {
+        val h = swipePendingX.coerceIn(-b.width() * 0.4f, b.width() * 0.4f)
+        if (kotlin.math.abs(d) < 6f && kotlin.math.abs(h) < 6f) {
             swipePending = 0f
+            swipePendingX = 0f
             swiping = false
             return
         }
         swipePending -= d
+        swipePendingX -= h
         swiping = true
         val x = cursorX / 10000f * (b.width() - 1)
         val y = cursorY / 10000f * (b.height() - 1)
-        val ok = VoxKeys.scroll(x, y, d, b.height().toFloat()) { work.post { swiping = false; swipeNext() } }
+        val ok = VoxKeys.scroll(x, y, d, b.height().toFloat(), { work.post { swiping = false; swipeNext() } }, h, b.width().toFloat())
         if (!ok) {
             swiping = false
             swipePending = 0f
+            swipePendingX = 0f
             Session.tabs = "scrolling the phone needs Vox's keyboard shortcuts (Android Settings: Accessibility, Vox)"
         }
     }
