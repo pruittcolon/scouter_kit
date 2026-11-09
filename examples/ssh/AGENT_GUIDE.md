@@ -43,7 +43,7 @@ detailed manual; this is the map.
 | Voice | Offline voice commands (Parakeet via sherpa-onnx) | `Voice.kt` |
 | Car mode | In a car (Bluetooth), the Next/Previous/Play keys talk to Claude on your server, the answer is spoken (Kokoro voice or Android TTS), nothing is shown on the glasses | `Car.kt` |
 | TV remote | A Vizio SmartCast TV's remote: Alt+Y turns the keyboard into it; buttons in Settings | `Vizio.kt`, `TvActivity.kt` |
-| Preview mode | Alt+D / Preview button: a scripted live tour on the glasses (flash captions, phone screen only) | `ScouterService.demoStart` |
+| Preview mode | Alt+D / Preview button: a short live tour (phone screen, phone terminal, laptop screen, laptop terminal), each after a full-screen title card | `ScouterService.demoStart`, `Intro.kt` |
 | Low battery | Alt+B: 10% brightness, again to restore | `ScouterService.lowBattery` |
 | Charging case log | The case's USB-C serial output, per-arm charge state | `CaseLogActivity.kt` |
 | Reliability | Logs sent to your server, crash logs, server keep-alive, in-app updater | `Reliability.kt` |
@@ -121,7 +121,9 @@ on / look-up only, Alt+= / - brightness, Alt+B low battery, Alt+S quick settings
 Alt+Space voice, Alt+Y TV remote, Alt+X keyboard off/on, Alt+K keys to phone/glasses, Alt+M pointer, Alt+T / [ / ]
 / W tabs, Alt+C share the phone screen (it taps Android's Start button for you, and retries while the dialog
 loads), Alt+Q close, Alt+U Tunes, Alt+Backspace / H / R / N phone Back / Home / Recents / Notifications.
-Ctrl+Left returns to the terminal from a screen; Ctrl+Backspace deletes a word in the terminal.
+Ctrl+Left returns to the terminal from a screen (a laptop's screen to that laptop's terminal); Ctrl+Backspace deletes a
+word in the terminal. Alt+D runs the preview. The glasses' terminal font lacks some symbols (e.g. U+25B8): check
+a character against the font's cmap before using it in panels or cards.
 
 **Look-up display.** The arms' VM watches the head pitch. It shows above the angle and hides below it minus 5 degrees
 after a hold, so it does not flicker at the edge. This runs on the glasses, not the phone, and costs almost nothing.
@@ -129,14 +131,17 @@ after a hold, so it does not flicker at the edge. This runs on the glasses, not 
 returns.
 
 **TV remote (Alt+Y).** Vizio SmartCast over HTTPS port 7345 with its self-signed certificate (accepted for that one
-connection). Pair once in Settings: Find the TV (scans the Wi-Fi subnet for the port), Pair, type the PIN the TV
-shows. The address and token stay on the phone. The TV is deliberately **not** one of the screens you switch
+connection). Pair once in Settings, TV remote: Find (scans the Wi-Fi interface's whole network, up to a /22, for
+the port), Pair, type the PIN the TV shows. The address and token stay on the phone; a key that gets no answer
+scans again and keeps the TV that accepts the token (at most once a minute). Five idle minutes end the mode. The TV is deliberately **not** one of the screens you switch
 between; it is only reachable through the Alt+Y hotkey (and the buttons in Settings). Keys: arrows, Enter = OK,
 Backspace/Esc = Back, H Home, +/- volume, M mute, Space play/pause, I input, Page Up/Down channel, P power.
 
 **Car mode.** When the phone connects to a car (Bluetooth profile), the media keys become a voice interface to
 Claude: Next starts listening, Next again sends; Play/Pause cancels or quiets; Previous repeats the answer, or
-(when idle) opens a new conversation in a new Claude tab on Sonnet. The phone's microphone is used by default
+(when idle) opens a new conversation in a new Claude tab on Sonnet, behind the tab in front. The model is set
+with ANTHROPIC_MODEL for that process only (`claude --model` can become the saved default and switch the user's own
+Claude), and the saved default is restored if it changed. The phone's microphone is used by default
 (the glasses' microphone costs their battery). The answer is spoken one sentence at a time (Kokoro downloaded on
 request, or Android TTS). It talks to the same tmux Claude session your terminal uses, so it continues that
 conversation. The glasses stay dark while you drive.

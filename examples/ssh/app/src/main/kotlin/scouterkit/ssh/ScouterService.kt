@@ -1474,14 +1474,15 @@ class ScouterService : Service() {
 
     // ------------------------------------------------ preview mode
 
-    // A walk through what Vox does, live on the glasses (Alt+D or the Preview button; again to stop). Each feature
-    // gets a title card first: a full-screen animation (Intro) that decodes into big letters and closes to a
-    // line, then the feature itself. The phone's screen, and a laptop's when one is set up; the notification is its
-    // own; Spotify is started if it is installed. What it changed (the dashboard's look, always on) is put back.
+    // A short tour, live on the glasses (Alt+D or the Preview button; again to stop): the phone's screen, the phone's
+    // terminal, the laptop's screen, the laptop's terminal (one that is not set up is left out), then an end card.
+    // Each gets a title card first (Intro: big letters decode, stand, collapse to a line), drawn over a terminal
+    // that is really chosen underneath, so nothing else pulls the glasses back to the screen meanwhile. The
+    // terminal under a card is the one the next step shows, or warms up (the laptop's), so each screen is ready
+    // when its card goes. What the tour changed (always on, the dashboard's look) is put back at the end.
     private var demoRun = 0
     private var demoStyle = ""
     private var demoForce = false
-    private var demoStarted = false
 
     private fun demoStop(message: String) {
         if (!Session.demo) return
@@ -1489,8 +1490,6 @@ class ScouterService : Service() {
         Session.demo = false
         settings.dashStyle = demoStyle
         settings.phoneForce = demoForce
-        if (demoStarted) { Media.control("toggle"); demoStarted = false }
-        if (settings.lowBattery) lowBattery()
         panelClose()
         refresh()
         dash()
@@ -1498,11 +1497,9 @@ class ScouterService : Service() {
         Session.changed()
     }
 
-    // One frame of a title card over the whole terminal (the terminal shows, not a screen: text frames are sharp
-    // and small to send).
+    // One frame of a title card over the whole terminal (text frames are sharp and small to send).
     private fun introFrame(title: String, tag: String, sub: String, step: Int) {
-        if (glassesWith == null) return
-        if (settings.show == Settings.SCREEN) render(Settings.TERMINAL)
+        if (glassesWith == null || Session.blank) return
         val g = region()
         val cols = if (g[2] > 0) g[0] / g[2] else settings.cols
         val rows = if (g[3] > 0) g[1] / g[3] else settings.rows
@@ -1524,45 +1521,50 @@ class ScouterService : Service() {
             Session.changed()
             return
         }
+        val servers = settings.servers()
+        val phoneTerm = servers.firstOrNull { it.local }?.let { "term:${it.id}" }
+        val laptop = servers.firstOrNull { !it.local }
+        val laptopTerm = laptop?.let { "term:${it.id}" }
+        val home = phoneTerm ?: laptopTerm ?: return note("Preview needs a terminal: add one in Vox")
         val gen = ++demoRun
         Session.demo = true
         demoStyle = settings.dashStyle
         demoForce = settings.phoneForce
         settings.phone = true
         settings.phoneForce = true
+        settings.dashStyle = "classic"
         if (Session.blank) display(true, "demo")
+        panelClose()
+        refresh()
         var t = 0L
         val at: (Long, () -> Unit) -> Unit = { after, f ->
             t += after
             work.postDelayed({ if (demoRun == gen) f() }, t)
         }
-        // Four screens, once each, in this order: the phone's screen, the phone's terminal, the laptop's screen, the
-        // laptop's terminal (a missing one is left out), then the end card.
-        val servers = settings.servers()
-        val phoneTerm = servers.firstOrNull { it.local }?.let { "term:${it.id}" }
-        val laptopServer = servers.firstOrNull { !it.local }
-        val total = 1 + listOfNotNull(phoneTerm, laptopServer, laptopServer).size + 1
+        val total = 2 + (if (phoneTerm != null) 1 else 0) + (if (laptop != null) 2 else 0)
         var n = 0
-        // A title card (the letters decode in half a second, stand a moment, collapse), then the screen for `hold` ms.
-        fun step(name: String, sub: String, hold: Long, body: () -> Unit) {
-            val i = ++n
-            val tag = "PREVIEW %02d/%02d".format(i, total)
-            val frames = listOf(0 to 0L, 1 to 90L, 2 to 90L, 3 to 90L, 4 to 90L, 5 to 90L,
-                8 to 900L, 9 to 70L, 10 to 70L, 11 to 70L)
-            for ((s, wait) in frames) at(wait) { introFrame(name, tag, sub, s) }
-            at(200) { panelClose() }
-            at(150) { body() }
+        // under: the terminal chosen beneath the card (a quick cut, hidden by it). The card: letters decode in half
+        // a second, stand for a second, collapse in a fifth; then `show` brings its screen, which stays `hold` ms
+        // (the time a screen needs to come, plus about two seconds to look at it).
+        fun step(name: String, sub: String, under: String, hold: Long, show: (() -> Unit)? = null) {
+            val tag = "PREVIEW %02d/%02d".format(++n, total)
+            at(0) { if (chosen() != under || settings.show != Settings.TERMINAL) choose(under, Fx.CUT) }
+            at(350) { introFrame(name, tag, sub, 0) }
+            for (s in 1..5) at(90) { introFrame(name, tag, sub, s) }
+            at(1000) { introFrame(name, tag, sub, 8) }
+            for (s in 9..11) at(60) { introFrame(name, tag, sub, s) }
+            at(80) { panelClose(); show?.invoke() }
             at(hold) {}
         }
-        refresh()
-        settings.dashStyle = "classic"
-        step("Phone screen", "your phone, with a cursor", 4000) { phoneScreen() }
-        if (phoneTerm != null) step("Terminal", "SSH and mosh on the phone", 2400) { choose(phoneTerm, Fx.LEFT) }
-        if (laptopServer != null) {
-            step("Laptop screen", "your computer, on your glasses", 5000) { choose("screen:${laptopServer.id}", Fx.RIGHT) }
-            step("Laptop terminal", "its terminal, over SSH", 3000) { choose("term:${laptopServer.id}", Fx.LEFT) }
+        // Not shared yet: Android's question comes first (VoxKeys answers it), which takes a moment more.
+        val sharing = if (screen == null) 1500L else 0L
+        step("Phone screen", "your phone, with a cursor", home, 3200 + sharing) { phoneScreen() }
+        if (phoneTerm != null) step("Terminal", "SSH and mosh, on the phone", phoneTerm, 2200)
+        if (laptop != null && laptopTerm != null) {
+            step("Laptop screen", "your computer, on your glasses", laptopTerm, 3400) { choose("screen:${laptop.id}", Fx.RIGHT) }
+            step("Laptop terminal", "its terminal, over SSH", laptopTerm, 2200)
         }
-        step("Built on ScouterKit", "firmware by mafik", 1500) { if (phoneTerm != null) choose(phoneTerm, Fx.LEFT) }
+        step("Built on ScouterKit", "firmware by mafik", home, 600)
         at(0) { demoStop("Preview over") }
         Log.i(TAG, "preview: ${t / 1000} s")
     }
@@ -1590,10 +1592,23 @@ class ScouterService : Service() {
             return note("TV not paired: Settings, TV remote")
         }
         Session.tvKeys = !Session.tvKeys
+        work.removeCallbacks(tvIdle)
+        if (Session.tvKeys) work.postDelayed(tvIdle, TV_IDLE_MS)
         note(if (Session.tvKeys) "TV remote on (Alt+Y off): arrows, Enter, +/-, M, Space, P" else "TV remote off")
     }
 
+    // Five minutes without a TV key: the keyboard is the keyboard again (a forgotten remote would leave it dead).
+    private val tvIdle = Runnable {
+        if (Session.tvKeys) {
+            Session.tvKeys = false
+            note("TV remote off (5 minutes idle)")
+            Session.changed()
+        }
+    }
+
     private fun tvKey(name: String) {
+        work.removeCallbacks(tvIdle)
+        if (Session.tvKeys) work.postDelayed(tvIdle, TV_IDLE_MS)
         val done = { why: String -> if (why.isNotEmpty()) work.post { note(why) } }
         if (name == "PLAY_PAUSE") Vizio.playPause(settings, done) else Vizio.key(settings, name, done)
     }
@@ -2438,6 +2453,7 @@ class ScouterService : Service() {
     private var carListener: VoiceListener? = null
     private var carBlanked = false // Car mode turned the glasses' display off
     private val carDevices = HashMap<String, String>() // a car's Bluetooth address: its name
+    private val carGone = HashMap<String, Runnable>() // a car whose link dropped: its end of Car mode, if it stays gone
 
     private val carHost = object : CarHost {
         override val handler get() = work
@@ -2533,10 +2549,27 @@ class ScouterService : Service() {
             Log.i(TAG, "bt: $name ${i.action?.substringAfterLast('.')}, class " +
                 Integer.toHexString(runCatching { d.bluetoothClass?.deviceClass ?: 0 }.getOrDefault(0)))
             if (!CarMode.isCar(d)) return
+            val address = d.address
             work.post {
-                if (i.action == BluetoothDevice.ACTION_ACL_CONNECTED) carDevices[d.address] = name else carDevices.remove(d.address)
-                Log.i(TAG, "car: ${if (i.action == BluetoothDevice.ACTION_ACL_CONNECTED) "connected" else "gone"} ($name)")
-                carCheck()
+                if (i.action == BluetoothDevice.ACTION_ACL_CONNECTED) {
+                    carGone.remove(address)?.let { work.removeCallbacks(it) } // back within the grace: nothing changed
+                    val known = address in carDevices
+                    carDevices[address] = name
+                    Log.i(TAG, "car: connected ($name)${if (known) ", again" else ""}")
+                    if (!known) carCheck()
+                } else if (address in carDevices && address !in carGone) {
+                    // A car's link drops for a moment now and then: Car mode (and the glasses kept dark) ends only
+                    // when it stays gone, so a blip doesn't light the glasses and darken them again seconds later.
+                    val gone = Runnable {
+                        carGone.remove(address)
+                        carDevices.remove(address)
+                        Log.i(TAG, "car: gone ($name)")
+                        carCheck()
+                    }
+                    carGone[address] = gone
+                    work.postDelayed(gone, CAR_GONE_MS)
+                    Log.i(TAG, "car: link dropped ($name), Car mode stays ${CAR_GONE_MS / 1000} s")
+                }
             }
         }
     }
@@ -2991,6 +3024,8 @@ class ScouterService : Service() {
         const val ACTION_VIEW_SCREEN = "scouterkit.ssh.VIEW_SCREEN" // the phone's screen again, while it is shared
         const val ACTION_STOP_SHARING = "scouterkit.ssh.STOP_SHARING" // screen sharing ends
         const val LOW_BRIGHTNESS = 4 // a tenth of 42
+        const val TV_IDLE_MS = 5 * 60_000L
+        const val CAR_GONE_MS = 20_000L
         const val ACTION_DISPLAY = "scouterkit.ssh.DISPLAY" // the display on / off (EXTRA_ON, else the other way)
         const val ACTION_SOURCE = "scouterkit.ssh.SOURCE" // a source on the glasses (Shortcuts.EXTRA: a key, next, prev)
         const val ACTION_SERVER = "scouterkit.ssh.SERVER" // a saved server's terminal (extra "id"; none: the next)

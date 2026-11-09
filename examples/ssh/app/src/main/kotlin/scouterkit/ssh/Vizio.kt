@@ -93,13 +93,18 @@ object Vizio {
         }
         val host = settings.tvHost
         val token = settings.tvToken
+        val body = JSONObject().put("KEYLIST", JSONArray().put(JSONObject()
+            .put("CODESET", k.first).put("CODE", k.second).put("ACTION", "KEYPRESS")))
         pool.execute {
             val why = runCatching {
-                val body = JSONObject().put("KEYLIST", JSONArray().put(JSONObject()
-                    .put("CODESET", k.first).put("CODE", k.second).put("ACTION", "KEYPRESS")))
                 val d = call(host, "PUT", "/key_command/", body, token)
                 if (ok(d)) "" else d.optJSONObject("STATUS")?.optString("DETAIL").orEmpty().ifEmpty { "The TV said no" }
-            }.getOrElse { "The TV did not answer" }
+            }.getOrElse { e ->
+                val moved = if (e is java.io.IOException) relocate(settings, token) else null
+                if (moved == null) "The TV did not answer (is it on, on this Wi-Fi?)"
+                else runCatching { if (ok(call(moved, "PUT", "/key_command/", body, token))) "" else "The TV said no" }
+                    .getOrDefault("The TV did not answer")
+            }
             done?.invoke(why)
         }
     }
@@ -152,41 +157,69 @@ object Vizio {
         }
     }
 
-    // Looking for the TV on the Wi-Fi: every address of this network's /24 asked on 7345 (a quick connect each).
-    // done: the first address found, or "".
-    fun find(localIp: String, done: (String) -> Unit) {
-        val base = localIp.substringBeforeLast('.', "")
-        if (base.isEmpty()) return done("")
-        Thread {
-            val workers = Executors.newFixedThreadPool(48)
-            val found = java.util.concurrent.atomic.AtomicReference("")
-            for (i in 1..254) {
-                val ip = "$base.$i"
-                if (ip == localIp) continue
-                workers.execute {
-                    if (found.get().isNotEmpty()) return@execute
-                    runCatching {
-                        Socket().use { it.connect(InetSocketAddress(ip, PORT), 400) }
-                        found.compareAndSet("", ip)
-                    }
+    // Every address of this phone's Wi-Fi network (at most a /22, 1022 hosts) that answers on 7345: a quick
+    // connect each, many at once (a few seconds in all).
+    private fun scan(): List<String> {
+        val (ip, prefix) = wifi()
+        if (ip.isEmpty()) return emptyList()
+        val bits = prefix.coerceIn(22, 30)
+        val me = ip.split('.').fold(0L) { a, p -> (a shl 8) or p.toLong() }
+        val mask = (0xFFFFFFFFL shl (32 - bits)) and 0xFFFFFFFFL
+        val net = me and mask
+        val hosts = (1 until (1L shl (32 - bits)) - 1).map { net + it }.filter { it != me }
+        val found = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val workers = Executors.newFixedThreadPool(64)
+        for (h in hosts) {
+            val addr = "${h shr 24 and 255}.${h shr 16 and 255}.${h shr 8 and 255}.${h and 255}"
+            workers.execute {
+                runCatching {
+                    Socket().use { it.connect(InetSocketAddress(addr, PORT), 400) }
+                    found += addr
                 }
             }
-            workers.shutdown()
-            workers.awaitTermination(20, TimeUnit.SECONDS)
-            done(found.get())
-        }.start()
+        }
+        workers.shutdown()
+        workers.awaitTermination(30, TimeUnit.SECONDS)
+        return found.sorted()
     }
 
-    // This phone's Wi-Fi address ("" without one).
-    fun localIp(): String = runCatching {
-        java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces())
-            .filter { it.isUp && !it.isLoopback }
-            .flatMap { java.util.Collections.list(it.inetAddresses) }
-            .firstOrNull { it is java.net.Inet4Address && it.isSiteLocalAddress }?.hostAddress.orEmpty()
-    }.getOrDefault("")
+    // Looking for a TV on the Wi-Fi (Settings, TV remote). done: the first address found, or "".
+    fun find(done: (String) -> Unit) {
+        Thread { done(scan().firstOrNull().orEmpty()) }.start()
+    }
+
+    // The paired TV moved to another address (the router gave it a new one): found again by asking each TV on the
+    // Wi-Fi with our token, and kept. At most once a minute (a TV that is unplugged does not start a scan per key).
+    @Volatile private var relocatedAt = 0L
+    private fun relocate(settings: Settings, token: String): String? {
+        val now = System.currentTimeMillis()
+        if (now - relocatedAt < 60_000) return null
+        relocatedAt = now
+        for (host in scan()) {
+            if (host == settings.tvHost) continue
+            val good = runCatching { ok(call(host, "GET", "/state/device/power_mode", null, token)) }.getOrDefault(false)
+            if (good) {
+                settings.tvHost = host
+                return host
+            }
+        }
+        return null
+    }
+
+    // This phone's Wi-Fi address and its network's prefix length; ("", 0) off Wi-Fi. The Wi-Fi interface first
+    // (wlan*): mobile data can have a private address too, and that network has no TV.
+    fun wifi(): Pair<String, Int> = runCatching {
+        val all = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces()).filter { it.isUp && !it.isLoopback }
+        val ordered = all.sortedBy { if (it.name.startsWith("wlan")) 0 else 1 }
+        for (i in ordered) for (a in i.interfaceAddresses) {
+            val ad = a.address
+            if (ad is java.net.Inet4Address && ad.isSiteLocalAddress) return@runCatching ad.hostAddress.orEmpty() to a.networkPrefixLength.toInt()
+        }
+        "" to 0
+    }.getOrDefault("" to 0)
 
     // The remote key a keyboard key stands for while the remote is on (null: none; the key goes on as it is).
-    fun forKey(code: Int, shift: Boolean): String? = when (code) {
+    fun forKey(code: Int): String? = when (code) {
         android.view.KeyEvent.KEYCODE_DPAD_UP -> "UP"
         android.view.KeyEvent.KEYCODE_DPAD_DOWN -> "DOWN"
         android.view.KeyEvent.KEYCODE_DPAD_LEFT -> "LEFT"

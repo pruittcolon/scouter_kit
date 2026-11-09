@@ -98,9 +98,10 @@ object Panels {
             val out = mutableListOf<Pair<String, Int>>()
             for ((i, g) in groups.withIndex()) {
                 if (i > 0) out += "" to 0
-                val name = "▌▌ ${g.first.uppercase()} ▐"
-                out += (name + "░▒▓".padEnd(maxOf(0, half - name.length), '▓')).take(half) to 1
-                for ((k, what) in g.second) out += (" ▸ " + k.padEnd(10) + what).take(half) to 0
+                // The group's name on a tag, a rule running off it (thin: a full bar would light half the panel).
+                val name = "▌▌ ${g.first.uppercase()} ▐░▒▓ "
+                out += (name + "─".repeat(maxOf(0, half - name.length - 1))).take(half) to 1
+                for ((k, what) in g.second) out += (" › " + k.padEnd(10) + what).take(half) to 0
             }
             return out
         }
@@ -166,13 +167,18 @@ object Panels {
         c.drawPath(ban, bar)
         val title = paint(19f, true).apply { color = Color.BLACK }
         c.drawText("VOX//HOTKEYS", 14f, 22f, title)
-        var gx = 190f
-        for (i in 0 until 9) { // glitch blocks, thinning out
-            c.drawRect(gx, 6f, gx + 4f + (i % 3) * 3f, 24f, paint(0f).apply { style = Paint.Style.FILL; color = Color.BLACK })
-            gx += 12f + (i * 5) % 11
-        }
         val close = paint(13f).apply { color = Color.BLACK; textAlign = Paint.Align.RIGHT }
         c.drawText(closes(held), w - 40f, 21f, close)
+        // Glitch blocks between the name and the way out, thinning out (never over either).
+        val ink = paint(0f).apply { style = Paint.Style.FILL; color = Color.BLACK }
+        val stop = w - 40f - close.measureText(closes(held)) - 14f
+        var gx = 14f + title.measureText("VOX//HOTKEYS") + 16f
+        var i = 0
+        while (gx + 10f < stop) {
+            c.drawRect(gx, 6f, gx + 4f + (i % 3) * 3f, 24f, ink)
+            gx += 12f + (i * 5) % 11 + i * 2
+            i++
+        }
         // Scanlines under the banner, thicker towards the middle.
         for (i in 0 until 4) c.drawRect(0f, 34f + i * 3f, w * (1f - i * 0.22f), 35f + i * 3f, bar)
         val head = paint(15f, true).apply { color = Color.BLACK }

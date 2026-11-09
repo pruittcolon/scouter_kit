@@ -554,8 +554,11 @@ def out(**k):
     sys.exit(0)
 def tmux(*a):
     return subprocess.run(["tmux"] + list(a), capture_output=True, text=True)
-r = tmux("list-panes", "-s", "-t", sess, "-F", "#{pane_id} #{window_active} #{pane_active} #{pane_pid}")
-if r.returncode != 0:
+if sess.startswith("%"):
+    r = tmux("display", "-p", "-t", sess, "#{pane_id} 1 1 #{pane_pid}")
+else:
+    r = tmux("list-panes", "-s", "-t", sess, "-F", "#{pane_id} #{window_active} #{pane_active} #{pane_pid}")
+if r.returncode != 0 or not r.stdout.strip():
     out(error="There is no Claude session called " + sess + " running there.")
 panes = sorted([l.split() for l in r.stdout.split("\n") if len(l.split()) == 4], key=lambda x: (x[1] != "1", x[2] != "1"))
 procs, kids = {}, {}
@@ -654,19 +657,29 @@ out(error="Claude is still working on it; the answer will be on the glasses.")
             "command -v tmux >/dev/null || { echo 'VOX: tmux is not installed there'; exit 0; }; " +
             "printf %s ${q(text)} | python3 -c ${q(TERMINAL_PY)} ${q(session)} $limit${if (dry) " dry" else ""} 2>&1"
 
-    // A new tab (tmux window) in `session` running a fresh Claude (Sonnet: quicker for talk), in front, so the next
-    // question goes to it;
-    // waits (12 s at most) for Claude's prompt.
+    // A new tab (tmux window) in `session` running a fresh Claude on Sonnet (quicker for talk), opened behind the
+    // tab in front (the user's own conversation stays where it was); waits (12 s at most) for Claude's prompt and
+    // answers its pane, which the questions then go to. Sonnet through ANTHROPIC_MODEL, which lasts only for that
+    // process: `claude --model` can become the saved default, and the user's own Claude then changed model too.
+    // As a backstop the saved default (~/.claude/settings.json "model") is put back if it changed meanwhile.
     fun newTab(vault: Vault, server: Settings.Server, session: String): Answer = run(vault, server, PATH + newTabScript(session))
 
+    private const val GET_MODEL = "import json,sys\ntry: print(json.load(open(sys.argv[1])).get('model', ''))\nexcept Exception: print('-')"
+    private const val PUT_MODEL = "import json,sys\np, m = sys.argv[1], sys.argv[2]\ntry: d = json.load(open(p))\n" +
+        "except Exception: sys.exit(0)\nif d.get('model', '') != m:\n    d.pop('model', None) if m == '' else d.update(model=m)\n" +
+        "    open(p, 'w').write(json.dumps(d, indent=2) + '\\n')\n    print('VOX-RESTORED')"
+
     fun newTabScript(session: String): String =
-        "S=${q(session)}; " +
+        "S=${q(session)}; F=\"\$HOME/.claude/settings.json\"; " +
             "command -v tmux >/dev/null || { echo 'VOX: tmux is not installed there'; exit 0; }; " +
             "tmux has-session -t \"\$S\" 2>/dev/null || { echo \"VOX: There is no Claude session called \$S running there.\"; exit 0; }; " +
-            "P=\$(tmux new-window -P -F '#{pane_id}' -c \"\$HOME\" -e \"PATH=\$PATH\" -t \"\$S:\" -n voice 'exec claude --model sonnet') || " +
+            "M=-; command -v python3 >/dev/null && M=\$(python3 -c ${q(GET_MODEL)} \"\$F\" 2>/dev/null); " +
+            "P=\$(tmux new-window -d -P -F '#{pane_id}' -c \"\$HOME\" -e \"PATH=\$PATH\" -e ANTHROPIC_MODEL=sonnet -t \"\$S:\" -n voice 'exec claude') || " +
             "{ echo 'VOX: tmux could not open a tab'; exit 0; }; " +
             "i=0; while [ \$i -lt 24 ]; do tmux capture-pane -p -t \"\$P\" 2>/dev/null | grep -q 'for shortcuts' && break; " +
-            "sleep 0.5; i=\$((i+1)); done; echo '{\"text\": \"ok\"}'"
+            "sleep 0.5; i=\$((i+1)); done; " +
+            "[ \"\$M\" != - ] && python3 -c ${q(PUT_MODEL)} \"\$F\" \"\$M\" 2>/dev/null; " +
+            "printf '{\"text\": \"ok\", \"session\": \"%s\"}\\n' \"\$P\""
 
     fun askTerminal(vault: Vault, server: Settings.Server, text: String, session: String): Answer =
         run(vault, server, terminalCommand(text, session, 240))
@@ -735,6 +748,7 @@ class CarMode(private val context: Context, private val host: CarHost) {
     private var request = 0
     private var asked = ""
     private var lastAnswer = ""
+    @Volatile private var voicePane: String? = null // the tab "New conversation" opened: questions go there
     private var lastKey = 0L
     private var lastKeyCode = 0
 
@@ -920,8 +934,14 @@ class CarMode(private val context: Context, private val host: CarHost) {
         Log.i(ScouterService.TAG, "car: asking Claude on ${server.name} (${if (terminal) "tmux $tmux" else "chat"})")
         Thread {
             val t0 = SystemClock.uptimeMillis()
-            val a = if (terminal) CarClaude.askTerminal(host.carVault(), server, text, tmux)
-                else CarClaude.askChat(host.carVault(), server, text, session)
+            val pane = voicePane
+            var a = if (!terminal) CarClaude.askChat(host.carVault(), server, text, session)
+                else CarClaude.askTerminal(host.carVault(), server, text, pane ?: tmux)
+            // The voice tab was closed meanwhile: the conversation in front, as before it.
+            if (terminal && pane != null && a.error?.contains("no Claude session", true) == true) {
+                voicePane = null
+                a = CarClaude.askTerminal(host.carVault(), server, text, tmux)
+            }
             Log.i(ScouterService.TAG, "car: answer in ${SystemClock.uptimeMillis() - t0} ms" + (a.error?.let { ": $it" } ?: ""))
             h.post { answered(id, a, terminal) }
         }.start()
@@ -1048,6 +1068,7 @@ class CarMode(private val context: Context, private val host: CarHost) {
                 if (id != request || state != State.THINKING) return@post
                 h.removeCallbacks(pulse)
                 if (a.error != null) return@post fail(a.error)
+                voicePane = a.session?.takeIf { it.startsWith("%") }
                 CarSounds.play(CarSounds.Sound.READY)
                 host.carBand("$MIC New conversation: press next to talk", false)
                 say("New conversation. Press next to talk.")

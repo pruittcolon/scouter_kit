@@ -357,9 +357,11 @@ checked by SHA-256, sherpa-onnx's `OfflineTts` made sentence by sentence and pla
 choose from), else Android's text-to-speech (its best installed voice). Chimes, made in code: Car mode on, listening
 (rising), sent (falling), a soft tick while Claude thinks, a low pair for a problem, a step down when nothing was
 sent. Next while Claude speaks or thinks asks again; play / pause stops the answer or cancels; Previous says the
-answer again. Idle, play / pause goes to the music app and Previous starts a new conversation: a new tmux tab in
-front running a fresh `claude --model sonnet` (quicker for talk), where the next question goes (a chat: its
-session forgotten). While Car mode is on the glasses' display stays off (driving): it goes dark when Car mode comes
+answer again. Idle, play / pause goes to the music app and Previous starts a new conversation: a new tmux tab,
+opened behind the one in front (your own conversation stays where it was), running a fresh Claude on Sonnet
+(quicker for talk); the questions go to that tab from then on (a chat: its session forgotten). Sonnet is set for
+that one process (ANTHROPIC_MODEL), never with `claude --model`, which can become the saved default and switch your
+own Claude too; if the saved default (`~/.claude/settings.json`) changed anyway, it is put back. While Car mode is on the glasses' display stays off (driving): it goes dark when Car mode comes
 on or the glasses connect, panels and the phone waking don't light it, nothing of Car mode's is drawn on them, and
 it comes back when Car mode ends (only the user turning it on lights it meanwhile). The car's screen shows what Vox does, or what
 plays.
@@ -411,9 +413,29 @@ with the app in the back.
   the panels go off. Ending the screen sharing (Android's status bar, Stop, or
   "Terminal on glasses") brings the terminal back; the mosh session waits paused meanwhile.
 
-## TV remote and low battery
+## TV remote, low battery, preview
 
-- **Alt+Y** turns the keyboard into a Vizio SmartCast TV's remote (the TV is not one of the screens you switch between): arrows, Enter = OK, Backspace/Esc = Back, H = Home, +/- = volume, M = mute, Space = play/pause, I = input, Page Up/Down = channel, P = power. Alt+Y again gives the keyboard back; the glasses say which. Pair once in Settings, Troubleshooting, TV remote (Find the TV, Pair, type the PIN the TV shows). The TV's address and token stay in Vox's private settings on the phone. The same screen has the buttons for the phone.
+- **Alt+Y** turns the keyboard into a Vizio SmartCast TV's remote (the TV is not one of the screens you switch
+  between): arrows, Enter = OK, Backspace/Esc = Back, H = Home, +/- = volume, M = mute, Space = play/pause,
+  I = input, Page Up/Down = channel, P = power. Alt+Y again, or five minutes without a TV key, gives the keyboard
+  back; the glasses say which. Pair once in Settings, TV remote (Find and pair the TV: it looks over the whole
+  Wi-Fi network, then type the PIN the TV shows). The TV's address and token stay in Vox's private settings on the
+  phone. If the router gives the TV a new address, the next key finds it again by itself.
 - **Alt+B** is low battery: the glasses at 10% brightness, and again back to the level they had.
-- **Alt+D** (or the **Preview** button on the main screen) is the preview mode: a live walk through the features on the glasses, the phone's screen only, each step flashing its name first (the phone's screen, the phone's terminal, the laptop's screen, the laptop's terminal). It posts its own notification and starts Spotify if it is installed; what it changed is put back. Alt+D or Stop ends it. Off while driving.
-- The preview opens each feature with a full-screen title card (noise decoding into big letters, a frame closing round them, a CRT collapse), adds the laptop's screen when one is set up, and clicks through every dashboard layout. The Alt-hold hotkey list has a cyberpunk look (banner, tags, scanlines).
+- **Alt+D** (or **Preview on the glasses** on the main screen) is a short tour: the phone's screen, the phone's
+  terminal, the laptop's screen, the laptop's terminal (one that isn't set up is left out), each about two seconds
+  once it has come, then a ScouterKit card. Each opens with a full-screen title card drawn in the terminal's own
+  text (noise decoding into big letters, a frame closing round them, a collapse to a line), over a terminal that
+  is really chosen underneath (the one the next step shows, so it is ready when the card goes). What the tour
+  changed (always on, the dashboard's look) is put back. Alt+D or Stop ends it; it is off while driving.
+- Holding Alt shows the hotkeys in a cyberpunk frame (banner, tags, rules), in characters the glasses' font has.
+- **Ctrl+Left** on a screen goes back to the terminal: a laptop's screen to that laptop's terminal, the phone's to
+  the terminal in use. **Ctrl+Backspace** in the terminal deletes the word before (as Alt+Backspace).
+
+## Steady display
+
+- An arm that sees its link to the phone drop while the display is forced on (Always on) doesn't let go at once:
+  it looks again 6 s later and only then hands the display to the head angle. A Bluetooth blip (Wi-Fi traffic, the
+  phone's other devices) no longer turns the display off for a few seconds.
+- Car mode ends only when the car has been gone 20 s, so a car (or hands-free device) that drops its link for a
+  moment doesn't darken and light the glasses.

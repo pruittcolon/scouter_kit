@@ -194,17 +194,31 @@ int main(int argc, char **argv) {
   term.Show(Screen(77, 33, "after the reboot"));
   CHECK(WaitFor([&] { return SameArea(x, y, x - 100, y + 9, w, h) && Lit(0) > 200; }, 5000));
 
-  // The left arm's link drops while keyer's force holds: the arm's own watch suspends the force within 5 s, and
-  // the lowered head hides the terminal there; the right arm, still linked, stays forced. The link back, the
-  // left arm is forced again (the host never knew).
+  // The left arm's link blips (3 s) while keyer's force holds: the arm doubts, looks again 6 s later and finds
+  // the link back, so the terminal never goes (the head is down: only the force holds it).
   Pitch(0, -30);
   Pitch(1, -30);
   CHECK(WaitFor([&] { return PanelProp(0) == 0 && PanelProp(1) == 0; }, 3000));
   term.Force(true); // on again only through the force
   CHECK(WaitFor([&] { return PanelProp(0) != 0 && PanelProp(1) != 0; }));
-  auto back = std::chrono::steady_clock::now() + std::chrono::milliseconds(10000);
-  g1::emulator::Disconnect(0, 9000);
-  CHECK(WaitFor([&] { return Lit(0) == 0; }, 8000)); // its panel, unlinked: no PanelProp
+  {
+    auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(14000);
+    g1::emulator::Disconnect(0, 3000);
+    bool dark = false;
+    while (std::chrono::steady_clock::now() < until) {
+      if (Lit(0) == 0) dark = true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    CHECK(!dark);
+    CHECK(PanelProp(0) != 0);
+  }
+
+  // The left arm's link drops for good (18 s): within the watch (5 s) and the second look (6 s) the force is
+  // suspended and the lowered head hides the terminal there; the right arm, still linked, stays forced. The
+  // link back, the left arm is forced again (the host never knew).
+  auto back = std::chrono::steady_clock::now() + std::chrono::milliseconds(19000);
+  g1::emulator::Disconnect(0, 18000);
+  CHECK(WaitFor([&] { return Lit(0) == 0; }, 14000)); // its panel, unlinked: no PanelProp
   CHECK(PanelProp(1) != 0);
   std::this_thread::sleep_until(back); // the link back: the arm takes the force again by itself
   CHECK(WaitFor([&] { return PanelProp(0) != 0 && Lit(0) > 200; }, 5000));

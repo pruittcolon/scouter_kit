@@ -110,7 +110,7 @@ object Hotkeys {
         }
         // The TV remote on (Alt+Y): the keyboard is the TV's remote (Vizio.LAYOUT); Alt shortcuts go on as ever.
         if (Session.tvKeys && !e.isAltPressed && !e.isCtrlPressed && !e.isMetaPressed) {
-            val k = Vizio.forKey(e.keyCode, e.isShiftPressed) ?: return true
+            val k = Vizio.forKey(e.keyCode) ?: return true
             val again = k.startsWith("VOL") || k.startsWith("CH") || k in listOf("UP", "DOWN", "LEFT", "RIGHT")
             if (e.action == KeyEvent.ACTION_DOWN && (e.repeatCount == 0 || again))
                 ScouterService.send(context, ScouterService.ACTION_PANEL, "do" to "tv:$k")
@@ -178,13 +178,15 @@ object Hotkeys {
                 ScouterService.send(context, ScouterService.ACTION_TABS, "tab" to if (e.keyCode == KeyEvent.KEYCODE_DPAD_LEFT) "prev" else "next")
             return true
         }
-        // Ctrl+Left, with a screen on the glasses (the phone's or a server's): back to the SSH terminal. In the
-        // terminal itself it is the word before, as ever.
+        // Ctrl+Left, with a screen on the glasses: back to the SSH terminal. A server's screen goes to that server's
+        // terminal, the phone's to the terminal in use. In the terminal itself it is the word before, as ever.
         if (e.isCtrlPressed && !e.isAltPressed && !e.isMetaPressed && !e.isShiftPressed &&
             e.keyCode == KeyEvent.KEYCODE_DPAD_LEFT && Session.showing == Settings.SCREEN) {
-            if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0 && settings.active() != null)
-                ScouterService.send(context, ScouterService.ACTION_SOURCE,
-                    Shortcuts.EXTRA to "term:${settings.active()?.id}", "fx" to "left")
+            val shown = Session.screenSource
+            val term = if (shown.startsWith("screen:")) "term:" + shown.removePrefix("screen:")
+                else settings.active()?.let { "term:${it.id}" }
+            if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0 && term != null)
+                ScouterService.send(context, ScouterService.ACTION_SOURCE, Shortcuts.EXTRA to term, "fx" to "left")
             return true
         }
         if (!e.isAltPressed || e.isCtrlPressed || e.isMetaPressed) return false

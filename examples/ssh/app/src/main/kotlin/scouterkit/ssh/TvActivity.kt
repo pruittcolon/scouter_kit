@@ -83,9 +83,8 @@ class TvActivity : Activity() {
 
     private fun find() {
         status.text = "Looking for the TV on the Wi-Fi…"
-        val ip = Vizio.localIp()
-        if (ip.isEmpty()) return run { status.text = "Not on a Wi-Fi network" }
-        Vizio.find(ip) { found -> runOnUiThread {
+        if (Vizio.wifi().first.isEmpty()) return run { status.text = "Not on a Wi-Fi network" }
+        Vizio.find { found -> runOnUiThread {
             if (found.isEmpty()) status.text = "No TV found: is it on? Or type its address (TV settings, Network)."
             else {
                 host.setText(found)

@@ -274,7 +274,7 @@ class MainActivity : Activity() {
         tunesAction = RoundAction(this, "spark", "Tunes") { ScouterService.send(this, ScouterService.ACTION_TUNES) }
         for (a in listOf(displayAction, alwaysAction, voiceAction, pointerAction, tunesAction)) actions.addView(a, lp(0, weight = 1f))
         page.addView(actions)
-        previewButton = button("▶  Preview: tour every feature on the glasses", 0) {
+        previewButton = button("▶  Preview on the glasses", 0) {
             ScouterService.send(this, ScouterService.ACTION_PANEL, "do" to "demo")
         }
         page.addView(previewButton, lp().apply { topMargin = dp(16) })
@@ -1355,7 +1355,7 @@ class MainActivity : Activity() {
         voiceAction.set(Session.listening, if (Session.listening) "Listening" else "Voice")
         pointerAction.set(Session.pointer)
         tunesAction.set(Session.tunes)
-        previewButton.text = if (Session.demo) "■  Stop the preview" else "▶  Preview: tour every feature on the glasses"
+        previewButton.text = if (Session.demo) "■  Stop the preview" else "▶  Preview on the glasses"
 
         // The look per app.
         val lk = Looks.key

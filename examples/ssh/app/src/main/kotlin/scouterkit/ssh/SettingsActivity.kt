@@ -212,6 +212,14 @@ class SettingsActivity : Activity() {
         key.addField(passphrase)
         key.addView(button("Save the pasted key") { save(pasted.text.toString().toByteArray()) })
 
+        val tv = page.section("TV remote", "set_tv", "screen",
+            hint = "A Vizio SmartCast TV on this Wi-Fi. Alt+Y turns the keyboard into its remote; Alt+Y again, or five " +
+                "idle minutes, gives the keyboard back.")
+        tv.addView(text(if (Vizio.paired(settings)) "Paired with the TV at ${settings.tvHost}" else "Not paired yet",
+            12.5f, Ui.FAINT))
+        tv.addView(button(if (Vizio.paired(settings)) "Open the remote" else "Find and pair the TV") {
+            startActivity(Intent(this, TvActivity::class.java))
+        })
         val pins = page.section("Shortcuts", "set_shortcuts", "spark",
             hint = "On your home screen. Long-pressing the Vox icon shows them too; Quick Settings has a \"Next source\" tile.")
         val chips = settings.sources().map { (k, name) -> chip("+ $name", false) { pin(k, name) } } +
@@ -242,9 +250,6 @@ class SettingsActivity : Activity() {
             "and one-time codes) in every screen share.", 12.5f, Ui.FAINT))
         trouble.addView(button("Open Developer options") {
             runCatching { startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
-        })
-        trouble.addView(button("TV remote (Vizio): pair and buttons; Alt+Y on the keyboard") {
-            startActivity(Intent(this, TvActivity::class.java))
         })
         trouble.addView(button("Charging case log (connect the case by USB-C)") {
             startActivity(Intent(this, CaseLogActivity::class.java))

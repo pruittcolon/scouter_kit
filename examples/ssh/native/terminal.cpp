@@ -52,6 +52,8 @@ constexpr uint32_t kByHost = 16;    // NOTIFY a: a visibility change the host as
 constexpr int kForceWatchUs = 5000000; // while forced, how often the arm checks that the host is still linked
 constexpr int kLostWatchUs = 2000000;  // while the force is lost (the link dropped), how often it looks for the link
 constexpr uint32_t kForceLost = 2;     // wForce: forced, but the link dropped: the head decides until it is back
+constexpr uint32_t kForceDoubt = 3;    // wForce: forced, the link read 0 once: still forced until a second look
+constexpr int kLinkGraceUs = 6000000;  // how long after that first 0 the second look comes (a blip passes unseen)
 constexpr int kBattPad = 3, kBattPadY = 1; // the battery band: pixels between its frame and the text
 constexpr int kDefaultLevel = 12;
 
@@ -667,7 +669,7 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   // so the arm takes it back itself (a phone that let go for good wrote wForce 0 before).
   auto tick = p.NewLabel(), held = p.NewLabel(), watch = p.NewLabel(), rearm = p.NewLabel(),
        unforce = p.NewLabel(), own = p.NewLabel(), own_show = p.NewLabel(), forced = p.NewLabel(),
-       lost = p.NewLabel(), lost_again = p.NewLabel();
+       lost = p.NewLabel(), lost_again = p.NewLabel(), suspect = p.NewLabel(), doubt = p.NewLabel();
   p.Bind(tick);
   p.Bne(up, c(2), watch);
   p.SysRead(R(1), time_us);
@@ -675,6 +677,7 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.BltS(R(2), c(0), rearm);
   p.Mov(up, c(0));
   p.Beq(force, c(1), held);
+  p.Beq(force, c(kForceDoubt), held); // unsure of the link: still forced
   p.Mov(R(6), c(0));
   p.Beq(shown, c(0), watch);
   p.Call(hide);
@@ -684,9 +687,27 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.Call(band_off);
   p.Bind(watch);
   p.Beq(force, c(kForceLost), lost);
+  p.Beq(force, c(kForceDoubt), doubt);
   p.Bne(force, c(1), done);
   p.SysRead(R(0), link);
+  p.Beq(R(0), c(0), suspect);
+  p.SysRead(R(1), time_us);
+  p.Add(R(1), R(1), n(kForceWatchUs));
+  p.SysWrite(timer, R(1));
+  p.End();
+  // LINK 0 once: a Bluetooth blip (Wi-Fi traffic, the phone's other devices) as often as a host gone. The force
+  // holds and the arm looks again after kLinkGraceUs; only a link still down then hands over to the head. Without
+  // this a blip turned an always-on terminal off for a few seconds (until the link and the force came back).
+  p.Bind(suspect);
+  p.Mov(force, c(kForceDoubt));
+  p.SysRead(R(1), time_us);
+  p.Add(R(1), R(1), n(kLinkGraceUs));
+  p.SysWrite(timer, R(1));
+  p.End();
+  p.Bind(doubt);
+  p.SysRead(R(0), link);
   p.Beq(R(0), c(0), unforce);
+  p.Mov(force, c(1)); // back in time: forced as before
   p.SysRead(R(1), time_us);
   p.Add(R(1), R(1), n(kForceWatchUs));
   p.SysWrite(timer, R(1));
@@ -713,6 +734,7 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.Bind(user2);
   p.Mov(R(6), c(kByHost));
   p.Beq(force, c(1), forced);
+  p.Beq(force, c(kForceDoubt), forced);
   p.Beq(peer, c(1), peer_up);
   p.Beq(peer, c(2), peer_down);
   p.Bind(own);
