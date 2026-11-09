@@ -1424,6 +1424,7 @@ class ScouterService : Service() {
         val content = when (kind) {
             Panels.SETTINGS -> Panels.settings(if (onScreen) Session.source.ifEmpty { "Screen" } else "Terminal", tweaks, panelAt)
             Panels.NOTE -> Panels.note(noteText)
+            Panels.INTRO -> return // drawn by introFrame
             else -> null // the help: laid out for each
         }
         if (onScreen) {
@@ -1473,8 +1474,9 @@ class ScouterService : Service() {
 
     // ------------------------------------------------ preview mode
 
-    // A walk through what Vox does, live on the glasses (Alt+D or the Preview button; again to stop): each step
-    // flashes its name first, then shows it. The phone's screen only (never a laptop's); the notification is its
+    // A walk through what Vox does, live on the glasses (Alt+D or the Preview button; again to stop). Each feature
+    // gets a title card first: a full-screen animation (Intro) that decodes into big letters and closes to a
+    // line, then the feature itself. The phone's screen, and a laptop's when one is set up; the notification is its
     // own; Spotify is started if it is installed. What it changed (the dashboard's look, always on) is put back.
     private var demoRun = 0
     private var demoStyle = ""
@@ -1496,14 +1498,23 @@ class ScouterService : Service() {
         Session.changed()
     }
 
-    // The step's name, blinking in twice, then held.
-    private fun flashAt(at: (Long, () -> Unit) -> Unit, text: String) {
-        val t = text.uppercase(java.util.Locale.US)
-        at(0) { note("* $t *") }
-        at(180) { panelClose() }
-        at(110) { note("* $t *") }
-        at(180) { panelClose() }
-        at(110) { note("* $t *") }
+    // One frame of a title card over the whole terminal (the terminal shows, not a screen: text frames are sharp
+    // and small to send).
+    private fun introFrame(title: String, tag: String, sub: String, step: Int) {
+        if (glassesWith == null) return
+        if (settings.show == Settings.SCREEN) render(Settings.TERMINAL)
+        val g = region()
+        val cols = if (g[2] > 0) g[0] / g[2] else settings.cols
+        val rows = if (g[3] > 0) g[1] / g[3] else settings.rows
+        val (lines, marks) = Intro.frame(cols.coerceIn(20, 120), rows.coerceIn(10, 60), title, tag, sub, step)
+        if (Session.overlay != Panels.INTRO) {
+            work.removeCallbacks(noteEnd)
+            if (Session.pointer) pointerOff()
+            Session.overlay = Panels.INTRO
+            forceApply()
+        }
+        Native.screenOverlay(null, 0, 0, 0, 0)
+        Native.overlay(lines.toTypedArray(), marks.toIntArray(), true)
     }
 
     private fun demoStart() {
@@ -1525,24 +1536,30 @@ class ScouterService : Service() {
             t += after
             work.postDelayed({ if (demoRun == gen) f() }, t)
         }
-        fun step(name: String, hold: Long, body: () -> Unit) {
-            flashAt(at, name)
-            at(700) { body() }
+        val laptop = settings.sources().map { it.first }.firstOrNull { it.startsWith("screen:") }
+        val total = 11 + if (laptop != null) 1 else 0
+        var n = 0
+        fun step(name: String, sub: String, hold: Long, body: () -> Unit) {
+            val i = ++n
+            val tag = "PREVIEW %02d/%02d".format(i, total)
+            for (s in 0 until Intro.STEPS) at(if (s == 0) 0 else 150) { introFrame(name, tag, sub, s) }
+            at(150) { panelClose() }
+            at(250) { body() }
             at(hold) {}
         }
         val term = settings.active()?.let { "term:${it.id}" }
         fun terminal() { if (term != null) choose(term, Fx.LEFT) }
         refresh()
-        step("Vox preview", 1500) { terminal() }
-        step("Look-up display", 3500) { settings.dashStyle = "classic"; refresh(); dash() }
-        step("Hold Alt: every hotkey", 4500) { panelOpen(Panels.HELP) }
+        step("Vox", "a second screen for your Even G1", 1200) { terminal() }
+        step("Look-up display", "look up and it appears", 3500) { settings.dashStyle = "classic"; refresh(); dash() }
+        step("Every hotkey", "hold Alt and they all show", 4500) { panelOpen(Panels.HELP) }
         at(0) { panelClose() }
-        step("Terminal over SSH", 3500) { terminal() }
-        step("The phone's screen", 7000) { phoneScreen() }
-        step("Click a notification", 7000) {
-            val n = NotificationManager::class.java
+        step("Terminal", "SSH and mosh, tabs and scrolling", 3500) { terminal() }
+        step("Phone screen", "your phone, with a cursor", 7000) { phoneScreen() }
+        if (laptop != null) step("Laptop screen", "your computer, on your glasses", 7000) { choose(laptop, Fx.RIGHT) }
+        step("Notifications", "click one to open it", 7000) {
             runCatching {
-                val m = getSystemService(n)
+                val m = getSystemService(NotificationManager::class.java)
                 m.createNotificationChannel(NotificationChannel("preview", "Preview", NotificationManager.IMPORTANCE_DEFAULT))
                 val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
                 m.notify(77, Notification.Builder(this, "preview").setSmallIcon(android.R.drawable.stat_notify_chat)
@@ -1553,7 +1570,7 @@ class ScouterService : Service() {
                 if (demoRun == gen) LookUp.notes.firstOrNull { it.title == "Vox preview" }?.let { openNote(it.key) }
             }, 2500)
         }
-        step("Music player support", 7000) {
+        step("Music player support", "now playing, from any player", 7000) {
             runCatching { packageManager.getLaunchIntentForPackage("com.spotify.music")?.let {
                 startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } }
             work.postDelayed({
@@ -1564,10 +1581,16 @@ class ScouterService : Service() {
                 dash()
             }, 2500)
         }
-        step("ESPN free API support", 6000) { settings.dashStyle = "game"; terminal(); refresh(); dash() }
-        step("Low battery mode", 3500) { lowBattery() }
+        step("ESPN free API support", "live scores, no account", 6000) { settings.dashStyle = "game"; terminal(); refresh(); dash() }
+        // Every look the dashboard has, one after the other: the customization on show.
+        step("Your layout", "9 looks, or build your own", 1000) { terminal(); settings.dashStyle = Dashboard.STYLES.first().first; refresh(); dash() }
+        for ((key, label) in Dashboard.STYLES) {
+            if (key == "tunes" || key == "custom") continue // the scene takes the whole display; the user's own may be empty
+            at(2400) { settings.dashStyle = key; refresh(); dash(); note("Layout: $label") }
+        }
+        step("Low battery mode", "Alt+B dims to 10 percent", 3500) { lowBattery() }
         at(0) { if (settings.lowBattery) lowBattery() }
-        step("Built on ScouterKit", 3000) { settings.dashStyle = demoStyle; refresh(); dash() }
+        step("Built on ScouterKit", "firmware by mafik", 3000) { settings.dashStyle = demoStyle; refresh(); dash() }
         at(0) { demoStop("Preview over") }
         Log.i(TAG, "preview: ${t / 1000} s")
     }

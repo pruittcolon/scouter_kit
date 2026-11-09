@@ -44,7 +44,7 @@ class MainActivity : Activity() {
     private lateinit var voiceAction: RoundAction
     private lateinit var pointerAction: RoundAction
     private lateinit var tunesAction: RoundAction
-    private lateinit var previewAction: RoundAction
+    private lateinit var previewButton: TextView
     private lateinit var serversBox: LinearLayout
     private lateinit var tabStrip: LinearLayout
     private var tabStripKey: String? = null
@@ -272,9 +272,12 @@ class MainActivity : Activity() {
             ScouterService.send(this, ScouterService.ACTION_POINTER, "cmd" to "toggle")
         }
         tunesAction = RoundAction(this, "spark", "Tunes") { ScouterService.send(this, ScouterService.ACTION_TUNES) }
-        previewAction = RoundAction(this, "glasses", "Preview") { ScouterService.send(this, ScouterService.ACTION_PANEL, "do" to "demo") }
-        for (a in listOf(displayAction, alwaysAction, voiceAction, pointerAction, tunesAction, previewAction)) actions.addView(a, lp(0, weight = 1f))
+        for (a in listOf(displayAction, alwaysAction, voiceAction, pointerAction, tunesAction)) actions.addView(a, lp(0, weight = 1f))
         page.addView(actions)
+        previewButton = button("▶  Preview: tour every feature on the glasses", 0) {
+            ScouterService.send(this, ScouterService.ACTION_PANEL, "do" to "demo")
+        }
+        page.addView(previewButton, lp().apply { topMargin = dp(16) })
 
         val light = card()
         val row = LinearLayout(this).apply {
@@ -1352,7 +1355,7 @@ class MainActivity : Activity() {
         voiceAction.set(Session.listening, if (Session.listening) "Listening" else "Voice")
         pointerAction.set(Session.pointer)
         tunesAction.set(Session.tunes)
-        previewAction.set(Session.demo, if (Session.demo) "Stop" else "Preview")
+        previewButton.text = if (Session.demo) "■  Stop the preview" else "▶  Preview: tour every feature on the glasses"
 
         // The look per app.
         val lk = Looks.key

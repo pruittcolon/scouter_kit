@@ -14,6 +14,7 @@ object Panels {
     const val HELP = "help"
     const val SETTINGS = "settings"
     const val NOTE = "note"
+    const val INTRO = "intro" // the preview mode's title card (Intro)
 
     // The hotkeys by group: the keys, what they do. The help on the glasses and the app's Hotkeys page.
     val GROUPS: List<Pair<String, List<Pair<String, String>>>> = listOf(
@@ -87,34 +88,38 @@ object Panels {
         val lines = mutableListOf<String>()
         val marks = mutableListOf<Int>()
         val close = closes(held)
-        lines += "VOX HOTKEYS".padEnd(maxOf(0, cols - close.length - 3)) + close; marks += 1
-        lines += "─".repeat(cols); marks += 2
-        val half = if (cols >= 60) (cols - 1) / 2 else cols
+        val w = cols.coerceAtLeast(30)
+        // The banner: a chamfered bar with the name, glitch blocks, and what closes it.
+        val left = "┏━[ VOX//HOTKEYS ]░▒▓█"
+        val right = "█▓▒░[ $close ]━┓"
+        lines += (left + "━".repeat(maxOf(0, w - left.length - right.length)) + right).take(w); marks += 1
+        val half = if (w >= 60) (w - 3) / 2 else w - 2
         fun column(groups: List<Pair<String, List<Pair<String, String>>>>): List<Pair<String, Int>> {
             val out = mutableListOf<Pair<String, Int>>()
             for ((i, g) in groups.withIndex()) {
                 if (i > 0) out += "" to 0
-                out += g.first.uppercase() to 1
-                for ((k, what) in g.second) out += (" " + k.padEnd(11) + what).take(half) to 0
+                val name = "▌▌ ${g.first.uppercase()} ▐"
+                out += (name + "░▒▓".padEnd(maxOf(0, half - name.length), '▓')).take(half) to 1
+                for ((k, what) in g.second) out += (" ▸ " + k.padEnd(10) + what).take(half) to 0
             }
             return out
         }
-        val left = column(GROUPS.take(LEFT_GROUPS))
-        val right = column(GROUPS.drop(LEFT_GROUPS))
-        if (half == cols) { // narrow: one column, as far as it goes
-            for ((t, m) in left + listOf("" to 0) + right) {
-                lines += t
-                marks += m
-            }
+        val l = column(GROUPS.take(LEFT_GROUPS))
+        val r = column(GROUPS.drop(LEFT_GROUPS))
+        val body = if (half == w - 2) listOf(l + listOf("" to 0) + r) else listOf(l, r)
+        if (body.size == 1) {
+            for ((t, m) in body[0]) { lines += "┃" + t.padEnd(w - 2) + "┃"; marks += m }
         } else {
-            for (i in 0 until maxOf(left.size, right.size)) {
-                val l = left.getOrNull(i)
-                val r = right.getOrNull(i)
-                lines += (l?.first ?: "").padEnd(half + 1) + (r?.first ?: "")
-                // A heading on either side makes the line bold (the terminal marks whole lines).
-                marks += if ((l?.second ?: 0) == 1 || (r?.second ?: 0) == 1) 1 else 0
+            for (i in 0 until maxOf(l.size, r.size)) {
+                val a2 = l.getOrNull(i)
+                val b2 = r.getOrNull(i)
+                lines += "┃" + (a2?.first ?: "").padEnd(half) + "┃" + (b2?.first ?: "").padEnd(w - half - 3) + "┃"
+                marks += if ((a2?.second ?: 0) == 1 || (b2?.second ?: 0) == 1) 1 else 0
             }
         }
+        val foot = "┗━ ▓▒░ SYS.READY // Pocket mode: the trackpad points, the keyboard types "
+        val end = "░▒▓ ━┛"
+        lines += (foot + "━".repeat(maxOf(0, w - foot.length - end.length)) + end).take(w); marks += 2
         return Content(lines.take(maxOf(3, rows)), marks.take(maxOf(3, rows)), true)
     }
 
@@ -153,34 +158,60 @@ object Panels {
         val c = Canvas(b)
         c.drawColor(Color.BLACK)
         val bar = paint(0f).apply { style = Paint.Style.FILL }
-        c.drawRect(0f, 0f, w.toFloat(), 30f, bar)
+        val line = paint(0f).apply { style = Paint.Style.STROKE; strokeWidth = 2f }
+        // The banner: a lit bar with a cut corner, the name in black on it, glitch blocks, the way out.
+        val ban = android.graphics.Path().apply {
+            moveTo(0f, 0f); lineTo(w - 36f, 0f); lineTo(w.toFloat(), 30f); lineTo(0f, 30f); close()
+        }
+        c.drawPath(ban, bar)
         val title = paint(19f, true).apply { color = Color.BLACK }
-        c.drawText("VOX · HOTKEYS", 12f, 22f, title)
+        c.drawText("VOX//HOTKEYS", 14f, 22f, title)
+        var gx = 190f
+        for (i in 0 until 9) { // glitch blocks, thinning out
+            c.drawRect(gx, 6f, gx + 4f + (i % 3) * 3f, 24f, paint(0f).apply { style = Paint.Style.FILL; color = Color.BLACK })
+            gx += 12f + (i * 5) % 11
+        }
         val close = paint(13f).apply { color = Color.BLACK; textAlign = Paint.Align.RIGHT }
-        c.drawText(closes(held), w - 10f, 21f, close)
-        val head = paint(15f, true)
+        c.drawText(closes(held), w - 40f, 21f, close)
+        // Scanlines under the banner, thicker towards the middle.
+        for (i in 0 until 4) c.drawRect(0f, 34f + i * 3f, w * (1f - i * 0.22f), 35f + i * 3f, bar)
+        val head = paint(15f, true).apply { color = Color.BLACK }
         val key = paint(14f, true)
         val text = paint(14f)
-        val line = 19f
+        val rowH = 19f
         val colW = w / 2f
         val keyW = minOf(96f, colW * 0.38f)
         fun column(groups: List<Pair<String, List<Pair<String, String>>>>, x0: Float) {
-            var y = 54f
+            var y = 66f
             for ((i, g) in groups.withIndex()) {
-                if (i > 0) y += 8f
-                c.drawText(g.first.uppercase(), x0, y, head)
-                c.drawRect(x0, y + 4f, x0 + colW - 24f, y + 5f, bar)
-                y += line + 4f
+                if (i > 0) y += 6f
+                // The group's name on a lit tag, a hatch running off it.
+                val tagW = head.measureText(g.first.uppercase()) + 26f
+                c.drawRect(x0, y - 14f, x0 + tagW, y + 4f, bar)
+                c.drawPath(android.graphics.Path().apply {
+                    moveTo(x0 + tagW, y - 14f); lineTo(x0 + tagW + 10f, y + 4f); lineTo(x0 + tagW, y + 4f); close()
+                }, bar)
+                c.drawText(g.first.uppercase(), x0 + 8f, y, head)
+                var hx = x0 + tagW + 16f
+                while (hx < x0 + colW - 24f) { c.drawLine(hx, y + 4f, hx + 6f, y - 14f, line.apply { strokeWidth = 1f }); hx += 7f }
+                y += rowH + 4f
                 for ((k, what) in g.second) {
-                    c.drawText(k, x0, y, key)
-                    c.drawText(what, x0 + keyW, y, text)
-                    y += line
+                    c.drawRect(x0, y - 11f, x0 + 3f, y + 2f, bar) // a lit tick before each key
+                    c.drawText(k, x0 + 10f, y, key)
+                    c.drawText(what, x0 + 10f + keyW, y, text)
+                    y += rowH
                 }
             }
         }
-        column(GROUPS.take(LEFT_GROUPS), 12f)
-        column(GROUPS.drop(LEFT_GROUPS), colW + 6f)
-        c.drawText("Pocket mode: the trackpad points and taps, the keyboard types into the phone.", 12f, h - 10f, paint(12f))
+        column(GROUPS.take(LEFT_GROUPS), 14f)
+        column(GROUPS.drop(LEFT_GROUPS), colW + 8f)
+        // A divider down the middle with notches, corner brackets, the status line.
+        line.strokeWidth = 2f
+        c.drawLine(colW, 44f, colW, h - 30f, line)
+        for (i in 0 until 6) c.drawRect(colW - 4f, 60f + i * 62f, colW + 4f, 64f + i * 62f, bar)
+        c.drawLine(2f, h - 26f, 22f, h - 26f, line); c.drawLine(2f, h - 26f, 2f, h - 4f, line)
+        c.drawLine(w - 2f, h - 26f, w - 22f, h - 26f, line); c.drawLine(w - 2f, h - 26f, w - 2f, h - 4f, line)
+        c.drawText("SYS.READY //  pocket mode: the trackpad points and taps, the keyboard types", 30f, h - 10f, paint(12f))
         return Art(pixels(b), w, h, 0, 0)
     }
 
