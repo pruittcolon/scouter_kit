@@ -42,7 +42,7 @@ detailed manual; this is the map.
 | Hotkeys | Hold Alt for the list; Alt+Z, A, S, B, Y, X, C, P, U, M, K, T, W, Q... | `Hotkeys.kt`, `Panels.kt` |
 | Voice | Offline voice commands (Parakeet via sherpa-onnx); voice mode (Alt+V) types what is said into the terminal, with a strip at the bottom | `Voice.kt`, `ScouterService.voiceModeSet` |
 | Car mode | In a car (Bluetooth), the Next/Previous/Play keys talk to Claude on your server, the answer is spoken (Kokoro voice or Android TTS), nothing is shown on the glasses | `Car.kt` |
-| TV remote | A Vizio SmartCast TV's remote: Alt+Y turns the keyboard into it; buttons in Settings. Alt+F runs the phone's `phone` mirror command in a tmux tab | `Vizio.kt`, `TvActivity.kt`, `Tabs.tv` |
+| TV remote | A Vizio SmartCast TV's remote: Alt+Y turns the keyboard into it and shows the remote on the glasses; the app's TV tab has the buttons. Alt+F runs the phone's `phone` mirror command in a tmux tab | `Vizio.kt`, `TvPage.kt`, `Panels.tvLines`, `Tabs.tv` |
 | Preview mode | Alt+D / Preview button: a short live tour (phone screen, phone terminal, laptop screen, laptop terminal), each after a full-screen title card | `ScouterService.demoStart`, `Intro.kt` |
 | Low battery | Alt+B: 10% brightness, again to restore | `ScouterService.lowBattery` |
 | Charging case log | The case's USB-C serial output, per-arm charge state | `CaseLogActivity.kt` |

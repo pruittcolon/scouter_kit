@@ -1541,9 +1541,13 @@ class ScouterService : Service() {
     private fun panelClose() {
         altHelp = false
         if (Session.overlay.isEmpty()) return
-        if (Session.voiceMode && Session.overlay != Panels.VOICE) { // the voice mode's strip again
+        // What stays while its mode is on comes back: the TV remote (Alt+Y), voice mode's strip.
+        val back = if (Session.tvKeys) Panels.TV else if (Session.voiceMode) Panels.VOICE else ""
+        if (back.isNotEmpty() && Session.overlay != back) {
             work.removeCallbacks(noteEnd)
-            Session.overlay = Panels.VOICE
+            Session.overlay = back
+            Native.overlay(null, null, false)
+            Native.screenOverlay(null, 0, 0, 0, 0)
             forceApply()
             panelDraw()
             Session.changed()
@@ -1602,6 +1606,7 @@ class ScouterService : Service() {
             Panels.NOTE -> Panels.note(noteText)
             Panels.VOICE -> Panels.voice(voiceStripText)
             Panels.INTRO -> return // drawn by introFrame
+            Panels.TV -> return tvDraw()
             else -> null // the help: laid out for each
         }
         if (onScreen) {
@@ -1768,15 +1773,67 @@ class ScouterService : Service() {
         }
         Session.tvKeys = !Session.tvKeys
         work.removeCallbacks(tvIdle)
-        if (Session.tvKeys) work.postDelayed(tvIdle, TV_IDLE_MS)
-        note(if (Session.tvKeys) "TV remote on (Alt+Y off): arrows, Enter, +/-, M, Space, P" else "TV remote off")
+        if (Session.tvKeys) {
+            work.postDelayed(tvIdle, TV_IDLE_MS)
+            tvShow()
+        } else tvHide("TV remote off")
+    }
+
+    // The remote on the glasses while the keyboard is the TV's (Panels.TV, over whatever shows; the terminal under
+    // it in view): how the TV is, the key pressed last lit for a moment.
+    private var tvStatus = ""
+    private var tvLit = ""
+    private val tvUnlit = Runnable { tvLit = ""; if (Session.overlay == Panels.TV) tvDraw() }
+
+    private fun tvShow() {
+        if (Session.blank) display(true, "tv remote")
+        if (Session.tunes) tunesSet(false)
+        if (Session.pointer) pointerOff()
+        tvStatus = "${settings.tvHost}: asking the TV…"
+        Session.overlay = Panels.TV
+        work.removeCallbacks(noteEnd)
+        forceApply()
+        tvDraw()
+        Vizio.status(settings) { s -> work.post {
+            tvStatus = if (s == null) "${settings.tvHost}: not answering (off at the wall, or another Wi-Fi?)" else "the TV is $s"
+            if (Session.overlay == Panels.TV) tvDraw()
+        } }
+        Session.changed()
+    }
+
+    private fun tvHide(why: String) {
+        work.removeCallbacks(tvUnlit)
+        tvLit = ""
+        if (Session.overlay == Panels.TV) panelClose()
+        note(why)
+    }
+
+    private fun tvDraw() {
+        if (glassesWith == null) return
+        if (settings.show == Settings.SCREEN) {
+            val st = Native.screenStats()
+            if (st[5] <= 0 || st[6] <= 0) return
+            val art = Panels.tvArt(st[5], st[6], tvStatus, tvLit)
+            Native.overlay(null, null, false)
+            Native.screenOverlay(art.pixels, art.w, art.h, art.x, art.y)
+            Session.overlayGen++
+            screen?.poke()
+            remote?.poke()
+        } else {
+            val g = region()
+            val cols = if (g[2] > 0) g[0] / g[2] else settings.cols
+            val rows = if (g[3] > 0) g[1] / g[3] else settings.rows
+            val c = Panels.tvLines(cols, rows, tvStatus, tvLit)
+            Native.screenOverlay(null, 0, 0, 0, 0)
+            Native.overlay(c.lines.toTypedArray(), c.marks.toIntArray(), true)
+        }
     }
 
     // Five minutes without a TV key: the keyboard is the keyboard again (a forgotten remote would leave it dead).
     private val tvIdle = Runnable {
         if (Session.tvKeys) {
             Session.tvKeys = false
-            note("TV remote off (5 minutes idle)")
+            tvHide("TV remote off (5 minutes idle)")
             Session.changed()
         }
     }
@@ -1784,7 +1841,16 @@ class ScouterService : Service() {
     private fun tvKey(name: String) {
         work.removeCallbacks(tvIdle)
         if (Session.tvKeys) work.postDelayed(tvIdle, TV_IDLE_MS)
-        val done = { why: String -> if (why.isNotEmpty()) work.post { note(why) } }
+        tvLit = name
+        work.removeCallbacks(tvUnlit)
+        work.postDelayed(tvUnlit, 450)
+        if (Session.overlay == Panels.TV) tvDraw()
+        val done: (String) -> Unit = { why ->
+            work.post {
+                tvStatus = if (why.isEmpty()) "sent: ${name.lowercase().replace('_', ' ')}" else why
+                if (Session.overlay == Panels.TV) tvDraw() else if (why.isNotEmpty()) note(why)
+            }
+        }
         if (name == "PLAY_PAUSE") Vizio.playPause(settings, done) else Vizio.key(settings, name, done)
     }
 
@@ -2704,7 +2770,7 @@ class ScouterService : Service() {
     private fun voiceStrip(text: String) {
         voiceStripText = text
         Session.voice = "Voice mode: $text"
-        if (Session.voiceMode && (Session.overlay.isEmpty() || Session.overlay == Panels.VOICE)) {
+        if (Session.voiceMode && !Session.tvKeys && (Session.overlay.isEmpty() || Session.overlay == Panels.VOICE)) {
             if (Session.overlay != Panels.VOICE) {
                 Session.overlay = Panels.VOICE
                 forceApply()

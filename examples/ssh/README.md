@@ -463,9 +463,11 @@ with the app in the back.
 ## TV remote, low battery, preview
 
 - **Alt+Y** turns the keyboard into a Vizio SmartCast TV's remote (the TV is not one of the screens you switch
-  between): arrows, Enter = OK, Backspace/Esc = Back, H = Home, +/- = volume, M = mute, Space = play/pause,
+  between), and the glasses show the remote meanwhile (`Panels.TV`: the arrows and OK as a pad, the other keys as a
+  list, how the TV is; the key pressed lights up): arrows, Enter = OK, Backspace/Esc = Back, H = Home, +/- = volume, M = mute, Space = play/pause,
   I = input, Page Up/Down = channel, P = power. Alt+Y again, or five minutes without a TV key, gives the keyboard
-  back; the glasses say which. Pair once in Settings, TV remote (Find and pair the TV: it looks over the whole
+  back; the glasses say which. The app's **TV** tab (also Settings, TV remote; `TvPage.kt`) has every button, Firefox
+  on the TV and the pairing. Pair once there (Find and pair the TV: it looks over the whole
   Wi-Fi network, then type the PIN the TV shows). The TV's address and token stay in Vox's private settings on the
   phone. If the router gives the TV a new address, the next key finds it again by itself.
 - **Alt+F** (or *Firefox on the TV* on the TV page) runs the phone's own `phone` command, if its Linux has one (a

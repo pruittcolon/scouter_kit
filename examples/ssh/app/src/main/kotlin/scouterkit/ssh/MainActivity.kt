@@ -133,6 +133,7 @@ class MainActivity : Activity() {
         screenBuiltFor = Looks.key
         pages += terminalPage(settings)
         pages += voicePage(settings)
+        pages += tvPage()
         for (p in pages) content.addView(p, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         selectTab(getPreferences(MODE_PRIVATE).getInt("tab", 0), animate = false)
         handle(intent)
@@ -159,13 +160,14 @@ class MainActivity : Activity() {
             setBackgroundColor(Ui.SURFACE)
             setPadding(dp(6), dp(8), dp(6), dp(10))
         }
-        val items = listOf("glasses" to "Glasses", "screen" to "Screen", "terminal" to "Terminal", "mic" to "Voice", "gear" to "Settings")
+        val items = listOf("glasses" to "Glasses", "screen" to "Screen", "terminal" to "Terminal", "mic" to "Voice",
+            "tv" to "TV", "gear" to "Settings")
         for ((i, item) in items.withIndex()) {
             val (icon, name) = item
             val cell = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_HORIZONTAL
-                setOnClickListener { if (i == 4) startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) else selectTab(i) }
+                setOnClickListener { if (i == items.size - 1) startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) else selectTab(i) }
             }
             val pill = FrameLayout(this)
             val glyph = IconView(this, icon, 22, Ui.MUTED)
@@ -202,11 +204,23 @@ class MainActivity : Activity() {
         getPreferences(MODE_PRIVATE).edit().putInt("tab", tab).apply()
         wantPreview()
         if (tab == 1) previewView.refresh()
+        if (tab == TV_TAB) tv?.refresh()
     }
 
     // The screen's picture is made only while a tab shows it (Screen, or Glasses while a screen is on them).
     private fun wantPreview() {
         Preview.wanted = resumed && (tab == 1 || (tab == 0 && Session.showing == Settings.SCREEN))
+    }
+
+    // ------------------------------------------------ TV (TvPage, as Settings' TV remote)
+
+    private var tv: TvPage? = null
+    private val TV_TAB = 4
+
+    private fun tvPage(): View {
+        val (scroll, page) = scrollPage()
+        tv = TvPage(this, page)
+        return scroll
     }
 
     // ------------------------------------------------ Glasses (home)
@@ -1212,6 +1226,7 @@ class MainActivity : Activity() {
         super.onResume()
         if (BuildConfig.DEBUG) importTestKey()
         resumed = true
+        if (tab == TV_TAB) tv?.refresh()
         Session.listeners += listener
         Session.foreground = true
         // While Vox is in front: its service may become a microphone service (Car mode's phone microphone).

@@ -483,6 +483,11 @@ object Icons {
                 line(12f, 16f, 12f, 19.5f)
                 line(8.5f, 19.5f, 15.5f, 19.5f)
             }
+            "tv" -> { // a set with its antennas
+                rect(3f, 7f, 21f, 19.5f, 2f)
+                line(8.5f, 2.5f, 12f, 6.5f)
+                line(15.5f, 2.5f, 12f, 6.5f)
+            }
             "phone" -> {
                 rect(7f, 2.5f, 17f, 21.5f, 2.5f)
                 line(11f, 18.3f, 13f, 18.3f)

@@ -16,6 +16,7 @@ object Panels {
     const val NOTE = "note"
     const val INTRO = "intro" // the preview mode's title card (Intro)
     const val VOICE = "voice" // voice mode's strip at the bottom (ScouterService.voiceModeSet)
+    const val TV = "tv" // the TV remote while the keyboard is the TV's (Alt+Y)
 
     // The hotkeys by group: the keys, what they do. The help on the glasses and the app's Hotkeys page.
     val GROUPS: List<Pair<String, List<Pair<String, String>>>> = listOf(
@@ -224,6 +225,124 @@ object Panels {
         c.drawLine(2f, h - 26f, 22f, h - 26f, line); c.drawLine(2f, h - 26f, 2f, h - 4f, line)
         c.drawLine(w - 2f, h - 26f, w - 22f, h - 26f, line); c.drawLine(w - 2f, h - 26f, w - 2f, h - 4f, line)
         c.drawText("SYS.READY //  pocket mode: the trackpad points and taps, the keyboard types", 30f, h - 10f, paint(12f))
+        return Art(pixels(b), w, h, 0, 0)
+    }
+
+    // ------------------------------------------------ the TV remote on the glasses (Alt+Y)
+
+    // A Vizio.LAYOUT row's keys (its second field, "UP/DOWN/LEFT/RIGHT", "VOL"...) took the key sent last (lit: its
+    // Vizio name, VOL_UP and the like).
+    private fun lit(field: String, lit: String) = lit.isNotEmpty() && field.split("/").any { lit == it || lit.startsWith(it + "_") }
+
+    // The remote as the terminal's lines (cols x rows), while the keyboard is the TV's: the arrows and OK as a pad
+    // (the key pressed last filled for a moment), the other keys as a list (its row marked), how the TV is.
+    fun tvLines(cols: Int, rows: Int, status: String, lit: String): Content {
+        val lines = mutableListOf<String>()
+        val marks = mutableListOf<Int>()
+        val w = cols.coerceAtLeast(40)
+        val left = "┏━[ VOX//TV REMOTE ]░▒▓█"
+        val right = "█▓▒░[ Alt+Y: keyboard back ]━┓"
+        lines += (left + "━".repeat(maxOf(0, w - left.length - right.length)) + right).take(w); marks += 1
+        fun c(label: String, key: String): String { // a pad cell, 7 wide
+            if (lit == key) return " █████ "
+            val l = (7 - label.length) / 2
+            return " ".repeat(l) + label + " ".repeat(7 - l - label.length)
+        }
+        val pad = listOf(
+            "        ┌───────┐",
+            "        │" + c("↑", "UP") + "│",
+            "┌───────┼───────┼───────┐",
+            "│" + c("←", "LEFT") + "│" + c("OK", "OK") + "│" + c("→", "RIGHT") + "│",
+            "└───────┼───────┼───────┘",
+            "        │" + c("↓", "DOWN") + "│",
+            "        └───────┘",
+        )
+        val keys = mutableListOf<Pair<String, Int>>()
+        val tag = "▌▌ KEYS ▐░▒▓ "
+        keys += tag to 1
+        for ((k, field, what) in Vizio.LAYOUT) {
+            val on = lit(field, lit)
+            keys += ((if (on) " ■ " else " › ") + k.padEnd(17) + what) to (if (on) 1 else 0)
+        }
+        keys += (" › " + "Alt+F".padEnd(17) + "Firefox on the TV") to 0
+        val padW = 27
+        val body = mutableListOf<Pair<String, Int>>()
+        if (w >= padW + 40) {
+            for (i in 0 until maxOf(pad.size + 1, keys.size)) {
+                val a = if (i in 1..pad.size) "  " + pad[i - 1] else ""
+                val b = keys.getOrNull(i)
+                body += (a.padEnd(padW) + (b?.first ?: "")) to (b?.second ?: 0)
+            }
+        } else {
+            for (p in pad) body += ("  $p") to 0
+            body += "" to 0
+            body += keys
+        }
+        val stat = "▌▌ TV ▐░▒▓ " + status
+        lines += ("┃ " + stat.take(w - 4).padEnd(w - 4) + " ┃"); marks += 1
+        lines += "┃" + " ".repeat(w - 2) + "┃"; marks += 0
+        for ((t, m) in body) {
+            lines += "┃ " + t.take(w - 4).padEnd(w - 4) + " ┃"
+            marks += m
+        }
+        val foot = "┗━ ▓▒░ every key goes to the TV // Vox's Alt keys still work "
+        val end = "░▒▓ ━┛"
+        lines += (foot + "━".repeat(maxOf(0, w - foot.length - end.length)) + end).take(w); marks += 2
+        return Content(lines.take(maxOf(3, rows)), marks.take(maxOf(3, rows)), true)
+    }
+
+    // The same remote drawn for a screen's frames (the phone's or the laptop's picture), w x h.
+    fun tvArt(w: Int, h: Int, status: String, lit: String): Art {
+        val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(b)
+        c.drawColor(Color.BLACK)
+        val bar = paint(0f).apply { style = Paint.Style.FILL }
+        val line = paint(0f).apply { style = Paint.Style.STROKE; strokeWidth = 2f }
+        // The banner, as the help's: a lit bar with a cut corner, the name in black, the way out.
+        c.drawPath(android.graphics.Path().apply {
+            moveTo(0f, 0f); lineTo(w - 36f, 0f); lineTo(w.toFloat(), 30f); lineTo(0f, 30f); close()
+        }, bar)
+        c.drawText("VOX//TV REMOTE", 14f, 22f, paint(19f, true).apply { color = Color.BLACK })
+        c.drawText("Alt+Y: keyboard back", w - 40f, 21f, paint(13f).apply { color = Color.BLACK; textAlign = Paint.Align.RIGHT })
+        for (i in 0 until 4) c.drawRect(0f, 34f + i * 3f, w * (1f - i * 0.22f), 35f + i * 3f, bar)
+        c.drawText(status.take(60), 14f, 66f, paint(15f, true))
+        // The pad: five keys, the one pressed last lit.
+        val s = minOf(54f, (h - 120f) / 3.4f)
+        val cx = 20f + s * 1.6f
+        val cy = 96f + s * 1.6f
+        fun key(x: Float, y: Float, label: String, name: String) {
+            val r = android.graphics.RectF(x - s / 2, y - s / 2, x + s / 2, y + s / 2)
+            val on = lit == name
+            if (on) c.drawRoundRect(r, 8f, 8f, bar) else c.drawRoundRect(r, 8f, 8f, line)
+            val p = paint(s * 0.42f, true).apply { textAlign = Paint.Align.CENTER; if (on) color = Color.BLACK }
+            c.drawText(label, x, y + s * 0.15f, p)
+        }
+        key(cx, cy - s * 1.1f, "↑", "UP")
+        key(cx - s * 1.1f, cy, "←", "LEFT")
+        key(cx, cy, "OK", "OK")
+        key(cx + s * 1.1f, cy, "→", "RIGHT")
+        key(cx, cy + s * 1.1f, "↓", "DOWN")
+        // The other keys as a list, the one pressed last on a lit bar.
+        val x0 = cx + s * 1.9f
+        val rowH = minOf(22f, (h - 90f) / (Vizio.LAYOUT.size + 1))
+        var y = 92f
+        val k = paint(14f, true)
+        val t = paint(14f)
+        for ((keys, field, what) in Vizio.LAYOUT + listOf(Triple("Alt+F", "", "Firefox on the TV"))) {
+            if (lit(field, lit)) {
+                c.drawRect(x0 - 4f, y - 15f, w - 10f, y + 5f, bar)
+                c.drawText(keys, x0, y, Paint(k).apply { color = Color.BLACK })
+                c.drawText(what, x0 + 130f, y, Paint(t).apply { color = Color.BLACK })
+            } else {
+                c.drawRect(x0 - 4f, y - 11f, x0 - 1f, y + 2f, bar)
+                c.drawText(keys, x0 + 4f, y, k)
+                c.drawText(what, x0 + 130f, y, t)
+            }
+            y += rowH
+        }
+        c.drawLine(2f, h - 26f, 22f, h - 26f, line); c.drawLine(2f, h - 26f, 2f, h - 4f, line)
+        c.drawLine(w - 2f, h - 26f, w - 22f, h - 26f, line); c.drawLine(w - 2f, h - 26f, w - 2f, h - 4f, line)
+        c.drawText("every key goes to the TV  //  Vox's Alt keys still work", 30f, h - 10f, paint(12f))
         return Art(pixels(b), w, h, 0, 0)
     }
 
