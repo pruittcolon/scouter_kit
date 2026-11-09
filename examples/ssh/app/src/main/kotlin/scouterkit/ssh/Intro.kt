@@ -79,7 +79,7 @@ object Intro {
         for (y in 0 until rows) for (x in 0 until cols) {
             g[y][x] = when {
                 mask[y][x] -> if (rnd.nextDouble() < p * 1.25) FILL else NOISE[rnd.nextInt(NOISE.length)]
-                step < 5 && rnd.nextDouble() < 0.30 * Math.pow(1 - p, 1.5) -> NOISE[rnd.nextInt(NOISE.length)]
+                step < 5 && rnd.nextDouble() < 0.12 * Math.pow(1 - p, 1.5) -> NOISE[rnd.nextInt(NOISE.length)]
                 else -> ' '
             }
         }

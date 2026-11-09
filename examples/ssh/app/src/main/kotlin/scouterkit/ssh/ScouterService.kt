@@ -1537,27 +1537,30 @@ class ScouterService : Service() {
             work.postDelayed({ if (demoRun == gen) f() }, t)
         }
         val laptop = settings.sources().map { it.first }.firstOrNull { it.startsWith("screen:") }
-        val total = 11 + if (laptop != null) 1 else 0
+        val total = 9 + if (laptop != null) 1 else 0
         var n = 0
+        // A title card: the letters decode quickly (half a second), then stand still long enough to read (1.7 s),
+        // then it collapses (a third of a second). Then the feature, for `hold` ms.
         fun step(name: String, sub: String, hold: Long, body: () -> Unit) {
             val i = ++n
             val tag = "PREVIEW %02d/%02d".format(i, total)
-            for (s in 0 until Intro.STEPS) at(if (s == 0) 0 else 150) { introFrame(name, tag, sub, s) }
-            at(150) { panelClose() }
-            at(250) { body() }
+            val frames = listOf(0 to 0L, 1 to 100L, 2 to 100L, 3 to 100L, 4 to 100L, 5 to 100L,
+                8 to 1700L, 9 to 80L, 10 to 80L, 11 to 80L)
+            for ((s, wait) in frames) at(wait) { introFrame(name, tag, sub, s) }
+            at(250) { panelClose() }
+            at(200) { body() }
             at(hold) {}
         }
         val term = settings.active()?.let { "term:${it.id}" }
         fun terminal() { if (term != null) choose(term, Fx.LEFT) }
         refresh()
-        step("Vox", "a second screen for your Even G1", 1200) { terminal() }
-        step("Look-up display", "look up and it appears", 3500) { settings.dashStyle = "classic"; refresh(); dash() }
-        step("Every hotkey", "hold Alt and they all show", 4500) { panelOpen(Panels.HELP) }
+        step("Vox", "a second screen for your Even G1", 800) { terminal() }
+        step("Terminal", "SSH and mosh. Look up and it appears", 7000) { settings.dashStyle = "classic"; terminal(); refresh(); dash() }
+        step("Every hotkey", "hold Alt and they all show", 7000) { panelOpen(Panels.HELP) }
         at(0) { panelClose() }
-        step("Terminal", "SSH and mosh, tabs and scrolling", 3500) { terminal() }
-        step("Phone screen", "your phone, with a cursor", 7000) { phoneScreen() }
-        if (laptop != null) step("Laptop screen", "your computer, on your glasses", 7000) { choose(laptop, Fx.RIGHT) }
-        step("Notifications", "click one to open it", 7000) {
+        step("Phone screen", "your phone, with a cursor", 9000) { phoneScreen() }
+        if (laptop != null) step("Laptop screen", "your computer, on your glasses", 9000) { choose(laptop, Fx.RIGHT) }
+        step("Notifications", "click one to open it", 9000) {
             runCatching {
                 val m = getSystemService(NotificationManager::class.java)
                 m.createNotificationChannel(NotificationChannel("preview", "Preview", NotificationManager.IMPORTANCE_DEFAULT))
@@ -1570,7 +1573,7 @@ class ScouterService : Service() {
                 if (demoRun == gen) LookUp.notes.firstOrNull { it.title == "Vox preview" }?.let { openNote(it.key) }
             }, 2500)
         }
-        step("Music player support", "now playing, from any player", 7000) {
+        step("Music player support", "now playing, from any player", 9000) {
             runCatching { packageManager.getLaunchIntentForPackage("com.spotify.music")?.let {
                 startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } }
             work.postDelayed({
@@ -1581,16 +1584,14 @@ class ScouterService : Service() {
                 dash()
             }, 2500)
         }
-        step("ESPN free API support", "live scores, no account", 6000) { settings.dashStyle = "game"; terminal(); refresh(); dash() }
+        step("ESPN free API support", "live scores, no account", 8000) { settings.dashStyle = "game"; terminal(); refresh(); dash() }
         // Every look the dashboard has, one after the other: the customization on show.
-        step("Your layout", "9 looks, or build your own", 1000) { terminal(); settings.dashStyle = Dashboard.STYLES.first().first; refresh(); dash() }
+        step("Your layout", "9 looks, or build your own", 800) { terminal(); settings.dashStyle = Dashboard.STYLES.first().first; refresh(); dash() }
         for ((key, label) in Dashboard.STYLES) {
             if (key == "tunes" || key == "custom") continue // the scene takes the whole display; the user's own may be empty
-            at(2400) { settings.dashStyle = key; refresh(); dash(); note("Layout: $label") }
+            at(2800) { settings.dashStyle = key; refresh(); dash(); note("Layout: $label") }
         }
-        step("Low battery mode", "Alt+B dims to 10 percent", 3500) { lowBattery() }
-        at(0) { if (settings.lowBattery) lowBattery() }
-        step("Built on ScouterKit", "firmware by mafik", 3000) { settings.dashStyle = demoStyle; refresh(); dash() }
+        step("Built on ScouterKit", "firmware by mafik", 4000) { settings.dashStyle = demoStyle; refresh(); dash() }
         at(0) { demoStop("Preview over") }
         Log.i(TAG, "preview: ${t / 1000} s")
     }
