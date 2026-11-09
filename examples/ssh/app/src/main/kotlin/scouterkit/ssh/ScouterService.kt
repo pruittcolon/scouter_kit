@@ -1536,62 +1536,33 @@ class ScouterService : Service() {
             t += after
             work.postDelayed({ if (demoRun == gen) f() }, t)
         }
-        val laptop = settings.sources().map { it.first }.firstOrNull { it.startsWith("screen:") }
-        val total = 9 + if (laptop != null) 1 else 0
+        // Four screens, once each, in this order: the phone's screen, the phone's terminal, the laptop's screen, the
+        // laptop's terminal (a missing one is left out), then the end card.
+        val servers = settings.servers()
+        val phoneTerm = servers.firstOrNull { it.local }?.let { "term:${it.id}" }
+        val laptopServer = servers.firstOrNull { !it.local }
+        val total = 1 + listOfNotNull(phoneTerm, laptopServer, laptopServer).size + 1
         var n = 0
-        // A title card: the letters decode quickly (half a second), then stand still long enough to read (1.7 s),
-        // then it collapses (a third of a second). Then the feature, for `hold` ms.
+        // A title card (the letters decode in half a second, stand a moment, collapse), then the screen for `hold` ms.
         fun step(name: String, sub: String, hold: Long, body: () -> Unit) {
             val i = ++n
             val tag = "PREVIEW %02d/%02d".format(i, total)
-            val frames = listOf(0 to 0L, 1 to 100L, 2 to 100L, 3 to 100L, 4 to 100L, 5 to 100L,
-                8 to 1700L, 9 to 80L, 10 to 80L, 11 to 80L)
+            val frames = listOf(0 to 0L, 1 to 90L, 2 to 90L, 3 to 90L, 4 to 90L, 5 to 90L,
+                8 to 900L, 9 to 70L, 10 to 70L, 11 to 70L)
             for ((s, wait) in frames) at(wait) { introFrame(name, tag, sub, s) }
-            at(250) { panelClose() }
-            at(200) { body() }
+            at(200) { panelClose() }
+            at(150) { body() }
             at(hold) {}
         }
-        val term = settings.active()?.let { "term:${it.id}" }
-        fun terminal() { if (term != null) choose(term, Fx.LEFT) }
         refresh()
-        step("Vox", "a second screen for your Even G1", 800) { terminal() }
-        step("Terminal", "SSH and mosh. Look up and it appears", 7000) { settings.dashStyle = "classic"; terminal(); refresh(); dash() }
-        step("Every hotkey", "hold Alt and they all show", 7000) { panelOpen(Panels.HELP) }
-        at(0) { panelClose() }
-        step("Phone screen", "your phone, with a cursor", 9000) { phoneScreen() }
-        if (laptop != null) step("Laptop screen", "your computer, on your glasses", 9000) { choose(laptop, Fx.RIGHT) }
-        step("Notifications", "click one to open it", 9000) {
-            runCatching {
-                val m = getSystemService(NotificationManager::class.java)
-                m.createNotificationChannel(NotificationChannel("preview", "Preview", NotificationManager.IMPORTANCE_DEFAULT))
-                val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-                m.notify(77, Notification.Builder(this, "preview").setSmallIcon(android.R.drawable.stat_notify_chat)
-                    .setContentTitle("Vox preview").setContentText("A notification: click it on the glasses")
-                    .setContentIntent(open).setAutoCancel(true).build())
-            }
-            work.postDelayed({
-                if (demoRun == gen) LookUp.notes.firstOrNull { it.title == "Vox preview" }?.let { openNote(it.key) }
-            }, 2500)
+        settings.dashStyle = "classic"
+        step("Phone screen", "your phone, with a cursor", 4000) { phoneScreen() }
+        if (phoneTerm != null) step("Terminal", "SSH and mosh on the phone", 2400) { choose(phoneTerm, Fx.LEFT) }
+        if (laptopServer != null) {
+            step("Laptop screen", "your computer, on your glasses", 5000) { choose("screen:${laptopServer.id}", Fx.RIGHT) }
+            step("Laptop terminal", "its terminal, over SSH", 3000) { choose("term:${laptopServer.id}", Fx.LEFT) }
         }
-        step("Music player support", "now playing, from any player", 9000) {
-            runCatching { packageManager.getLaunchIntentForPackage("com.spotify.music")?.let {
-                startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } }
-            work.postDelayed({
-                if (demoRun == gen && Media.now?.playing != true && Media.control("toggle")) demoStarted = true
-                settings.dashStyle = "media"
-                terminal()
-                refresh()
-                dash()
-            }, 2500)
-        }
-        step("ESPN free API support", "live scores, no account", 8000) { settings.dashStyle = "game"; terminal(); refresh(); dash() }
-        // Every look the dashboard has, one after the other: the customization on show.
-        step("Your layout", "9 looks, or build your own", 800) { terminal(); settings.dashStyle = Dashboard.STYLES.first().first; refresh(); dash() }
-        for ((key, label) in Dashboard.STYLES) {
-            if (key == "tunes" || key == "custom") continue // the scene takes the whole display; the user's own may be empty
-            at(2800) { settings.dashStyle = key; refresh(); dash(); note("Layout: $label") }
-        }
-        step("Built on ScouterKit", "firmware by mafik", 4000) { settings.dashStyle = demoStyle; refresh(); dash() }
+        step("Built on ScouterKit", "firmware by mafik", 1500) { if (phoneTerm != null) choose(phoneTerm, Fx.LEFT) }
         at(0) { demoStop("Preview over") }
         Log.i(TAG, "preview: ${t / 1000} s")
     }
