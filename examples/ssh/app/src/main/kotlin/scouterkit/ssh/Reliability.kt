@@ -83,7 +83,7 @@ object LogBook {
 // Updates from inside the app: the newest build on the project's release page (GitHub, public: no account),
 // fetched and handed to Android's package installer, which asks the user once and keeps the app's data.
 object Updater {
-    private const val API = "https://api.github.com/repos/pruittcolon/scouter_kit/releases/tags/scouter-phone-latest"
+    private const val API = "https://api.github.com/repos/prunewhip/scouter_kit/releases/tags/scouter-phone-latest"
     private const val ASSET = "scouter-phone.apk"
     @Volatile var state = ""
     @Volatile var url: String? = null // a newer build to install
