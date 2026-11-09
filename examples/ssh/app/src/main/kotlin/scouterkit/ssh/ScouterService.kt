@@ -1498,12 +1498,12 @@ class ScouterService : Service() {
     }
 
     // One frame of a title card over the whole terminal (text frames are sharp and small to send).
-    private fun introFrame(title: String, tag: String, sub: String, step: Int) {
+    private fun introFrame(title: String, sub: String, index: Int, total: Int, step: Int) {
         if (glassesWith == null || Session.blank) return
         val g = region()
         val cols = if (g[2] > 0) g[0] / g[2] else settings.cols
         val rows = if (g[3] > 0) g[1] / g[3] else settings.rows
-        val (lines, marks) = Intro.frame(cols.coerceIn(20, 120), rows.coerceIn(10, 60), title, tag, sub, step)
+        val (lines, marks) = Intro.frame(cols.coerceIn(30, 120), rows.coerceIn(12, 60), title, sub, index, total, step)
         if (Session.overlay != Panels.INTRO) {
             work.removeCallbacks(noteEnd)
             if (Session.pointer) pointerOff()
@@ -1543,17 +1543,15 @@ class ScouterService : Service() {
         }
         val total = 2 + (if (phoneTerm != null) 1 else 0) + (if (laptop != null) 2 else 0)
         var n = 0
-        // under: the terminal chosen beneath the card (a quick cut, hidden by it). The card: letters decode in half
-        // a second, stand for a second, collapse in a fifth; then `show` brings its screen, which stays `hold` ms
-        // (the time a screen needs to come, plus about two seconds to look at it).
+        // under: the terminal chosen beneath the card (a quick cut, hidden by it). The card (Intro.PLAN, about 1.9 s),
+        // then `show` brings its screen, which stays `hold` ms: the time a screen needs to come, plus about two
+        // seconds to look at it.
         fun step(name: String, sub: String, under: String, hold: Long, show: (() -> Unit)? = null) {
-            val tag = "PREVIEW %02d/%02d".format(++n, total)
+            val i = ++n
             at(0) { if (chosen() != under || settings.show != Settings.TERMINAL) choose(under, Fx.CUT) }
-            at(350) { introFrame(name, tag, sub, 0) }
-            for (s in 1..5) at(90) { introFrame(name, tag, sub, s) }
-            at(1000) { introFrame(name, tag, sub, 8) }
-            for (s in 9..11) at(60) { introFrame(name, tag, sub, s) }
-            at(80) { panelClose(); show?.invoke() }
+            at(300) {}
+            for ((s, wait) in Intro.PLAN) at(wait) { introFrame(name, sub, i, total, s) }
+            at(Intro.END_WAIT) { panelClose(); show?.invoke() }
             at(hold) {}
         }
         // Not shared yet: Android's question comes first (VoxKeys answers it), which takes a moment more.

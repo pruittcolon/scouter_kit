@@ -425,7 +425,8 @@ with the app in the back.
 - **Alt+D** (or **Preview on the glasses** on the main screen) is a short tour: the phone's screen, the phone's
   terminal, the laptop's screen, the laptop's terminal (one that isn't set up is left out), each about two seconds
   once it has come, then a ScouterKit card. Each opens with a full-screen title card drawn in the terminal's own
-  text (noise decoding into big letters, a frame closing round them, a collapse to a line), over a terminal that
+  text, about two seconds (a CRT line switches on, a frame opens, a scan sweeps the title in as shadowed block
+  letters, the card holds with the step's squares, then it tears, squeezes to a line and goes out), over a terminal that
   is really chosen underneath (the one the next step shows, so it is ready when the card goes). What the tour
   changed (always on, the dashboard's look) is put back. Alt+D or Stop ends it; it is off while driving.
 - Holding Alt shows the hotkeys in a cyberpunk frame (banner, tags, rules), in characters the glasses' font has.
