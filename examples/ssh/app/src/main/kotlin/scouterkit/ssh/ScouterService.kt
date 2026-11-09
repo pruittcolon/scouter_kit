@@ -54,6 +54,7 @@ object Session {
     @Volatile var car = "" // Car mode: "" off, else its state (idle, listening, thinking, speaking)
     @Volatile var carName = "" // the car connected (its Bluetooth name), or ""
     @Volatile var pointer = false // the pointer is on (its keys move and click it)
+    @Volatile var tvKeys = false // the keyboard is the Vizio TV's remote (Alt+Y)
     @Volatile var tabs = "" // the last tab action's problem, if any
     // The glasses' cursor on the phone's screen, in 1/10000 of its width and height (-1: none): drawn into the
     // phone's picture (Settings.screenOptions), its clicks tapped there by VoxKeys.
@@ -1316,6 +1317,9 @@ class ScouterService : Service() {
             what == "share" -> phoneScreen()
             what.startsWith("key:") -> panelKey(what.removePrefix("key:"))
             what == "lookup" -> lookUpOnly()
+            what == "lowbat" -> lowBattery()
+            what == "tv" -> tvRemote()
+            what.startsWith("tv:") -> tvKey(what.removePrefix("tv:"))
             what.startsWith("bright:") -> bright(what.removePrefix("bright:").toIntOrNull() ?: 0)
             what.startsWith("media:") -> {
                 val ok = Media.control(what.removePrefix("media:"))
@@ -1465,8 +1469,40 @@ class ScouterService : Service() {
         note(if (settings.phoneForce) "Always on" else "Look-up only: look up to see it")
     }
 
+    // Alt+B: low battery. The glasses at a tenth of the brightness (the least they draw); again, back to the level
+    // they had. Alt+= / - still change it meanwhile (that level then stays when it is left).
+    private fun lowBattery() {
+        if (!settings.lowBattery) {
+            settings.brightnessFull = settings.brightness
+            settings.brightness = LOW_BRIGHTNESS
+            settings.lowBattery = true
+        } else {
+            settings.brightness = if (settings.brightness == LOW_BRIGHTNESS) settings.brightnessFull else settings.brightness
+            settings.lowBattery = false
+        }
+        val level = settings.brightness
+        Thread { Native.brightness(level) }.start()
+        note(if (settings.lowBattery) "Low battery: dimmed to 10% (Alt+B back)" else "Brightness back to ${level * 100 / 42}%")
+    }
+
+    // Alt+Y: the keyboard is the Vizio TV's remote (arrows, Enter, volume...), or the keyboard again.
+    private fun tvRemote() {
+        if (!Vizio.paired(settings)) {
+            Session.tvKeys = false
+            return note("TV not paired: Settings, TV remote")
+        }
+        Session.tvKeys = !Session.tvKeys
+        note(if (Session.tvKeys) "TV remote on (Alt+Y off): arrows, Enter, +/-, M, Space, P" else "TV remote off")
+    }
+
+    private fun tvKey(name: String) {
+        val done = { why: String -> if (why.isNotEmpty()) work.post { note(why) } }
+        if (name == "PLAY_PAUSE") Vizio.playPause(settings, done) else Vizio.key(settings, name, done)
+    }
+
     // Alt+= / -: brighter or dimmer, a seventh of the range a press.
     private fun bright(dir: Int) {
+        settings.lowBattery = false
         settings.brightness = (settings.brightness + 6 * dir).coerceIn(0, 42)
         val level = settings.brightness
         Thread { Native.brightness(level) }.start()
@@ -2856,6 +2892,7 @@ class ScouterService : Service() {
         const val ACTION_TERMINAL = "scouterkit.ssh.TERMINAL" // the terminal on the glasses, started from the phone
         const val ACTION_VIEW_SCREEN = "scouterkit.ssh.VIEW_SCREEN" // the phone's screen again, while it is shared
         const val ACTION_STOP_SHARING = "scouterkit.ssh.STOP_SHARING" // screen sharing ends
+        const val LOW_BRIGHTNESS = 4 // a tenth of 42
         const val ACTION_DISPLAY = "scouterkit.ssh.DISPLAY" // the display on / off (EXTRA_ON, else the other way)
         const val ACTION_SOURCE = "scouterkit.ssh.SOURCE" // a source on the glasses (Shortcuts.EXTRA: a key, next, prev)
         const val ACTION_SERVER = "scouterkit.ssh.SERVER" // a saved server's terminal (extra "id"; none: the next)

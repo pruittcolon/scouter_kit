@@ -183,6 +183,14 @@ class Settings(context: Context) {
     var weatherUnit: String by Text("weather_unit", "")
     // The dashboard's game score: an NFL team's letters (ESPN's: NE, GB, KC…).
     var sportsTeam: String by Text("sports_team", "NE")
+    // The Vizio TV's remote (Alt+Y): its address and the token its pairing gave, kept on this phone only.
+    var tvHost: String by Text("tv_host", "")
+    var tvToken: String by Text("tv_token", "")
+    // Low battery (Alt+B): the glasses at a tenth of the brightness; the level to go back to.
+    var lowBattery: Boolean
+        get() = prefs.getBoolean("low_battery", false)
+        set(v) = prefs.edit().putBoolean("low_battery", v).apply()
+    var brightnessFull: Int by Number("brightness_full", 21)
     var weatherPlace: String by Text("weather_place", "")
     // The dashboard's height on the glasses, 0 without it (even, as the native side takes it).
     val dashRows get() = if (dashboard) dashHeight.coerceIn(56, 140) and 1.inv() else 0

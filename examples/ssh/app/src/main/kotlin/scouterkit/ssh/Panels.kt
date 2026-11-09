@@ -28,12 +28,14 @@ object Panels {
             "Alt+= / -" to "brighter / dimmer",
             "Alt+S" to "quick settings",
             "Alt+A" to "this help (or hold Alt)",
+            "Alt+B" to "low battery (10%)",
             "Alt+U" to "Tunes",
         ),
         "Media and voice" to listOf(
             "Alt+P" to "play / pause",
             "Alt+, / ." to "previous / next",
             "Alt+Space" to "voice command",
+            "Alt+Y" to "TV remote on / off",
         ),
         "Terminal" to listOf(
             "Alt+T" to "new tab",

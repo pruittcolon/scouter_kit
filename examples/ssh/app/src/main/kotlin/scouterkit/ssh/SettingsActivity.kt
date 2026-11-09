@@ -243,6 +243,9 @@ class SettingsActivity : Activity() {
         trouble.addView(button("Open Developer options") {
             runCatching { startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)) }
         })
+        trouble.addView(button("TV remote (Vizio): pair and buttons; Alt+Y on the keyboard") {
+            startActivity(Intent(this, TvActivity::class.java))
+        })
         trouble.addView(button("Charging case log (connect the case by USB-C)") {
             startActivity(Intent(this, CaseLogActivity::class.java))
         })

@@ -408,3 +408,8 @@ with the app in the back.
   busy. In the case (the arms' IN_CASE property now, not only what they said when the session began) or folded
   the panels go off. Ending the screen sharing (Android's status bar, Stop, or
   "Terminal on glasses") brings the terminal back; the mosh session waits paused meanwhile.
+
+## TV remote and low battery
+
+- **Alt+Y** turns the keyboard into a Vizio SmartCast TV's remote (the TV is not one of the screens you switch between): arrows, Enter = OK, Backspace/Esc = Back, H = Home, +/- = volume, M = mute, Space = play/pause, I = input, Page Up/Down = channel, P = power. Alt+Y again gives the keyboard back; the glasses say which. Pair once in Settings, Troubleshooting, TV remote (Find the TV, Pair, type the PIN the TV shows). The TV's address and token stay in Vox's private settings on the phone. The same screen has the buttons for the phone.
+- **Alt+B** is low battery: the glasses at 10% brightness, and again back to the level they had.

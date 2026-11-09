@@ -108,6 +108,14 @@ object Hotkeys {
             ScouterService.send(context, ScouterService.ACTION_REPLY, "key" to what)
             return true
         }
+        // The TV remote on (Alt+Y): the keyboard is the TV's remote (Vizio.LAYOUT); Alt shortcuts go on as ever.
+        if (Session.tvKeys && !e.isAltPressed && !e.isCtrlPressed && !e.isMetaPressed) {
+            val k = Vizio.forKey(e.keyCode, e.isShiftPressed) ?: return true
+            val again = k.startsWith("VOL") || k.startsWith("CH") || k in listOf("UP", "DOWN", "LEFT", "RIGHT")
+            if (e.action == KeyEvent.ACTION_DOWN && (e.repeatCount == 0 || again))
+                ScouterService.send(context, ScouterService.ACTION_PANEL, "do" to "tv:$k")
+            return true
+        }
         // A panel on the glasses (the help, the quick settings): its keys are the arrows, Enter, Space and Escape
         // (the rest do nothing meanwhile); Alt shortcuts go on as ever (Alt+A / Alt+S again close it).
         if ((Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS) && !e.isAltPressed && !e.isCtrlPressed &&
@@ -202,6 +210,8 @@ object Hotkeys {
             KeyEvent.KEYCODE_EQUALS, KeyEvent.KEYCODE_PLUS, KeyEvent.KEYCODE_NUMPAD_ADD -> "bright:1"
             KeyEvent.KEYCODE_MINUS, KeyEvent.KEYCODE_NUMPAD_SUBTRACT -> "bright:-1"
             KeyEvent.KEYCODE_P -> "media:toggle"
+            KeyEvent.KEYCODE_B -> "lowbat"
+            KeyEvent.KEYCODE_Y -> "tv"
             KeyEvent.KEYCODE_COMMA -> "media:prev"
             KeyEvent.KEYCODE_PERIOD -> "media:next"
             else -> null
