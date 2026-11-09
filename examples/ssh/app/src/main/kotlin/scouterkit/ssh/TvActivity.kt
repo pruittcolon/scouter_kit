@@ -27,7 +27,7 @@ class TvActivity : Activity() {
             "PIN, type it here. Once.")
         status = text("", 13.5f, Ui.TEXT)
         pair.addView(status)
-        host = field("TV address", settings.tvHost, "found by Find the TV, or type it (e.g. 192.168.1.20)")
+        host = field("TV address", settings.tvHost, "found by Find the TV, or type the address from the TV's network settings")
         pair.addView(host)
         pair.addView(chipRow(
             chip("Find the TV", true) { find() },

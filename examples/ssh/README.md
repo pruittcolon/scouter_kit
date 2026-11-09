@@ -5,6 +5,8 @@ Even Realities G1 running the ScouterKit firmware, with keys from
 [keyer](https://github.com/mafik/keyer) over its key-stream service. GPL-3.0 (`LICENSE`), because it
 includes mosh; third-party notices in `NOTICE` and `licenses/`.
 
+New here, or an agent wiring something in? Start with [`AGENT_GUIDE.md`](AGENT_GUIDE.md): what it does, its limits (battery, frame rate, permissions), the architecture and recipes. Built on [ScouterKit](https://github.com/mafik/scouter_kit) by mafik, whose firmware makes all of this possible.
+
 - The terminal fills the binocular area: (640 − dx) / 7 × (480 − dy) / 14 cells (77 × 33 at dx 100, dy 9).
 - It shows when you look up past the angle in Settings and hides 5° lower after a second. While the app
   holds keyer, it shows whatever the head's angle, also with the phone in a pocket.
