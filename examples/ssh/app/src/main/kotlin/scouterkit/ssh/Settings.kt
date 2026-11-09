@@ -441,8 +441,10 @@ class Settings(context: Context) {
         const val ACTION_TAB_NEXT = "tab_next" // the terminal's next tab (tmux window)
         const val ACTION_TAB_PREV = "tab_prev"
         const val ACTION_TAB_NEW = "tab_new"
+        const val ACTION_VOICE_MODE = "voice_mode" // voice mode on / off: talking to the terminal
         val ACTIONS = linkedMapOf(ACTION_NONE to "Nothing", ACTION_DISPLAY to "Display off / on",
             ACTION_NEXT to "Next source", ACTION_PREV to "Previous source", ACTION_LISTEN to "Listen (voice command)",
+            ACTION_VOICE_MODE to "Voice mode (talk to the terminal)",
             ACTION_TAB_NEXT to "Next tab", ACTION_TAB_PREV to "Previous tab", ACTION_TAB_NEW to "New tab",
             ACTION_VIEW to "Switch terminal / screen", ACTION_STOP to "Stop everything")
         const val PHONE = "phone" // the phone's own screen (a source)

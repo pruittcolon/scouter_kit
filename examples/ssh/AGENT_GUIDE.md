@@ -40,7 +40,7 @@ detailed manual; this is the map.
 | Laptop screen | A server's screen over SSH (`vox-screen`); the keyboard and trackpad work it (Python + XTEST sent over SSH, X11 only) | `RemoteScreen.kt`, `RemoteInput.kt`, `go/examples/screen` |
 | Switching | Alt+arrows / Alt+1..9 between sources, with transitions (CRT, data stream, cut) kept fast | `native/fx.cpp`, `Fx.kt`, `ScouterService.choose` |
 | Hotkeys | Hold Alt for the list; Alt+Z, A, S, B, Y, X, C, P, U, M, K, T, W, Q... | `Hotkeys.kt`, `Panels.kt` |
-| Voice | Offline voice commands (Parakeet via sherpa-onnx) | `Voice.kt` |
+| Voice | Offline voice commands (Parakeet via sherpa-onnx); voice mode (Alt+V) types what is said into the terminal, with a strip at the bottom | `Voice.kt`, `ScouterService.voiceModeSet` |
 | Car mode | In a car (Bluetooth), the Next/Previous/Play keys talk to Claude on your server, the answer is spoken (Kokoro voice or Android TTS), nothing is shown on the glasses | `Car.kt` |
 | TV remote | A Vizio SmartCast TV's remote: Alt+Y turns the keyboard into it; buttons in Settings. Alt+F runs the phone's `phone` mirror command in a tmux tab | `Vizio.kt`, `TvActivity.kt`, `Tabs.tv` |
 | Preview mode | Alt+D / Preview button: a short live tour (phone screen, phone terminal, laptop screen, laptop terminal), each after a full-screen title card | `ScouterService.demoStart`, `Intro.kt` |
@@ -118,7 +118,7 @@ assembler in C++ (`p.Bge`, `p.Call`...). Mind the arm's compute: anything per fr
 
 **Hotkeys** (hold Alt by itself to see them on the glasses): Alt+arrows / 1..9 screens, Alt+0 (or Z) heads-up / always on, Alt+L display off/on,
 Alt+= / - brightness, Alt+B low battery, Alt+S quick settings, Alt+A help, Alt+P / , / . music,
-Alt+Space voice, Alt+Y TV remote, Alt+X keyboard off/on, Alt+K keys to phone/glasses, Alt+M pointer, Alt+T / [ / ]
+Alt+Space voice command, Alt+V voice mode (talk to the terminal), Alt+Y TV remote, Alt+X keyboard off/on, Alt+K keys to phone/glasses, Alt+M pointer, Alt+T / [ / ]
 / W tabs, Alt+C share the phone screen (it taps Android's Start button for you, and retries while the dialog
 loads), Alt+Q close, Alt+U Tunes, Alt+Backspace / H / R / N phone Back / Home / Recents / Notifications.
 Ctrl+Left returns to the terminal from a screen (a laptop's screen to that laptop's terminal); Ctrl+Backspace deletes a

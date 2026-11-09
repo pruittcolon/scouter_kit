@@ -51,6 +51,7 @@ object Session {
     @Volatile var voice = "" // voice: what the band says (or last said)
     @Volatile var listening = false
     @Volatile var dictating = false // what is said is typed into the terminal
+    @Volatile var voiceMode = false // voice mode (Alt+V): talking to the terminal, a strip at the bottom says so
     @Volatile var car = "" // Car mode: "" off, else its state (idle, listening, thinking, speaking)
     @Volatile var carName = "" // the car connected (its Bluetooth name), or ""
     @Volatile var pointer = false // the pointer is on (its keys move and click it)
@@ -391,6 +392,9 @@ class ScouterService : Service() {
                         if (car != null) KokoroModel.load(this)
                     }.start()
                     "stop" -> stopListening()
+                    "voicemode" -> voiceModeSet(!Session.voiceMode)
+                    "voicemode:on" -> voiceModeSet(true)
+                    "voicemode:off" -> voiceModeSet(false)
                     "always" -> {
                         if (!settings.voiceAlways && listener?.once == false) stopListening()
                         voiceAlways()
@@ -1537,6 +1541,14 @@ class ScouterService : Service() {
     private fun panelClose() {
         altHelp = false
         if (Session.overlay.isEmpty()) return
+        if (Session.voiceMode && Session.overlay != Panels.VOICE) { // the voice mode's strip again
+            work.removeCallbacks(noteEnd)
+            Session.overlay = Panels.VOICE
+            forceApply()
+            panelDraw()
+            Session.changed()
+            return
+        }
         Session.overlay = ""
         work.removeCallbacks(noteEnd)
         Native.overlay(null, null, false)
@@ -1588,6 +1600,7 @@ class ScouterService : Service() {
         val content = when (kind) {
             Panels.SETTINGS -> Panels.settings(if (onScreen) Session.source.ifEmpty { "Screen" } else "Terminal", tweaks, panelAt)
             Panels.NOTE -> Panels.note(noteText)
+            Panels.VOICE -> Panels.voice(voiceStripText)
             Panels.INTRO -> return // drawn by introFrame
             else -> null // the help: laid out for each
         }
@@ -2573,6 +2586,7 @@ class ScouterService : Service() {
     // stops it) or always (Settings.voiceAlways: phrases that start with "Vox").
     private fun listen(once: Boolean) {
         if (carListener != null) return // Car mode has the microphone
+        if (once && Session.voiceMode) return voiceModeSet(false) // the listen gesture (or key) ends voice mode
         if (listener != null || voiceLoading) {
             if (once) stopListening()
             return
@@ -2581,13 +2595,15 @@ class ScouterService : Service() {
         if (!VoiceModel.ready(this)) return voiceSay("$MIC download the speech model first: Vox, Voice tab")
         if (Session.glasses != "ready") return voiceSay("$MIC the glasses are not connected")
         voiceLoading = true
-        voiceSay(if (voiceEngine == null) "$MIC loading the speech model…" else listeningText(once), hold = true)
+        if (Session.voiceMode) voiceStrip(if (voiceEngine == null) "loading the speech model…" else "listening")
+        else voiceSay(if (voiceEngine == null) "$MIC loading the speech model…" else listeningText(once), hold = true)
         Thread {
             val engine = voiceEngine ?: runCatching { VoiceEngine(this) }.getOrElse { e ->
                 work.post {
                     voiceLoading = false
                     voiceFailedAt = SystemClock.elapsedRealtime()
                     voiceSay("$MIC the speech model did not load: ${e.message}")
+                    if (Session.voiceMode) voiceModeSet(false, "the speech model did not load")
                 }
                 return@Thread
             }
@@ -2597,12 +2613,18 @@ class ScouterService : Service() {
                 if (ended || listener != null) return@post
                 lateinit var l: VoiceListener
                 l = VoiceListener(engine, settings.voiceRealtime, once,
-                    onPartial = { t -> work.post { if (listener === l) voiceSay("$MIC $t…", hold = true) } },
+                    onPartial = { t ->
+                        work.post {
+                            if (listener !== l) return@post
+                            if (Session.voiceMode) voiceStrip("$t…") else voiceSay("$MIC $t…", hold = true)
+                        }
+                    },
                     onPhrase = { t -> work.post { if (listener === l) heard(t, once) } },
                     onEnd = { why -> work.post { listenerEnded(l, why) } })
                 listener = l
                 Session.listening = true
-                voiceSay(listeningText(once), hold = true)
+                if (Session.voiceMode) voiceStrip("listening: talk, then say \"send\"")
+                else voiceSay(listeningText(once), hold = true)
                 l.start()
             }
         }.start()
@@ -2618,6 +2640,12 @@ class ScouterService : Service() {
         if (listener !== l) return
         listener = null
         Session.listening = false
+        if (Session.voiceMode) { // voice mode keeps the microphone on (its strip, not the band); a failure ends it
+            if (why.isNotEmpty()) voiceModeSet(false, why)
+            else work.postDelayed({ if (Session.voiceMode && listener == null && !voiceLoading) listen(false) }, 300)
+            Session.changed()
+            return
+        }
         if (why.isNotEmpty()) {
             if (!l.once) voiceFailedAt = SystemClock.elapsedRealtime()
             voiceSay("$MIC $why")
@@ -2625,6 +2653,106 @@ class ScouterService : Service() {
         else work.postDelayed(bandOff, settings.voiceBandSecs.coerceIn(1, 30) * 1000L)
         Session.changed()
         if (!l.once) work.postDelayed({ voiceAlways() }, 1000)
+    }
+
+    // ------------------------------------------------ voice mode: talking to the terminal
+
+    // Alt+V (the Voice tab, a TouchBar gesture; Alt+V again, "voice off" or the listen gesture end it): the
+    // microphone stays on and what is said is typed into the terminal, phrase by phrase (Claude's prompt, a
+    // shell), with no "Vox" first. A strip at the bottom says it is on and shows the phrase being said, and the
+    // terminal stays in view meanwhile. Said by itself: "send" presses Enter, "scratch that" takes the last phrase
+    // back, "clear" empties the line (Ctrl+U), "escape" stops Claude, "option one / two / three" answers its
+    // questions, "voice off" ends it. A phrase that ends in "send it" is typed, then sent.
+    private var voiceStripText = ""
+    private var lastPhrase = "" // the last phrase typed (scratch that)
+
+    private fun voiceModeSet(on: Boolean, why: String = "") {
+        if (on == Session.voiceMode) return
+        if (on) {
+            val no = when {
+                carListener != null -> "Car mode has the microphone"
+                !VoiceModel.available -> "voice is not in this build"
+                !VoiceModel.ready(this) -> "download the speech model first: Vox, Voice tab"
+                Session.glasses != "ready" -> "the glasses are not connected"
+                else -> null
+            }
+            if (no != null) {
+                voiceSay("$MIC $no")
+                return
+            }
+            Session.voiceMode = true
+            lastPhrase = ""
+            Log.i(TAG, "voice mode: on")
+            // The terminal in view (a screen gives way to the terminal in use), the display on.
+            if (settings.show != Settings.TERMINAL || !chosen().startsWith("term:")) settings.active()?.let { choose("term:${it.id}", Fx.UP) }
+            if (Session.blank) display(true, "voice mode")
+            voiceStrip(if (voiceEngine == null) "loading the speech model…" else "listening: talk, then say \"send\"")
+            if (listener == null) listen(false)
+            else if (listener?.once == true) listener?.stop() // its end starts one that stays on
+        } else {
+            Session.voiceMode = false
+            Log.i(TAG, "voice mode: off" + if (why.isNotEmpty()) " ($why)" else "")
+            if (!settings.voiceAlways) listener?.stop()
+            if (Session.overlay == Panels.VOICE) panelClose()
+            note(if (why.isEmpty()) "Voice mode off" else "Voice mode off: $why")
+        }
+        Session.changed()
+    }
+
+    // The strip's words (and the app's Voice tab). A panel open over it (the help, a note) keeps the glasses: the
+    // strip comes back when it closes (panelClose).
+    private fun voiceStrip(text: String) {
+        voiceStripText = text
+        Session.voice = "Voice mode: $text"
+        if (Session.voiceMode && (Session.overlay.isEmpty() || Session.overlay == Panels.VOICE)) {
+            if (Session.overlay != Panels.VOICE) {
+                Session.overlay = Panels.VOICE
+                forceApply()
+            }
+            panelDraw()
+        }
+        Session.changed()
+    }
+
+    private fun voiceModePhrase(text: String) {
+        val words = VoiceCommands.normalize(text)
+        when (words) {
+            "voice off", "voice mode off", "stop voice", "stop voice mode", "end voice mode", "stop listening" ->
+                return voiceModeSet(false)
+            "send", "send it", "enter", "submit", "press enter" -> {
+                key("enter")
+                lastPhrase = ""
+                return voiceStrip("sent")
+            }
+            "scratch that", "delete that", "undo that" -> {
+                repeat(lastPhrase.codePointCount(0, lastPhrase.length)) { key("backspace") }
+                lastPhrase = ""
+                return voiceStrip("took the last phrase back")
+            }
+            "clear", "clear line", "clear that", "clear it" -> {
+                Native.keyEvent(1, 0x01, 'u'.code)
+                lastPhrase = ""
+                return voiceStrip("line cleared")
+            }
+            "escape", "press escape", "stop claude", "interrupt" -> {
+                key("escape")
+                return voiceStrip("escape")
+            }
+            "option one", "option 1" -> return type("1").also { voiceStrip("option 1") }
+            "option two", "option 2" -> return type("2").also { voiceStrip("option 2") }
+            "option three", "option 3" -> return type("3").also { voiceStrip("option 3") }
+        }
+        val end = SEND_AT_END.find(text)
+        val body = (if (end != null) text.substring(0, end.range.first) else text).trim()
+        if (body.isNotEmpty()) {
+            lastPhrase = "$body "
+            type(lastPhrase)
+        }
+        if (end != null) {
+            key("enter")
+            lastPhrase = ""
+        }
+        voiceStrip((if (end != null) "sent: " else "typed: ") + body)
     }
 
     // Always listening: on while the glasses are up and the setting is on (not again within 30 s of a failure).
@@ -2828,6 +2956,7 @@ class ScouterService : Service() {
             val sep = if (Session.replyDraft.isEmpty() || Session.replyDraft.endsWith(" ")) "" else " "
             return reply("c:$sep${text.trim()}")
         }
+        if (Session.voiceMode) return voiceModePhrase(text)
         var said = text
         if (!once && !Session.dictating) said = VoiceCommands.afterWake(text) ?: run {
             Session.changed()
@@ -3132,6 +3261,7 @@ class ScouterService : Service() {
             } else settings.active()?.let { choose("term:${it.id}", Fx.UP) }
             Settings.ACTION_NEXT, Settings.ACTION_PREV -> source(action)
             Settings.ACTION_LISTEN -> listen(true)
+            Settings.ACTION_VOICE_MODE -> voiceModeSet(!Session.voiceMode)
             Settings.ACTION_TAB_NEXT -> tabs("next")
             Settings.ACTION_TAB_PREV -> tabs("prev")
             Settings.ACTION_TAB_NEW -> tabs("new")
@@ -3216,6 +3346,8 @@ class ScouterService : Service() {
         const val SLIDE_IDLE_MS = 90L // a two-finger swipe ends when its wheels are still this long
         const val SLIDE_SPEED_MS = 80f // its speed at the end: over its last moves this long
         const val CAR_GONE_MS = 20_000L
+        // Voice mode: a phrase that ends in "send it" (or "send that") is sent after it is typed.
+        private val SEND_AT_END = Regex("[\\s,.;:!?]+send (it|that)[\\s.!?]*\$", RegexOption.IGNORE_CASE)
         const val ACTION_DISPLAY = "scouterkit.ssh.DISPLAY" // the display on / off (EXTRA_ON, else the other way)
         const val ACTION_SOURCE = "scouterkit.ssh.SOURCE" // a source on the glasses (Shortcuts.EXTRA: a key, next, prev)
         const val ACTION_SERVER = "scouterkit.ssh.SERVER" // a saved server's terminal (extra "id"; none: the next)

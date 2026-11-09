@@ -15,6 +15,7 @@ object Panels {
     const val SETTINGS = "settings"
     const val NOTE = "note"
     const val INTRO = "intro" // the preview mode's title card (Intro)
+    const val VOICE = "voice" // voice mode's strip at the bottom (ScouterService.voiceModeSet)
 
     // The hotkeys by group: the keys, what they do. The help on the glasses and the app's Hotkeys page.
     val GROUPS: List<Pair<String, List<Pair<String, String>>>> = listOf(
@@ -37,6 +38,7 @@ object Panels {
             "Alt+P" to "play / pause",
             "Alt+, / ." to "previous / next",
             "Alt+Space" to "voice command",
+            "Alt+V" to "voice mode: talk to it",
             "Alt+Y" to "TV remote on / off",
         ),
         "Terminal" to listOf(
@@ -81,6 +83,9 @@ object Panels {
     }
 
     fun note(text: String) = Content(listOf(text), listOf(1), false)
+
+    // Voice mode's strip: that it is on, the way out, what it hears or did (the line is cut at the width).
+    fun voice(text: String) = Content(listOf("■ VOICE · Alt+V off › $text"), listOf(1), false)
 
     // The help as the terminal's lines (cols x rows): a title, then two columns of groups, then the keys to close.
     private fun closes(held: Boolean) = if (held) "let go of Alt to close" else "Alt+A or Esc closes"

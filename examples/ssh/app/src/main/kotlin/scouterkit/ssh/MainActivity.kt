@@ -65,6 +65,7 @@ class MainActivity : Activity() {
     private lateinit var defaultChip: TextView
     private var screenBuiltFor: String? = null // the look the Screen tab's controls were made with
     private lateinit var voiceState: TextView
+    private var voiceModeButton: TextView? = null // voice mode on / off (talking to the terminal)
     private lateinit var carState: TextView
     private lateinit var carVoiceText: TextView
     private lateinit var carVoiceButton: TextView
@@ -820,6 +821,17 @@ class MainActivity : Activity() {
         })
         page.addView(now)
 
+        // Voice mode: everything said is typed into the terminal on the glasses (Claude's prompt) until it is off.
+        val talk = card("Voice mode", "Talk to the terminal: what you say is typed into it (Claude's prompt), a " +
+            "strip at the bottom of the glasses shows it is on. Say \"send\" for Enter, \"scratch that\" to take " +
+            "the last phrase back, \"escape\" to stop Claude, \"option one\" to answer it, \"voice off\" to end. " +
+            "Alt+V on the keyboard.")
+        voiceModeButton = button(if (Session.voiceMode) "Voice mode off" else "Voice mode on", 0) {
+            ScouterService.send(this@MainActivity, ScouterService.ACTION_VOICE, "mode" to "voicemode")
+        }
+        talk.addView(voiceModeButton, lp().apply { topMargin = dp(8) })
+        page.addView(talk)
+
         val model = card()
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1012,6 +1024,7 @@ class MainActivity : Activity() {
             micHalo.alpha = 0f
         }
         heardText.text = Session.heard.joinToString("\n").ifEmpty { "Nothing yet." }
+        voiceModeButton?.text = if (Session.voiceMode) "Voice mode off" else "Voice mode on"
     }
 
     // ------------------------------------------------ the sources grid

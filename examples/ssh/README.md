@@ -356,7 +356,7 @@ on the phone, offline, by sherpa-onnx 1.13.8 (`native/third_party/fetch_sherpa.s
 downloads the model once (about 660 MB from Hugging Face and GitHub at pinned revisions, each file checked by
 SHA-256, resumed where it stopped).
 
-- **Listening**: push to talk (the right TouchBar's double tap by default, Alt+Space or Alt+V, the app's Listen
+- **Listening**: push to talk (the right TouchBar's double tap by default, Alt+Space, the app's Listen
   buttons; again stops it), or always (Settings on the Voice tab: phrases must start with "Vox"). Silero VAD cuts
   phrases at half a second of quiet; *Realtime words* reads the phrase so far again every 0.6 s while it is spoken.
 - **The band**: while voice is in use the terminal's top rows show what was heard and what it did, above a rule
@@ -365,6 +365,15 @@ SHA-256, resumed where it stopped).
   off / on, brighter, dimmer, always visible, "type …", "run …" and "claude …" (typed, the last two with Enter),
   Enter, Escape, Tab, Control C, Up, Down, dictation (everything said is typed; "send" is Enter), and the user's
   own phrases (Voice tab: a phrase and what it does).
+- **Voice mode** (Alt+V, the Voice tab's *Voice mode on*, or a TouchBar gesture set to it): talking to the terminal,
+  like Car mode but on the glasses. The microphone stays on and every phrase is typed into the terminal as it is
+  said (Claude's prompt, a shell; no "Vox" first, no command matching, so "next" is typed, not obeyed). A strip at
+  the bottom (`Panels.VOICE`, over the two rows under Claude's prompt) says it is on and shows the phrase being
+  said, then what was typed; the terminal stays in view (a screen gives way to the terminal in use). Said by
+  itself: "send" (or "enter", "submit") presses Enter, "scratch that" takes the last phrase back, "clear" empties
+  the line (Ctrl+U), "escape" (or "stop Claude") stops Claude, "option one / two / three" answers its questions,
+  "voice off" ends it; a phrase ending in "send it" is typed and sent. Alt+V again or the listen gesture ends it too.
+  A help or a note opened meanwhile goes over the strip, and the strip comes back after.
 
 ### Car mode
 

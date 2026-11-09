@@ -16,7 +16,7 @@ import android.view.accessibility.AccessibilityEvent
 // A keyboard's shortcuts (a Bluetooth keyboard paired with the phone): Alt with an arrow moves around the
 // sources as a grid (left and right: this phone, then each other server; up and down: terminal, screen),
 // Alt+1 ... Alt+9 picks Home's source of that number, Alt+0 heads-up mode (look-up only), Alt+L the display off
-// or on, Alt+Space (or Alt+V)
+// or on, Alt+V voice mode (talking to the terminal), Alt+Space
 // listens for a voice command, Alt+M the pointer (then arrows, Enter, Escape), Alt+T / [ / ] / W the tabs,
 // Alt+A the help on the glasses (every hotkey: Panels.GROUPS; also while Alt is held by itself), Alt+S the quick
 // settings, Alt+Z (as Alt+0) always on / look-up only, Alt+= / - the brightness, Alt+P / , / . the music, Alt+X
@@ -245,6 +245,12 @@ object Hotkeys {
             }
             return true
         }
+        // Alt+V: voice mode, talking to the terminal (on or off; Alt+Space is one voice command).
+        if (e.keyCode == KeyEvent.KEYCODE_V) {
+            if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0)
+                ScouterService.send(context, ScouterService.ACTION_VOICE, "mode" to "voicemode")
+            return true
+        }
         // Alt+U: Tunes, the synthwave scene, on or off.
         if (e.keyCode == KeyEvent.KEYCODE_U) {
             if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0) ScouterService.send(context, ScouterService.ACTION_TUNES)
@@ -281,7 +287,7 @@ object Hotkeys {
             KeyEvent.KEYCODE_DPAD_UP -> "up"
             KeyEvent.KEYCODE_DPAD_DOWN -> "down"
             KeyEvent.KEYCODE_L -> Shortcuts.DISPLAY
-            KeyEvent.KEYCODE_SPACE, KeyEvent.KEYCODE_V -> LISTEN
+            KeyEvent.KEYCODE_SPACE -> LISTEN
             in KeyEvent.KEYCODE_1..KeyEvent.KEYCODE_9 -> (e.keyCode - KeyEvent.KEYCODE_0).toString()
             else -> return false
         }
