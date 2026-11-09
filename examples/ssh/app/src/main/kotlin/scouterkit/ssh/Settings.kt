@@ -18,6 +18,10 @@ class Settings(context: Context) {
     var left: String by Text("left", "")
     var right: String by Text("right", "")
     var keyer: String by Text("keyer", "") // bonded address; empty: no keyer link
+    // Keys from a keyboard paired with the phone instead of keyer: the session runs while the app is in front.
+    var keyboard: Boolean
+        get() = prefs.getBoolean("keyboard", false)
+        set(v) = prefs.edit().putBoolean("keyboard", v).apply()
     // Debug builds: the terminal shows with the glasses folded (WORN 0), for tests on the table.
     var ignoreWorn: Boolean
         get() = prefs.getBoolean("ignore_worn", false)

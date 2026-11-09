@@ -54,6 +54,7 @@ class Vault(context: Context) {
         const val ALIAS = "scouter-vault"
         const val SSH_KEY = "ssh_key"
         const val SSH_PASSPHRASE = "ssh_passphrase"
+        const val SSH_PUBLIC = "ssh_public" // the public key line of a key made on this phone
         const val HOST_KEY = "host_key" // "host:port fingerprint"
         const val MOSH = "mosh"         // "ip port key pid"
     }

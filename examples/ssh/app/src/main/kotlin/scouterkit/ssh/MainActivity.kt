@@ -4,6 +4,8 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
+import android.view.KeyEvent
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -40,16 +42,29 @@ class MainActivity : Activity() {
         super.onResume()
         if (BuildConfig.DEBUG) importTestKey()
         Session.listeners += listener
+        Session.foreground = true
+        val keyboard = Settings(this).keyboard
+        // Keyboard mode: the keys come only while this screen is in front, so it stays on (dimmed by Android).
+        if (keyboard) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // Settings may have changed; and while Android has not said whether keyer is near (the app new or
-        // restarted), the service tries keyer's link.
-        if (ScouterService.running || Session.near == null || BuildConfig.FLAVOR == "emulated") ScouterService.send(this)
+        // restarted), the service tries keyer's link. In keyboard mode this screen in front starts the session.
+        if (keyboard || ScouterService.running || Session.near == null || BuildConfig.FLAVOR == "emulated") ScouterService.send(this)
         associate()
         show()
     }
 
     override fun onPause() {
         Session.listeners -= listener
+        Session.foreground = false
+        if (ScouterService.running) ScouterService.send(this) // keyboard mode: the session lets go after its grace
         super.onPause()
+    }
+
+    // Keyboard mode: a paired keyboard's keys go to the terminal; the phone's own buttons stay Android's.
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (Settings(this).keyboard && Keyboard.physical(event) && Keyboard.send(event)) return true
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onNewIntent(intent: Intent) {

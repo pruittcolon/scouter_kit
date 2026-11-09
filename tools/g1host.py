@@ -800,7 +800,7 @@ def _mirror_lib():
     out = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "g1host" / f"g1mirror-{digest.hexdigest()[:16]}.so"
     if not out.exists():
         out.parent.mkdir(parents=True, exist_ok=True)
-        tmp = out.with_suffix(f".{os.getpid()}.tmp")
+        tmp = out.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
         subprocess.run(["cc", "-std=c11", "-O2", "-shared", "-fPIC", f"-I{vm_dir}", "-o", str(tmp)] + [str(p) for p in srcs],
                        check=True)
         tmp.rename(out)
@@ -831,7 +831,7 @@ def _lc3_lib():
     out = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "g1host" / f"liblc3-{digest.hexdigest()[:16]}.so"
     if not out.exists():
         out.parent.mkdir(parents=True, exist_ok=True)
-        tmp = out.with_suffix(f".{os.getpid()}.tmp")
+        tmp = out.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
         subprocess.run(["cc", "-std=c11", "-O2", "-ffast-math", "-shared", "-fPIC", f"-I{lc3_dir / 'include'}",
                         "-DLC3_PLUS=0", "-DLC3_PLUS_HR=0", "-o", str(tmp)] + [str(p) for p in srcs] + ["-lm"], check=True)
         tmp.rename(out)
