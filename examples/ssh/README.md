@@ -7,6 +7,34 @@ includes mosh; third-party notices in `NOTICE` and `licenses/`.
 
 New here, or an agent wiring something in? Start with [`AGENT_GUIDE.md`](AGENT_GUIDE.md): what it does, its limits (battery, frame rate, permissions), the architecture and recipes. Built on [ScouterKit](https://github.com/mafik/scouter_kit) by mafik, whose firmware makes all of this possible.
 
+## Try it
+
+0. **Look around first, no glasses and no risk.** Install `scouter-phone-emulated-debug.apk` from the
+   [latest release](https://github.com/prunewhip/scouter_kit/releases/tag/scouter-phone-latest): the app with two
+   emulated arms inside, on any Android phone.
+1. **Put ScouterKit's firmware on the glasses.** This is the risky part: follow mafik's
+   [firmware guide](https://github.com/mafik/scouter_kit/tree/main/g1_firmware) and read its "Risks and points of no
+   return" first. It needs a Linux PC with Bluetooth LE, and charged arms in the case, on USB. Even's own app
+   doesn't work with the glasses afterwards.
+2. **Install the app.** `scouter-phone.apk` from the
+   [latest release](https://github.com/prunewhip/scouter_kit/releases/tag/scouter-phone-latest) (Android 12 or newer).
+3. **Pair the glasses.** Pair each arm in Android's Bluetooth settings with the glasses in the open case, then in
+   Vox: Settings, Glasses, "Use the bonded glasses".
+4. **Give it a terminal.** The easiest is Termux on the same phone. In Termux:
+
+       curl -fsSLO https://raw.githubusercontent.com/prunewhip/scouter_kit/phone-termux-screen/examples/ssh/termux/scouter.sh && bash scouter.sh
+
+   then in Vox: Settings, Terminal server, "Termux on this phone". Or add your own computer over SSH (tmux and mosh
+   on it recommended).
+5. **Allow what it asks for.** Bluetooth (Nearby devices) and notifications; in Android's accessibility settings
+   "Vox keyboard shortcuts" for the hotkeys; notification access ("Vox: notifications on the glasses") for the
+   dashboard; screen sharing when you first put the phone's screen on the glasses.
+6. **Optional.** A Bluetooth keyboard and trackpad (hold Alt for every hotkey); a laptop's screen, which needs the
+   small `vox-screen` helper on the laptop (see "A server's screen" below).
+
+The shortcut: point Claude Code (or another coding agent) at this folder and ask it to read `AGENT_GUIDE.md` and walk
+you through the setup.
+
 - The terminal fills the binocular area: (640 − dx) / 7 × (480 − dy) / 14 cells (77 × 33 at dx 100, dy 9).
 - It shows when you look up past the angle in Settings and hides 5° lower after a second. While the app
   holds keyer, it shows whatever the head's angle, also with the phone in a pocket.
