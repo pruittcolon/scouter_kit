@@ -55,8 +55,11 @@ object Vizio {
     }
 
     @Volatile private var playing = true
-    private var pairToken = ""
-    private var pairId = ""
+    // The pairing under way (pairStart): kept as the TV sent them, numbers as numbers.
+    @Volatile private var pairToken = 0L
+    @Volatile private var pairChallenge = 1
+    @Volatile private var pairId = ""
+    @Volatile private var pairHost = ""
 
     fun paired(s: Settings) = s.tvHost.isNotEmpty() && s.tvToken.isNotEmpty()
 
@@ -129,31 +132,59 @@ object Vizio {
         }
     }
 
+    // A pairing reply that was not SUCCESS, in words. CHALLENGE_INCORRECT is the wrong PIN (the PIN stays valid:
+    // type it again); INVALID_PARAMETER is a request the TV can't match to a PIN (none waiting, or a field of the
+    // wrong type: the token sent back as a string gets this whatever the PIN).
+    private fun refused(d: JSONObject): String {
+        val s = d.optJSONObject("STATUS")
+        return when (s?.optString("RESULT").orEmpty()) {
+            "CHALLENGE_INCORRECT" -> "The TV says that PIN is wrong: check it and tap Finish again"
+            "INVALID_PARAMETER" -> "The TV has no PIN waiting (closed or timed out): tap Pair for a new one"
+            "BLOCKED" -> "The TV is pairing something else: close its pop-up, then tap Pair"
+            "" -> "The TV gave no answer it could use: tap Pair again"
+            else -> "The TV said: " + s!!.optString("DETAIL").ifEmpty { s.optString("RESULT") }
+        }
+    }
+
     // Pairing, step 1: the TV shows a PIN on its screen. done: "" or the reason.
     fun pairStart(host: String, done: (String) -> Unit) {
         pool.execute {
             done(runCatching {
-                pairId = "vox-" + java.lang.Long.toHexString(System.nanoTime()).takeLast(8)
+                val id = "vox-" + java.lang.Long.toHexString(System.nanoTime()).takeLast(8)
                 val d = call(host, "PUT", "/pairing/start",
-                    JSONObject().put("DEVICE_ID", pairId).put("DEVICE_NAME", "Vox"), "", 8000)
-                pairToken = d.getJSONObject("ITEM").getString("PAIRING_REQ_TOKEN")
-                ""
+                    JSONObject().put("DEVICE_ID", id).put("DEVICE_NAME", "Vox"), "", 8000)
+                val item = d.optJSONObject("ITEM")
+                if (!ok(d) || item == null || !item.has("PAIRING_REQ_TOKEN")) refused(d)
+                else {
+                    pairToken = item.getLong("PAIRING_REQ_TOKEN") // a number: the TV refuses it back as a string
+                    pairChallenge = item.optInt("CHALLENGE_TYPE", 1)
+                    pairHost = host
+                    pairId = id
+                    ""
+                }
             }.getOrElse { "That address did not answer as a Vizio TV (the TV on, same Wi-Fi?)" })
         }
     }
 
-    // Step 2: the PIN. On success the TV's address and token are kept here.
-    fun pairFinish(settings: Settings, host: String, pin: String, done: (String) -> Unit) {
+    // Step 2: the PIN, to the TV that showed it. On success the TV's address and token are kept here.
+    fun pairFinish(settings: Settings, pin: String, done: (String) -> Unit) {
+        val id = pairId
+        val host = pairHost
+        if (id.isEmpty()) return done("Tap Pair first: the TV then shows a PIN")
+        val body = JSONObject().put("DEVICE_ID", id).put("CHALLENGE_TYPE", pairChallenge)
+            .put("RESPONSE_VALUE", pin.trim()).put("PAIRING_REQ_TOKEN", pairToken)
         pool.execute {
             done(runCatching {
-                val d = call(host, "PUT", "/pairing/pair", JSONObject().put("DEVICE_ID", pairId)
-                    .put("CHALLENGE_TYPE", 1).put("RESPONSE_VALUE", pin.trim())
-                    .put("PAIRING_REQ_TOKEN", pairToken), "", 8000)
-                val token = d.getJSONObject("ITEM").getString("AUTH_TOKEN")
-                settings.tvHost = host
-                settings.tvToken = token
-                ""
-            }.getOrElse { "That PIN did not work: start again" })
+                val d = call(host, "PUT", "/pairing/pair", body, "", 8000)
+                val token = d.optJSONObject("ITEM")?.optString("AUTH_TOKEN").orEmpty()
+                if (!ok(d) || token.isEmpty()) refused(d)
+                else {
+                    settings.tvHost = host
+                    settings.tvToken = token
+                    pairId = ""
+                    ""
+                }
+            }.getOrElse { "The TV did not answer: is it still on, on this Wi-Fi?" })
         }
     }
 

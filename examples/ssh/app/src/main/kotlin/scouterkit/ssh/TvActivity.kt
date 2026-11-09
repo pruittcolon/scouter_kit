@@ -103,10 +103,10 @@ class TvActivity : Activity() {
     }
 
     private fun pairFinish() {
-        val h = host.text.toString().trim()
         val p = pin.text.toString().trim()
         if (p.isEmpty()) return run { status.text = "Type the PIN the TV shows" }
-        Vizio.pairFinish(settings, h, p) { why -> runOnUiThread {
+        status.text = "Sending the PIN…"
+        Vizio.pairFinish(settings, p) { why -> runOnUiThread {
             if (why.isEmpty()) { pin.setText(""); show(); refresh() } else status.text = why
         } }
     }
