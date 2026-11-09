@@ -67,7 +67,7 @@ class RemoteScreen(private val context: Context, val server: Settings.Server, pr
             "${server.name}: show its terminal once to trust the server first"
         } catch (e: Exception) {
             if (released) return
-            "${server.name} screen: ${e.message}"
+            "${server.name} screen: ${Bootstrap.plain(e, server.host, server.port)}"
         }
         Log.i(ScouterService.TAG, "remote screen: $why")
         if (!released) {

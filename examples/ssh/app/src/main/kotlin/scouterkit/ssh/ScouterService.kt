@@ -781,7 +781,7 @@ class ScouterService : Service() {
             else -> {
                 Log.w(TAG, "terminal ${s.name}: ${e?.message}")
                 val refused = (e?.message ?: "").contains("refused", ignoreCase = true)
-                failed(t, if (s.local && refused) "this phone's SSH server is off (type ssh in Termux)" else e?.message ?: "failed")
+                failed(t, if (s.local && refused) "this phone's SSH server is off (type ssh in Termux)" else Bootstrap.plain(e, s.host, s.port))
             }
         }
         refresh() // shown (or its card) if it is the one chosen

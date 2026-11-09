@@ -254,6 +254,21 @@ class Bootstrap(private val vault: Vault) {
     }
 
     companion object {
+        // A connection error in plain words, with where it was going (the cards and the log say it).
+        fun plain(e: Throwable?, host: String, port: Int): String {
+            val m = e?.message ?: return "failed"
+            val where = "$host:$port"
+            return when {
+                m.contains("socket is not established", true) || m.contains("timed out", true) || m.contains("timeout", true) ->
+                    "can't reach $where (is it on, on this Wi-Fi, and the address right?)"
+                m.contains("refused", true) -> "$where refused: its SSH server is not running"
+                e is java.net.UnknownHostException || m.contains("UnknownHost", true) -> "no such host: $host"
+                m.contains("Auth", true) -> "$where did not accept Vox's key"
+                m.contains("unreachable", true) -> "no route to $where (other network?)"
+                else -> m
+            }
+        }
+
         // The connections runShared keeps, one per server ("user@host:port"), and a lock for each.
         private val shared = HashMap<String, com.jcraft.jsch.Session>()
         private val locks = HashMap<String, Any>()
