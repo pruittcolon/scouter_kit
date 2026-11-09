@@ -24,8 +24,8 @@ object Panels {
             "Alt+Q" to "close the screen shown",
         ),
         "Display" to listOf(
-            "Alt+0" to "display off / on",
-            "Alt+Z" to "always on / look-up only",
+            "Alt+0" to "heads-up: look up to see",
+            "Alt+L" to "display off / on",
             "Alt+= / -" to "brighter / dimmer",
             "Alt+S" to "quick settings",
             "Alt+A" to "this help (or hold Alt)",
@@ -46,10 +46,11 @@ object Panels {
             "Alt+K" to "keys: phone / glasses",
             "Alt+X" to "keyboard off / on",
             "Alt+M" to "pointer (arrows, Enter)",
+            "Alt+F" to "Firefox on the TV (tab)",
         ),
         "Phone screen" to listOf(
             "Alt+C" to "share it (taps Start)",
-            "trackpad" to "point, tap, scroll",
+            "trackpad" to "tap, drag, 2-finger slide",
             "Alt+Bksp" to "Back",
             "Alt+H" to "Home",
             "Alt+R" to "Recents",

@@ -79,7 +79,7 @@ class SettingsActivity : Activity() {
         }
 
         val hot = page.section("Keyboard and trackpad", "set_keys", "keyboard",
-            hint = "A keyboard paired with the phone: Alt+arrows walk the sources, Alt+1…9 picks one, Alt+0 the display.")
+            hint = "A keyboard paired with the phone: Alt+arrows walk the sources, Alt+1…9 picks one, Alt+0 heads-up mode.")
         hot.addToggle(toggle("Alt shortcuts", "Off: Alt with these keys reaches the app in front", settings.hotkeys) {
             settings.hotkeys = it
         })
@@ -112,7 +112,7 @@ class SettingsActivity : Activity() {
             hint = "With the keyboard paired, Alt+A shows these on the glasses over whatever is there.")
         keys.addView(text("Quick start: put the glasses on, put the phone away, Alt+arrows to pick a screen. On the " +
             "phone's screen the trackpad is a mouse (tap: click, two fingers: right click and scroll) and the keys " +
-            "type into the app. Alt+S changes what you see, Alt+0 puts the display away and back.", 13f, Ui.MUTED)
+            "type into the app. Alt+S changes what you see, Alt+0 is heads-up mode (look up to see it), Alt+L the display off and on.", 13f, Ui.MUTED)
             .apply { setPadding(0, 0, 0, dp(6)) })
         for ((group, items) in Panels.GROUPS) {
             keys.addView(subhead(group).apply { setPadding(0, dp(10), 0, dp(4)) })

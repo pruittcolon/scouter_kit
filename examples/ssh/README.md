@@ -141,6 +141,12 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   WIDTH x HEIGHT) until stdout closes. They go through the same pipeline as the phone's screen. The width asked
   for is on the Screen tab (640, 960, 1280). Another source in front, the server's screen stays connected (its
   newest image waits undecoded) for 5 minutes, so switching back shows it at once.
+  While it shows, the keyboard and the trackpad work that desktop (`RemoteInput.kt`): a second SSH command runs a
+  small Python program there that types and points through X11's XTEST (Python 3 and libXtst, already on an
+  Ubuntu desktop; X11 only, not Wayland). Keys go with their modifiers as chords (nothing stays held if the glasses
+  switch away); the pointer moves at once on the glasses and follows the laptop's own mouse; click, right click,
+  drag, both wheels. Vox's Alt shortcuts and Ctrl+Left (back to that server's terminal) stay Vox's; Alt+K keeps the
+  keys on the phone.
 - **Transitions** (*Transitions*, Terminal tab, *On the glasses*, on by default; `native/fx.hpp`, `Fx.kt`): a switch plays on the
   glasses in about half a second. The old picture goes the moment it is asked for (about 0.15 s), a label says
   where the glasses are going ("LAPTOP // TERMINAL"), and the new picture comes in once its pixels are on the
@@ -251,8 +257,12 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   puts the 16 x 20 box back from the 1-bpp bitmap and draws the arrow at its new place, a few bytes a move, and
   draws it again after each frame), so it glides at once instead of with the 5 frames a second. It moves in
   glasses pixels at the trackpad's speed, through the picture's zoom, crop and turn (`Locate`, `Shows`), and stays
-  on the part that shows. A click taps the phone there, a right click is a long press, two fingers and the wheel
-  scroll the app as swipes (queued, so a quick stroke is not cut short) (VoxKeys: Android's accessibility
+  on the part that shows. The trackpad is a finger at the arrow (`Finger.kt`: one accessibility stroke continued
+  piece by piece): the button puts it down and lifting the button lifts it, so a click taps, held still it is a
+  long press, and moved it drags (text selection, sliders, a list or the notifications pulled down). Two-finger
+  swipes (a keyboard's trackpad sends them as its two wheels) slide the page under the arrow both ways, as a
+  finger would, and a quick one lets go at its speed so the page flings on; a slide that reaches the screen's edge
+  puts the finger down again where it started. A right click is a long press (VoxKeys: Android's accessibility
   gestures; *Vox* must be on in Accessibility). Alt+Backspace is Back, Alt+H Home, Alt+R Recents, Alt+N the
   notifications. Typing goes to the phone's app as usual (the pointer off: Enter and Space are its clicks while
   it is on). *Pocket mode* (Settings, *Keyboard and trackpad*, on by default) keeps the phone awake (dimmed) while
@@ -293,9 +303,9 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   comes back.
 - **Closing**: Alt+Q closes the source shown (a terminal's connection, the phone's sharing, a server's screen) and
   the glasses go to the next one still open; a closed one stays closed until it is chosen again.
-- **Look-up only**: Alt+Z (or Alt+L) switches between *Always visible* and look-up only (the terminal shows when
+- **Look-up only** (heads-up mode): Alt+0 (or Alt+Z) switches between *Always visible* and look-up only (the terminal shows when
   looking up): a note says which, then the terminal fades away with the head level (or stays). The left TouchBar
-  held 3 s turns *Always visible* off too; only the app or Alt+Z turns it back on, so a stray touch cannot. The
+  held 3 s turns *Always visible* off too; only the app or Alt+0 / Alt+Z turns it back on, so a stray touch cannot. The
   left hold's own action comes when it is let go. Each arm checks every 5 s that the phone is still linked; while
   its link is down the head decides there, and once it is back *Always visible* holds again (the arm takes it back
   itself: the phone never learns it was lost).
@@ -318,7 +328,7 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   each finding means, and keeps a copy in Android/data/<package>/files/caselog.txt. Android offers Vox when such
   a chip is plugged in; the screen looks at the port every second and lists what Android sees there (each
   device's chip and interfaces, bytes received), so a charge-only cable or a wrong set-up shows as such.
-- **Display off and on** (Alt+0): the CRT close plays to its end before the panels go off (`PanelsOffAfterFx`), and
+- **Display off and on** (Alt+L): the CRT close plays to its end before the panels go off (`PanelsOffAfterFx`), and
   the picture opens from the middle when it comes back.
 
 - **Game score** (dashboard widget *Game score*, style *Game day*; `Sports` in `Widgets.kt`): an NFL team's game
@@ -449,6 +459,9 @@ with the app in the back.
   back; the glasses say which. Pair once in Settings, TV remote (Find and pair the TV: it looks over the whole
   Wi-Fi network, then type the PIN the TV shows). The TV's address and token stay in Vox's private settings on the
   phone. If the router gives the TV a new address, the next key finds it again by itself.
+- **Alt+F** (or *Firefox on the TV* on the TV page) runs the phone's own `phone` command, if its Linux has one (a
+  mirror of one app to the TV), in a tab named tv of the phone's terminal (127.0.0.1), or a tmux session tv when
+  that is not running; closing the tab or *Stop it* (`phone stop`) ends it.
 - **Alt+B** is low battery: the glasses at 10% brightness, and again back to the level they had.
 - **Alt+D** (or **Preview on the glasses** on the main screen) is a short tour: the phone's screen, the phone's
   terminal, the laptop's screen, the laptop's terminal (one that isn't set up is left out), each about two seconds

@@ -54,6 +54,18 @@ class TvActivity : Activity() {
         remote.addView(row(key("Vol −", "VOL_DOWN"), key("Mute", "MUTE"), key("Vol +", "VOL_UP")))
         remote.addView(row(key("Ch −", "CH_DOWN"), button("Play / pause") { Vizio.playPause(settings) { say(it) } }, key("Ch +", "CH_UP")))
         page.addView(remote)
+
+        // The phone's own mirror to the TV (its Linux's `phone` command), as a tab of the phone's terminal.
+        val firefox = card("Firefox on the TV", "Firefox by itself on the TV, worked from the phone (the phone " +
+            "command in this phone's Linux). It runs in a tab named tv of the phone's terminal; closing the tab stops " +
+            "it. Alt+F on the keyboard too.")
+        fun mirror(what: String) {
+            if (!ScouterService.running) return run { status.text = "Start Vox first (Glasses tab)" }
+            ScouterService.send(this, ScouterService.ACTION_PANEL, "do" to what)
+            status.text = if (what == "tvstop") "Stopping the TV mirror" else "Putting Firefox on the TV…"
+        }
+        firefox.addView(row(button("Firefox on the TV", 0) { mirror("tvtab") }, button("Stop it") { mirror("tvstop") }))
+        page.addView(firefox)
         show()
     }
 

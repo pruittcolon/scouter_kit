@@ -24,6 +24,22 @@ object Tabs {
         "w=$(tmux list-windows -t $t -F '#{window_index} #{pane_current_command}' | awk '$2 ~ /$pattern/ {print $1; exit}'); " +
             "if [ -n \"\$w\" ]; then tmux select-window -t $t:\$w; else tmux new-window -t $t: -n $name '$cmd'; fi"
 
+    private const val PATH = "PATH=\"\$HOME/.local/bin:\$HOME/bin:/usr/local/bin:\$PATH\"; export PATH; "
+
+    // The phone's TV mirror (its `phone` command: Firefox by itself on the TV) in a tab named tv of `session`:
+    // switched to when it is there, else opened; in a session "tv" of its own when `session` is not running.
+    // Closing the tab stops the mirror (it ends on the hangup).
+    fun tv(session: String): String {
+        val t = "'" + session.replace("'", "") + "'"
+        // Its full path: tmux starts the tab with tmux's own PATH, which may lack ~/.local/bin.
+        return PATH + "p=\$(command -v phone || echo phone); if tmux has-session -t $t 2>/dev/null; then " +
+            "w=$(tmux list-windows -t $t -F '#{window_index} #{window_name}' | awk '$2 == \"tv\" {print $1; exit}'); " +
+            "if [ -n \"\$w\" ]; then tmux select-window -t $t:\$w; else tmux new-window -t $t: -n tv \"\$p\"; fi; " +
+            "else tmux has-session -t tv 2>/dev/null || tmux new-session -d -s tv -n tv \"\$p\"; fi; echo ok"
+    }
+
+    fun tvStop(): String = PATH + "phone stop"
+
     // The shell command for an action ("new", "claude", "cursor", "next", "prev", "close", "close:N", "select:N",
     // "mouse", "mouse_off"), or null. Closing never closes the session's first tab.
     fun command(action: String, session: String): String? {

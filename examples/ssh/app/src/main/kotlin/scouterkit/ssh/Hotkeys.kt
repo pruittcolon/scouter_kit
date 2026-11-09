@@ -15,10 +15,11 @@ import android.view.accessibility.AccessibilityEvent
 
 // A keyboard's shortcuts (a Bluetooth keyboard paired with the phone): Alt with an arrow moves around the
 // sources as a grid (left and right: this phone, then each other server; up and down: terminal, screen),
-// Alt+1 ... Alt+9 picks Home's source of that number, Alt+0 turns the display off or on, Alt+Space (or Alt+V)
+// Alt+1 ... Alt+9 picks Home's source of that number, Alt+0 heads-up mode (look-up only), Alt+L the display off
+// or on, Alt+Space (or Alt+V)
 // listens for a voice command, Alt+M the pointer (then arrows, Enter, Escape), Alt+T / [ / ] / W the tabs,
 // Alt+A the help on the glasses (every hotkey: Panels.GROUPS; also while Alt is held by itself), Alt+S the quick
-// settings, Alt+Z always on / look-up only (Alt+L too), Alt+= / - the brightness, Alt+P / , / . the music, Alt+X
+// settings, Alt+Z (as Alt+0) always on / look-up only, Alt+= / - the brightness, Alt+P / , / . the music, Alt+X
 // the keyboard off / on, Alt+C the phone's screen (shared first, Android's question answered by VoxKeys). MainActivity takes them while Vox is in front; VoxKeys (an
 // accessibility service the user turns on) everywhere.
 object Hotkeys {
@@ -27,7 +28,17 @@ object Hotkeys {
     fun handle(context: Context, e: KeyEvent): Boolean {
         if (keyboardSwitch(context, e)) return true
         if (shortcut(context, e)) return true
+        if (toLaptop(context, e)) return RemoteInput.key(e)
         return toGlasses(context, e) && Keyboard.send(e)
+    }
+
+    // A server's screen on the glasses (the laptop's): the keyboard types there (RemoteInput), as the terminal
+    // takes it while it shows; Alt+K keeps it on the phone. Vox's own shortcuts go first, as ever.
+    private fun toLaptop(context: Context, e: KeyEvent): Boolean {
+        if (!Keyboard.physical(e) || Session.keysToPhone || !ScouterService.running) return false
+        if (Session.glasses != "ready" || Session.blank || Session.showing != Settings.SCREEN || Session.tunes) return false
+        if (!Session.screenSource.startsWith("screen:") || RemoteInput.current?.usable != true) return false
+        return Settings(context).keysToGlasses
     }
 
     // The glasses' source is the terminal: a keyboard's keys are its, whatever app is in front on the phone and
@@ -203,17 +214,18 @@ object Hotkeys {
             if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0) VoxKeys.global(nav)
             return true
         }
-        // Alt+A the help, Alt+S the quick settings, Alt+Z (or L) always on / look-up only, Alt+= / - brighter /
+        // Alt+A the help, Alt+S the quick settings, Alt+0 (or Z) heads-up mode: always on / look-up only, Alt+= / - brighter /
         // dimmer, Alt+P play or pause, Alt+, / . the track before / after.
         val panel = when (e.keyCode) {
             KeyEvent.KEYCODE_A -> Panels.HELP
             KeyEvent.KEYCODE_S -> Panels.SETTINGS
-            KeyEvent.KEYCODE_Z, KeyEvent.KEYCODE_L -> "lookup"
+            KeyEvent.KEYCODE_0, KeyEvent.KEYCODE_Z -> "lookup"
             KeyEvent.KEYCODE_EQUALS, KeyEvent.KEYCODE_PLUS, KeyEvent.KEYCODE_NUMPAD_ADD -> "bright:1"
             KeyEvent.KEYCODE_MINUS, KeyEvent.KEYCODE_NUMPAD_SUBTRACT -> "bright:-1"
             KeyEvent.KEYCODE_P -> "media:toggle"
             KeyEvent.KEYCODE_B -> "lowbat"
             KeyEvent.KEYCODE_Y -> "tv"
+            KeyEvent.KEYCODE_F -> "tvtab"
             KeyEvent.KEYCODE_D -> "demo"
             KeyEvent.KEYCODE_COMMA -> "media:prev"
             KeyEvent.KEYCODE_PERIOD -> "media:next"
@@ -268,7 +280,7 @@ object Hotkeys {
             KeyEvent.KEYCODE_DPAD_RIGHT -> "right"
             KeyEvent.KEYCODE_DPAD_UP -> "up"
             KeyEvent.KEYCODE_DPAD_DOWN -> "down"
-            KeyEvent.KEYCODE_0 -> Shortcuts.DISPLAY
+            KeyEvent.KEYCODE_L -> Shortcuts.DISPLAY
             KeyEvent.KEYCODE_SPACE, KeyEvent.KEYCODE_V -> LISTEN
             in KeyEvent.KEYCODE_1..KeyEvent.KEYCODE_9 -> (e.keyCode - KeyEvent.KEYCODE_0).toString()
             else -> return false
@@ -351,6 +363,8 @@ class VoxKeys : AccessibilityService() {
     private var lastX = Float.NaN
     private var lastY = Float.NaN
     private var sawButton = false // the device sends BUTTON_PRESS (else DOWN / UP are its clicks)
+    private var downClicked = false // this press went as a click on its DOWN already (before BUTTON_PRESS was seen)
+    private var wheelSeen = false // the first wheel event, logged
 
     override fun onMotionEvent(event: MotionEvent) {
         if (!event.isFromSource(InputDevice.SOURCE_MOUSE)) return
@@ -377,21 +391,41 @@ class VoxKeys : AccessibilityService() {
         when {
             twoFinger -> pad(Trackpad.SCROLL, event.getAxisValue(MotionEvent.AXIS_GESTURE_SCROLL_X_DISTANCE),
                 event.getAxisValue(MotionEvent.AXIS_GESTURE_SCROLL_Y_DISTANCE))
+            // A keyboard's trackpad (a mouse to Android) sends two-finger swipes as its wheels: up / down and
+            // sideways.
             event.actionMasked == MotionEvent.ACTION_SCROLL -> {
                 val v = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
-                if (v != 0f) pad(Trackpad.WHEEL, 0f, v)
+                val h = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
+                if (!wheelSeen && (v != 0f || h != 0f)) {
+                    wheelSeen = true
+                    android.util.Log.i(ScouterService.TAG, "trackpad: wheel (v $v, h $h)")
+                }
+                if (v != 0f || h != 0f) pad(Trackpad.WHEEL, h, v)
             }
             event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS -> {
                 sawButton = true
+                if (downClicked) return // its DOWN went as the click already
                 pad(when (event.actionButton) {
                     MotionEvent.BUTTON_SECONDARY -> Trackpad.RIGHT
                     else -> Trackpad.CLICK
                 }, 0f, 0f)
             }
-            event.actionMasked == MotionEvent.ACTION_DOWN && !sawButton ->
+            event.actionMasked == MotionEvent.ACTION_BUTTON_RELEASE -> {
+                downClicked = false
+                pad(Trackpad.RELEASE, if (event.actionButton == MotionEvent.BUTTON_SECONDARY) 1f else 0f, 0f)
+            }
+            event.actionMasked == MotionEvent.ACTION_DOWN && !sawButton -> {
+                downClicked = true
                 pad(if (event.buttonState and MotionEvent.BUTTON_SECONDARY != 0) Trackpad.RIGHT else Trackpad.CLICK, 0f, 0f)
-            event.actionMasked == MotionEvent.ACTION_HOVER_MOVE || event.actionMasked == MotionEvent.ACTION_MOVE ->
-                if (dx != 0f || dy != 0f) pad(Trackpad.MOVE, dx, dy)
+            }
+            event.actionMasked == MotionEvent.ACTION_UP && !sawButton -> {
+                downClicked = false
+                pad(Trackpad.RELEASE, if (event.buttonState and MotionEvent.BUTTON_SECONDARY != 0) 1f else 0f, 0f)
+            }
+            event.actionMasked == MotionEvent.ACTION_UP -> downClicked = false
+            // Moved with the button held (MOVE) or not (HOVER_MOVE).
+            event.actionMasked == MotionEvent.ACTION_MOVE -> if (dx != 0f || dy != 0f) pad(Trackpad.DRAG, dx, dy)
+            event.actionMasked == MotionEvent.ACTION_HOVER_MOVE -> if (dx != 0f || dy != 0f) pad(Trackpad.MOVE, dx, dy)
         }
     }
 
@@ -469,14 +503,19 @@ class VoxKeys : AccessibilityService() {
     // What the trackpad did while taken (onTrackpad's kind).
     object Trackpad {
         const val MOVE = 0  // dx, dy: device pixels
-        const val CLICK = 1
+        const val CLICK = 1 // the button pressed (RELEASE when it goes up)
         const val RIGHT = 2
-        const val WHEEL = 3 // dy: notches, positive up
+        const val WHEEL = 3 // dy: notches, positive up; dx: sideways notches, positive right
         const val SCROLL = 4 // dy: a two-finger swipe's pixels, positive: the fingers went down (scrolls up)
+        const val RELEASE = 5 // dx: 0 the main button, 1 the right one
+        const val DRAG = 6 // as MOVE, with the button held
     }
 
     companion object {
         @Volatile private var instance: VoxKeys? = null
+
+        // The running service (Finger's gestures), or null while it is off.
+        fun service(): AccessibilityService? = instance
         @Volatile var onMouse: ((Float, Float) -> Unit)? = null // where Android's pointer is, in screen pixels
         // The trackpad's events while taken (Trackpad's kind, dx, dy), on the accessibility thread.
         @Volatile var onTrackpad: ((Int, Float, Float) -> Unit)? = null
@@ -497,6 +536,7 @@ class VoxKeys : AccessibilityService() {
         // A tap (long: held 650 ms, a right click) at x, y of the phone's screen, in pixels. False: VoxKeys is off.
         fun tap(x: Float, y: Float, long: Boolean = false): Boolean {
             val s = instance ?: return false
+            Finger.drop()
             val path = Path().apply { moveTo(x.coerceAtLeast(0f), y.coerceAtLeast(0f)) }
             val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, if (long) 650 else 40)).build()
             return s.dispatchGesture(g, null, null)
@@ -506,6 +546,7 @@ class VoxKeys : AccessibilityService() {
         // started where the whole swipe fits on the screen; done (from the main thread) when it has run or was cut.
         fun scroll(x: Float, y: Float, dy: Float, height: Float, done: (() -> Unit)? = null, dx: Float = 0f, width: Float = 0f): Boolean {
             val s = instance ?: return false
+            Finger.drop()
             val d = dy.coerceIn(-(height - 4f), height - 4f)
             val from = if (d > 0) y.coerceIn(d + 2f, height - 2f) else y.coerceIn(2f, height - 2f + d)
             val to = (from - d).coerceIn(1f, height - 2f)

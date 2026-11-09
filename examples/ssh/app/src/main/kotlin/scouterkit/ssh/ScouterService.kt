@@ -1023,7 +1023,7 @@ class ScouterService : Service() {
     // (their own arrow, drawn by the arms: Android leaves its pointer out of the shared screen); otherwise the phone's.
     private fun trackpadMode() {
         VoxKeys.capture(!ended && settings.trackpad && glassesWith != null && Session.glasses == "ready" && !Session.blank &&
-            (settings.show == Settings.TERMINAL || onPhone()) && !Session.tunes)
+            (settings.show == Settings.TERMINAL || onPhone() || onLaptop()) && !Session.tunes)
         pocket()
     }
 
@@ -1061,10 +1061,16 @@ class ScouterService : Service() {
     // pointer is off only shows it.
     private fun trackpad(kind: Int, dx: Float, dy: Float) {
         if (Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS) return panelTrackpad(kind, dy)
+        if (onLaptop()) return laptopTrackpad(kind, dx, dy)
         if (onPhone()) return phoneTrackpad(kind, dx, dy)
+        if (pressed || sliding) { // the phone's screen went from the glasses with a finger still on it
+            pressed = false
+            slideLift()
+            Finger.release()
+        }
         if (settings.show != Settings.TERMINAL) return
         when (kind) {
-            VoxKeys.Trackpad.MOVE -> {
+            VoxKeys.Trackpad.MOVE, VoxKeys.Trackpad.DRAG -> {
                 val k = glide(dx, dy)
                 if (!Session.pointer) pointerOn()
                 moveBy(dx * k, dy * k)
@@ -1074,7 +1080,7 @@ class ScouterService : Service() {
                 if (!Session.pointer) return pointer("toggle")
                 pointer(if (kind == VoxKeys.Trackpad.RIGHT) "right" else "click")
             }
-            VoxKeys.Trackpad.WHEEL -> scroll(if (dy > 0) -1 else 1, kotlin.math.abs(dy).toInt().coerceIn(1, 5))
+            VoxKeys.Trackpad.WHEEL -> if (dy != 0f) scroll(if (dy > 0) -1 else 1, kotlin.math.abs(dy).toInt().coerceIn(1, 5))
             VoxKeys.Trackpad.SCROLL -> {
                 swipe += dy
                 val step = 28f
@@ -1096,34 +1102,190 @@ class ScouterService : Service() {
         return settings.trackpadSpeed.coerceIn(1, 10) / 5f * 0.9f * (1f + accel * minOf(1.5f, v / 30f))
     }
 
-    // The trackpad on the phone's screen: the arms' arrow glides over the picture as over the terminal (the same
-    // speed, in glasses pixels), a click taps where it points, a right click is a long press, the wheel and
-    // two-finger swipes scroll the app (swipes on the phone). The first click only shows the arrow.
-    private var phoneSwipe = 0f
+    // The trackpad on the phone's screen, as a finger there (Finger): the arms' arrow glides over the picture as over
+    // the terminal (the same speed, in glasses pixels); the button puts a finger down where it points and lifts it
+    // when let go (a click taps, held still it is a long press, moved it drags: text, sliders, a list pulled
+    // down); a right click is a long press; two-finger swipes (the trackpad's wheels, both ways) slide the page under
+    // the arrow as a finger would, a quick one flinging it on. The first click only shows the arrow.
+    private var pressed = false // the button down: a finger held on the phone (Finger)
+    private var sliding = false // a two-finger swipe under way: a finger held for it
+    private val slideMoves = ArrayDeque<FloatArray>() // its last moves: time (ms), dx, dy
+    private val slideEnd = Runnable { slideLift() }
+
     private fun phoneTrackpad(kind: Int, dx: Float, dy: Float) {
         wakeForInput()
         val natural = if (settings.scrollNatural) 1f else -1f
-        val speed = settings.scrollSpeed.coerceIn(1, 10) / 5f
+        val speed = settings.scrollSpeed.coerceIn(1, 10) / 3f
         when (kind) {
-            VoxKeys.Trackpad.MOVE -> {
+            VoxKeys.Trackpad.MOVE, VoxKeys.Trackpad.DRAG -> {
+                if (kind == VoxKeys.Trackpad.MOVE && pressed) { // its release went missing
+                    pressed = false
+                    Finger.release()
+                }
                 if (!Session.pointer) {
                     Session.pointer = true
                     Session.pointerKeys = false
                 }
                 val k = glide(dx, dy)
+                val x0 = cursorX
+                val y0 = cursorY
                 cursorBy(dx * k, dy * k)
+                if (pressed) {
+                    val b = screenBounds()
+                    Finger.move((cursorX - x0) / 10000f * (b.width() - 1), (cursorY - y0) / 10000f * (b.height() - 1))
+                }
             }
-            VoxKeys.Trackpad.CLICK, VoxKeys.Trackpad.RIGHT -> {
+            VoxKeys.Trackpad.CLICK -> {
                 if (!Session.pointer) return pointer("toggle")
-                pointer(if (kind == VoxKeys.Trackpad.RIGHT) "right" else "click")
+                if (sliding) slideLift()
+                val b = screenBounds()
+                pressed = Finger.press(cursorX / 10000f * (b.width() - 1), cursorY / 10000f * (b.height() - 1),
+                    b.width(), b.height(), slide = false)
+                Session.tabs = if (pressed) "" else "clicks on the phone need Vox's keyboard shortcuts (Android Settings: Accessibility, Vox)"
+                showCursor()
+            }
+            VoxKeys.Trackpad.RIGHT -> {
+                if (!Session.pointer) return pointer("toggle")
+                pointer("right")
                 return
             }
-            // A notch: an eighth of the screen (positive dy: the wheel turned up, the page back).
-            VoxKeys.Trackpad.WHEEL -> phoneScroll(-dy * screenBounds().height() / 8f * speed)
-            // The fingers going down (natural) bring the page down: back.
-            VoxKeys.Trackpad.SCROLL -> phoneScroll(-dy * 3f * speed * natural, -dx * 3f * speed * natural)
+            VoxKeys.Trackpad.RELEASE -> if (pressed && dx == 0f) {
+                pressed = false
+                Finger.release()
+            }
+            // A wheel's notch: as far as the app's own wheel scrolling goes. Turned up (natural), the page comes
+            // down: a finger moving down; turned right, a finger moving left.
+            VoxKeys.Trackpad.WHEEL -> {
+                val c = android.view.ViewConfiguration.get(this)
+                slide(-dx * c.scaledHorizontalScrollFactor * speed * natural, dy * c.scaledVerticalScrollFactor * speed * natural)
+            }
+            // A touchpad's own two-finger swipe (pixels; positive: the fingers went down): the finger goes with them.
+            VoxKeys.Trackpad.SCROLL -> slide(dx * 2f * speed * natural, dy * 2f * speed * natural)
         }
         Session.changed()
+    }
+
+    // A two-finger swipe's move: a finger put down at the arrow (the first), moved; lifted when no more come.
+    private fun slide(fx: Float, fy: Float) {
+        if (pressed) return
+        val now = SystemClock.uptimeMillis().toFloat()
+        if (!sliding) {
+            val b = screenBounds()
+            if (!Finger.press(cursorX / 10000f * (b.width() - 1), cursorY / 10000f * (b.height() - 1), b.width(), b.height(), slide = true)) {
+                Session.tabs = "scrolling the phone needs Vox's keyboard shortcuts (Android Settings: Accessibility, Vox)"
+                return
+            }
+            sliding = true
+            slideMoves.clear()
+        }
+        Finger.move(fx, fy)
+        slideMoves.addLast(floatArrayOf(now, fx, fy))
+        while (slideMoves.size > 1 && now - slideMoves.first()[0] > SLIDE_SPEED_MS) slideMoves.removeFirst()
+        work.removeCallbacks(slideEnd)
+        work.postDelayed(slideEnd, SLIDE_IDLE_MS)
+    }
+
+    // The swipe ended (nothing for SLIDE_IDLE_MS): the finger lifts at the speed of its last moves, so a quick
+    // swipe flings the page on and a slow one stops it where it is.
+    private fun slideLift() {
+        work.removeCallbacks(slideEnd)
+        if (!sliding) return
+        sliding = false
+        val last = slideMoves.lastOrNull()?.get(0) ?: 0f
+        var sx = 0f
+        var sy = 0f
+        var first = last
+        for (m in slideMoves) if (last - m[0] <= SLIDE_SPEED_MS) {
+            sx += m[1]
+            sy += m[2]
+            first = minOf(first, m[0])
+        }
+        slideMoves.clear()
+        val span = (last - first) + 12f // the first move's own time before it came
+        val vx = sx / span
+        val vy = sy / span
+        if (kotlin.math.hypot(vx, vy) < 0.4f) Finger.release() else Finger.release(vx, vy)
+    }
+
+    // ------------------------------------------------ the laptop's screen: its keyboard and mouse
+
+    // A server's screen on the glasses (the laptop's): the keyboard and the trackpad work its desktop (RemoteInput).
+    private fun onLaptop() = settings.show == Settings.SCREEN && Session.screenSource.startsWith("screen:") &&
+        remote?.key == Session.screenSource
+
+    @Volatile private var laptopIn: RemoteInput? = null
+    private var laptopButton = 0 // the laptop's button held (1 left, 3 right), 0 none
+    private var wheelV = 0f // wheel notches not sent yet (fractions of the trackpad's fine steps)
+    private var wheelH = 0f
+
+    // The input link to the server whose screen shows, started with it; null with none.
+    private fun laptopInput(): RemoteInput? {
+        val r = remote ?: return null
+        laptopIn?.let { if (it.server.id == r.server.id && !it.ended) return it }
+        laptopIn?.close()
+        val i = RemoteInput(this, r.server) { x, y ->
+            work.post { if (onLaptop() && laptopButton == 0) { cursorX = x.toFloat(); cursorY = y.toFloat() } }
+        }
+        laptopIn = i
+        RemoteInput.current = i
+        i.start()
+        return i
+    }
+
+    private fun laptopInputStop() {
+        laptopIn?.close()
+        laptopIn = null
+        RemoteInput.current = null
+        laptopButton = 0
+    }
+
+    // Glasses pixels to the picture as the phone's cursor (cursorBy), sent as the laptop's pointer; the arms draw
+    // the arrow at once and leave it after a moment (the laptop's own pointer is in its picture by then).
+    private val laptopArrowOff = Runnable { if (onLaptop()) hideCursor() }
+
+    private fun laptopTrackpad(kind: Int, dx: Float, dy: Float) {
+        val input = laptopInput() ?: return
+        if (input.ended) return
+        val natural = if (settings.scrollNatural) 1f else -1f
+        val speed = settings.scrollSpeed.coerceIn(1, 10) / 3f
+        when (kind) {
+            VoxKeys.Trackpad.MOVE, VoxKeys.Trackpad.DRAG -> {
+                val k = glide(dx, dy)
+                cursorBy(dx * k, dy * k)
+                input.send("p ${cursorX.toInt()} ${cursorY.toInt()}")
+                work.removeCallbacks(pointerIdle)
+                work.removeCallbacks(laptopArrowOff)
+                work.postDelayed(laptopArrowOff, 1500)
+            }
+            VoxKeys.Trackpad.CLICK, VoxKeys.Trackpad.RIGHT -> {
+                val b = if (kind == VoxKeys.Trackpad.RIGHT) 3 else 1
+                if (laptopButton != 0 && laptopButton != b) input.send("b $laptopButton 0")
+                laptopButton = b
+                input.send("p ${cursorX.toInt()} ${cursorY.toInt()}")
+                input.send("b $b 1")
+            }
+            VoxKeys.Trackpad.RELEASE -> {
+                val b = if (dx != 0f) 3 else 1
+                input.send("b $b 0")
+                if (laptopButton == b) laptopButton = 0
+            }
+            // Turned up (natural), the page comes down: X's button 4; right: 7.
+            VoxKeys.Trackpad.WHEEL, VoxKeys.Trackpad.SCROLL -> {
+                if (kind == VoxKeys.Trackpad.WHEEL) {
+                    wheelV += dy * natural * speed
+                    wheelH += dx * natural * speed
+                } else { // a touchpad's swipe in pixels: the fingers going down bring the page down
+                    wheelV += dy / 40f * natural * speed
+                    wheelH -= dx / 40f * natural * speed
+                }
+                val v = wheelV.toInt()
+                val h = wheelH.toInt()
+                if (v != 0) input.send("w ${if (v > 0) 4 else 5} ${kotlin.math.abs(v)}")
+                if (h != 0) input.send("w ${if (h > 0) 7 else 6} ${kotlin.math.abs(h)}")
+                wheelV -= v
+                wheelH -= h
+            }
+        }
     }
 
     // The cursor by (gx, gy) glasses pixels: through the picture's scale and turn to the phone's screen, kept on
@@ -1298,7 +1460,7 @@ class ScouterService : Service() {
     // ------------------------------------------------ panels and hotkeys
 
     // A hotkey (Hotkeys, ACTION_PANEL): "help" (Alt+A), "settings" (Alt+S), "key:K" (up, down, left, right, enter,
-    // esc, space while a panel is open), "lookup" (Alt+Z / Alt+L), "bright:1" / "bright:-1" (Alt+= / -),
+    // esc, space while a panel is open), "lookup" (Alt+0 / Alt+Z: heads-up mode), "bright:1" / "bright:-1" (Alt+= / -),
     // "media:toggle", "media:prev", "media:next" (Alt+P, Alt+, / .), "althold:on" / "althold:off" (Alt held by
     // itself: the help while it is held, unless a panel is open already), "keys:off" / "keys:on" (Alt+X), "share"
     // (Alt+C: the phone's screen, shared first if it is not).
@@ -1321,6 +1483,8 @@ class ScouterService : Service() {
             what == "lowbat" -> lowBattery()
             what == "demo" -> if (Session.demo) demoStop("Preview stopped") else demoStart()
             what == "tv" -> tvRemote()
+            what == "tvtab" -> tvTab()
+            what == "tvstop" -> tvTab(stop = true)
             what.startsWith("tv:") -> tvKey(what.removePrefix("tv:"))
             what.startsWith("bright:") -> bright(what.removePrefix("bright:").toIntOrNull() ?: 0)
             what.startsWith("media:") -> {
@@ -1405,7 +1569,7 @@ class ScouterService : Service() {
     private fun panelTrackpad(kind: Int, dy: Float) {
         when (kind) {
             VoxKeys.Trackpad.CLICK, VoxKeys.Trackpad.RIGHT -> panelClose()
-            VoxKeys.Trackpad.WHEEL -> panelKey(if (dy > 0) "up" else "down")
+            VoxKeys.Trackpad.WHEEL -> if (dy != 0f) panelKey(if (dy > 0) "up" else "down")
             VoxKeys.Trackpad.SCROLL -> {
                 panelSwipe += dy
                 while (kotlin.math.abs(panelSwipe) >= 40f) {
@@ -1462,14 +1626,14 @@ class ScouterService : Service() {
         refresh()
     }
 
-    // Alt+Z / Alt+L: the terminal only while looking up (it fades away with the head level), or always. A note says which
+    // Alt+0 / Alt+Z, heads-up mode: the terminal only while looking up (it fades away with the head level), or always. A note says which
     // (the terminal shows for it, then goes by the new rule).
     private fun lookUpOnly() {
         settings.phone = true
         settings.phoneForce = !settings.phoneForce
         Log.i(TAG, "look-up only: ${!settings.phoneForce}")
         refresh()
-        note(if (settings.phoneForce) "Always on" else "Look-up only: look up to see it")
+        note(if (settings.phoneForce) "Always on" else "Heads-up: look up to see it")
     }
 
     // ------------------------------------------------ preview mode
@@ -1762,6 +1926,7 @@ class ScouterService : Service() {
                     render(Settings.TERMINAL) // its card ("Starting…") until its first image
                 } else render(if (remote!!.images > 0) Settings.SCREEN else Settings.TERMINAL)
                 remote?.poke() // kept connected: its picture now
+                laptopInput() // its keyboard and mouse
                 update(screen = "starting")
                 work.removeCallbacks(screenTicker)
                 work.postDelayed(screenTicker, 1000)
@@ -1789,6 +1954,8 @@ class ScouterService : Service() {
 
     private fun parkRemote() {
         if (Session.screenSource.startsWith("screen:")) Session.screenSource = ""
+        laptopIn?.send("r") // no button left held there
+        laptopButton = 0
         if (remote == null) return
         work.removeCallbacks(remotePark)
         work.postDelayed(remotePark, PARK_MS)
@@ -1796,6 +1963,7 @@ class ScouterService : Service() {
 
     private fun stopRemote() {
         work.removeCallbacks(remotePark)
+        laptopInputStop()
         remote?.release()
         remote = null
         Session.remote = ""
@@ -1811,6 +1979,7 @@ class ScouterService : Service() {
     private fun remoteEnded(r: RemoteScreen, why: String) {
         if (remote !== r) return
         remote = null
+        laptopInputStop()
         Session.remote = ""
         Log.w(TAG, "remote screen: $why")
         remoteWhy = why
@@ -2248,6 +2417,27 @@ class ScouterService : Service() {
                     Session.tabList = list
                     dash()
                 }
+            }
+        }.start()
+    }
+
+    // Alt+F (and the TV page's button): Firefox by itself on the TV, as the phone's `phone` command does it (the
+    // mirror to the Vizio, in this phone's own Linux), in a tab "tv" of the phone's terminal; closing that tab, or
+    // stop, ends it.
+    private fun tvTab(stop: Boolean = false) {
+        val s = settings.servers().firstOrNull { it.host == "127.0.0.1" || it.host == "localhost" }
+        if (s == null) {
+            note("TV: needs the phone's own terminal (127.0.0.1)")
+            return
+        }
+        val cmd = if (stop) Tabs.tvStop() else Tabs.tv(Tabs.session(s) ?: "claude")
+        note(if (stop) "TV: stopping" else "TV: Firefox on the TV")
+        Thread {
+            val r = runCatching { Bootstrap(vault).runShared(s.host, s.port, s.user, cmd) }
+            work.post {
+                r.exceptionOrNull()?.let { note("TV: " + Bootstrap.plain(it, s.host, s.port)) }
+                Log.i(TAG, "tv tab: " + (r.exceptionOrNull()?.message ?: r.getOrNull()?.trim()?.take(120)))
+                if (!stop) fetchTabs()
             }
         }.start()
     }
@@ -3023,6 +3213,8 @@ class ScouterService : Service() {
         const val ACTION_STOP_SHARING = "scouterkit.ssh.STOP_SHARING" // screen sharing ends
         const val LOW_BRIGHTNESS = 4 // a tenth of 42
         const val TV_IDLE_MS = 5 * 60_000L
+        const val SLIDE_IDLE_MS = 90L // a two-finger swipe ends when its wheels are still this long
+        const val SLIDE_SPEED_MS = 80f // its speed at the end: over its last moves this long
         const val CAR_GONE_MS = 20_000L
         const val ACTION_DISPLAY = "scouterkit.ssh.DISPLAY" // the display on / off (EXTRA_ON, else the other way)
         const val ACTION_SOURCE = "scouterkit.ssh.SOURCE" // a source on the glasses (Shortcuts.EXTRA: a key, next, prev)

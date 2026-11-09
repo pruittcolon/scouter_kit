@@ -38,8 +38,10 @@ class Bootstrap(private val vault: Vault) {
     }
 
     // A command's output as it comes (a server's screen, RemoteScreen); close() ends the command and the session.
+    // output: the command's input (stream(..., input = true); else null).
     class Stream(private val session: com.jcraft.jsch.Session, private val channel: ChannelExec,
-                 val input: java.io.InputStream, private val err: java.io.ByteArrayOutputStream) : java.io.Closeable {
+                 val input: java.io.InputStream, private val err: java.io.ByteArrayOutputStream,
+                 val output: java.io.OutputStream? = null) : java.io.Closeable {
         val errors get() = err.toString(Charsets.UTF_8.name()).trim()
         val exitStatus get() = channel.exitStatus
         override fun close() {
@@ -48,21 +50,22 @@ class Bootstrap(private val vault: Vault) {
         }
     }
 
-    fun stream(host: String, port: Int, user: String, command: String): Stream {
+    fun stream(host: String, port: Int, user: String, command: String, input: Boolean = false): Stream {
         val session = connect(host, port, user)
         session.setServerAliveInterval(10000)
         val channel = session.openChannel("exec") as ChannelExec
         channel.setCommand(command)
         val err = java.io.ByteArrayOutputStream()
         channel.setErrStream(err)
-        val input = channel.inputStream
+        val out = channel.inputStream
+        val toCommand = if (input) channel.outputStream else null
         try {
             channel.connect(15000)
         } catch (e: Exception) {
             session.disconnect()
             throw e
         }
-        return Stream(session, channel, input, err)
+        return Stream(session, channel, out, err, toCommand)
     }
 
     // A short command's output on a connection kept open between calls (the tabs: tmux, every few seconds while
