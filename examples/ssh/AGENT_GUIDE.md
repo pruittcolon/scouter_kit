@@ -43,6 +43,7 @@ detailed manual; this is the map.
 | Voice | Offline voice commands (Parakeet via sherpa-onnx) | `Voice.kt` |
 | Car mode | In a car (Bluetooth), the Next/Previous/Play keys talk to Claude on your server, the answer is spoken (Kokoro voice or Android TTS), nothing is shown on the glasses | `Car.kt` |
 | TV remote | A Vizio SmartCast TV's remote: Alt+Y turns the keyboard into it; buttons in Settings | `Vizio.kt`, `TvActivity.kt` |
+| Preview mode | Alt+D / Preview button: a scripted live tour on the glasses (flash captions, phone screen only) | `ScouterService.demoStart` |
 | Low battery | Alt+B: 10% brightness, again to restore | `ScouterService.lowBattery` |
 | Charging case log | The case's USB-C serial output, per-arm charge state | `CaseLogActivity.kt` |
 | Reliability | Logs sent to your server, crash logs, server keep-alive, in-app updater | `Reliability.kt` |

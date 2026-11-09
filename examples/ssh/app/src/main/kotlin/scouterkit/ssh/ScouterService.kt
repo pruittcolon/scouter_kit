@@ -54,6 +54,7 @@ object Session {
     @Volatile var car = "" // Car mode: "" off, else its state (idle, listening, thinking, speaking)
     @Volatile var carName = "" // the car connected (its Bluetooth name), or ""
     @Volatile var pointer = false // the pointer is on (its keys move and click it)
+    @Volatile var demo = false // the preview mode is running (Alt+D, the Preview button)
     @Volatile var tvKeys = false // the keyboard is the Vizio TV's remote (Alt+Y)
     @Volatile var tabs = "" // the last tab action's problem, if any
     // The glasses' cursor on the phone's screen, in 1/10000 of its width and height (-1: none): drawn into the
@@ -1318,6 +1319,7 @@ class ScouterService : Service() {
             what.startsWith("key:") -> panelKey(what.removePrefix("key:"))
             what == "lookup" -> lookUpOnly()
             what == "lowbat" -> lowBattery()
+            what == "demo" -> if (Session.demo) demoStop("Preview stopped") else demoStart()
             what == "tv" -> tvRemote()
             what.startsWith("tv:") -> tvKey(what.removePrefix("tv:"))
             what.startsWith("bright:") -> bright(what.removePrefix("bright:").toIntOrNull() ?: 0)
@@ -1467,6 +1469,107 @@ class ScouterService : Service() {
         Log.i(TAG, "look-up only: ${!settings.phoneForce}")
         refresh()
         note(if (settings.phoneForce) "Always on" else "Look-up only: look up to see it")
+    }
+
+    // ------------------------------------------------ preview mode
+
+    // A walk through what Vox does, live on the glasses (Alt+D or the Preview button; again to stop): each step
+    // flashes its name first, then shows it. The phone's screen only (never a laptop's); the notification is its
+    // own; Spotify is started if it is installed. What it changed (the dashboard's look, always on) is put back.
+    private var demoRun = 0
+    private var demoStyle = ""
+    private var demoForce = false
+    private var demoStarted = false
+
+    private fun demoStop(message: String) {
+        if (!Session.demo) return
+        demoRun++
+        Session.demo = false
+        settings.dashStyle = demoStyle
+        settings.phoneForce = demoForce
+        if (demoStarted) { Media.control("toggle"); demoStarted = false }
+        if (settings.lowBattery) lowBattery()
+        panelClose()
+        refresh()
+        dash()
+        note(message)
+        Session.changed()
+    }
+
+    // The step's name, blinking in twice, then held.
+    private fun flashAt(at: (Long, () -> Unit) -> Unit, text: String) {
+        val t = text.uppercase(java.util.Locale.US)
+        at(0) { note("* $t *") }
+        at(180) { panelClose() }
+        at(110) { note("* $t *") }
+        at(180) { panelClose() }
+        at(110) { note("* $t *") }
+    }
+
+    private fun demoStart() {
+        if (car != null) return note("Preview is off while driving")
+        if (glassesWith == null || Session.glasses != "ready") {
+            Session.tabs = "Preview needs the glasses connected"
+            Session.changed()
+            return
+        }
+        val gen = ++demoRun
+        Session.demo = true
+        demoStyle = settings.dashStyle
+        demoForce = settings.phoneForce
+        settings.phone = true
+        settings.phoneForce = true
+        if (Session.blank) display(true, "demo")
+        var t = 0L
+        val at: (Long, () -> Unit) -> Unit = { after, f ->
+            t += after
+            work.postDelayed({ if (demoRun == gen) f() }, t)
+        }
+        fun step(name: String, hold: Long, body: () -> Unit) {
+            flashAt(at, name)
+            at(700) { body() }
+            at(hold) {}
+        }
+        val term = settings.active()?.let { "term:${it.id}" }
+        fun terminal() { if (term != null) choose(term, Fx.LEFT) }
+        refresh()
+        step("Vox preview", 1500) { terminal() }
+        step("Look-up display", 3500) { settings.dashStyle = "classic"; refresh(); dash() }
+        step("Hold Alt: every hotkey", 4500) { panelOpen(Panels.HELP) }
+        at(0) { panelClose() }
+        step("Terminal over SSH", 3500) { terminal() }
+        step("The phone's screen", 7000) { phoneScreen() }
+        step("Click a notification", 7000) {
+            val n = NotificationManager::class.java
+            runCatching {
+                val m = getSystemService(n)
+                m.createNotificationChannel(NotificationChannel("preview", "Preview", NotificationManager.IMPORTANCE_DEFAULT))
+                val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+                m.notify(77, Notification.Builder(this, "preview").setSmallIcon(android.R.drawable.stat_notify_chat)
+                    .setContentTitle("Vox preview").setContentText("A notification: click it on the glasses")
+                    .setContentIntent(open).setAutoCancel(true).build())
+            }
+            work.postDelayed({
+                if (demoRun == gen) LookUp.notes.firstOrNull { it.title == "Vox preview" }?.let { openNote(it.key) }
+            }, 2500)
+        }
+        step("Music player support", 7000) {
+            runCatching { packageManager.getLaunchIntentForPackage("com.spotify.music")?.let {
+                startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } }
+            work.postDelayed({
+                if (demoRun == gen && Media.now?.playing != true && Media.control("toggle")) demoStarted = true
+                settings.dashStyle = "media"
+                terminal()
+                refresh()
+                dash()
+            }, 2500)
+        }
+        step("ESPN free API support", 6000) { settings.dashStyle = "game"; terminal(); refresh(); dash() }
+        step("Low battery mode", 3500) { lowBattery() }
+        at(0) { if (settings.lowBattery) lowBattery() }
+        step("Built on ScouterKit", 3000) { settings.dashStyle = demoStyle; refresh(); dash() }
+        at(0) { demoStop("Preview over") }
+        Log.i(TAG, "preview: ${t / 1000} s")
     }
 
     // Alt+B: low battery. The glasses at a tenth of the brightness (the least they draw); again, back to the level

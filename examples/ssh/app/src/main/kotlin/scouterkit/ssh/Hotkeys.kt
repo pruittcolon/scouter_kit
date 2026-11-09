@@ -212,6 +212,7 @@ object Hotkeys {
             KeyEvent.KEYCODE_P -> "media:toggle"
             KeyEvent.KEYCODE_B -> "lowbat"
             KeyEvent.KEYCODE_Y -> "tv"
+            KeyEvent.KEYCODE_D -> "demo"
             KeyEvent.KEYCODE_COMMA -> "media:prev"
             KeyEvent.KEYCODE_PERIOD -> "media:next"
             else -> null

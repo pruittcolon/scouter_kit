@@ -30,6 +30,7 @@ object Panels {
             "Alt+A" to "this help (or hold Alt)",
             "Alt+B" to "low battery (10%)",
             "Alt+U" to "Tunes",
+            "Alt+D" to "preview mode (demo)",
         ),
         "Media and voice" to listOf(
             "Alt+P" to "play / pause",

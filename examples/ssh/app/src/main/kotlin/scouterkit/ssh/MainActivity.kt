@@ -44,6 +44,7 @@ class MainActivity : Activity() {
     private lateinit var voiceAction: RoundAction
     private lateinit var pointerAction: RoundAction
     private lateinit var tunesAction: RoundAction
+    private lateinit var previewAction: RoundAction
     private lateinit var serversBox: LinearLayout
     private lateinit var tabStrip: LinearLayout
     private var tabStripKey: String? = null
@@ -271,7 +272,8 @@ class MainActivity : Activity() {
             ScouterService.send(this, ScouterService.ACTION_POINTER, "cmd" to "toggle")
         }
         tunesAction = RoundAction(this, "spark", "Tunes") { ScouterService.send(this, ScouterService.ACTION_TUNES) }
-        for (a in listOf(displayAction, alwaysAction, voiceAction, pointerAction, tunesAction)) actions.addView(a, lp(0, weight = 1f))
+        previewAction = RoundAction(this, "glasses", "Preview") { ScouterService.send(this, ScouterService.ACTION_PANEL, "do" to "demo") }
+        for (a in listOf(displayAction, alwaysAction, voiceAction, pointerAction, tunesAction, previewAction)) actions.addView(a, lp(0, weight = 1f))
         page.addView(actions)
 
         val light = card()
@@ -1350,6 +1352,7 @@ class MainActivity : Activity() {
         voiceAction.set(Session.listening, if (Session.listening) "Listening" else "Voice")
         pointerAction.set(Session.pointer)
         tunesAction.set(Session.tunes)
+        previewAction.set(Session.demo, if (Session.demo) "Stop" else "Preview")
 
         // The look per app.
         val lk = Looks.key
