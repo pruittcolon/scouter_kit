@@ -427,6 +427,9 @@ object Listen {
         var engine: VoiceEngine? = null
         var prints: Voiceprints? = null
         var tone: Tone? = null
+        var turns: Turns? = null
+        val group = ArrayList<Turns.Piece>() // the recent lines with their audio, for speaker changes
+        var chunkEnd = 0L
         var ident: Speakers.Identifier? = null
         var names = emptyMap<String, String>()
         var regrouped = c.getSharedPreferences("listen", Context.MODE_PRIVATE).getLong("regrouped", 0L)
@@ -481,6 +484,8 @@ object Listen {
                         prints = null
                         tone?.release()
                         tone = null
+                        turns?.release()
+                        turns = null
                         Log.i(ScouterService.TAG, "listen: the speech model unloaded (quiet for 10 min)")
                     }
                     continue
@@ -521,6 +526,53 @@ object Listen {
                     }
                     names = db.names()
                 }
+                // A chunk of lines ends (30 s of speech, or 3 s of quiet): where the speaker changed inside a line, it
+                // is cut into one line each.
+                fun closeChunk() {
+                    if (group.isEmpty()) return
+                    val pieces = ArrayList(group)
+                    group.clear()
+                    val p = prints
+                    val id = ident
+                    if (!speakers || !settings.listenSplit || p == null || id == null) return
+                    if (!SegmentationModel.ready(c)) {
+                        SegmentationModel.download(c)
+                        if (!SegmentationModel.ready(c)) return
+                    }
+                    runCatching {
+                        val t = turns?.takeIf { it.model == p.model } ?: run {
+                            turns?.release()
+                            Turns(c).also { turns = it }
+                        }
+                        val cuts = t.split(pieces) { s -> s.size >= 16000 && p.print(s) != null }
+                        for ((lineId, parts) in cuts) {
+                            val news = parts.map { part ->
+                                val v = p.print(part.samples)
+                                val m = v?.let { id.identify(it, part.samples.size / 16000f) }
+                                m?.voice?.let { g -> db.saveVoice(g, p.model) }
+                                ListenDb.NewPart(part.start, part.end, part.text, Turns.json(part.words), m?.person ?: "",
+                                    m?.voice?.id ?: "", v, p.model)
+                            }
+                            val ids = db.replaceLine(lineId, news)
+                            if (ids.size != news.size) continue
+                            names = db.names()
+                            val heard = news.mapIndexed { k, n ->
+                                Heard(ids[k], n.start, n.end, n.text, false, names[n.person.ifEmpty { n.voice }] ?: "", n.voice)
+                            }
+                            synchronized(recentLines) {
+                                val at = recentLines.indexOfFirst { it.id == lineId }
+                                if (at >= 0) {
+                                    recentLines.removeAt(at)
+                                    recentLines.addAll(at, heard)
+                                }
+                            }
+                            today += ids.size - 1
+                            days += ListenDb.dayStart(news.first().start)
+                            Turns.log("a line cut in ${news.size} where the speaker changed")
+                        }
+                        if (cuts.isNotEmpty()) changed()
+                    }.onFailure { Log.w(ScouterService.TAG, "turns: ${it.message}") }
+                }
                 var done = 0
                 val t0 = SystemClock.elapsedRealtime()
                 while (on && run == gen) {
@@ -531,6 +583,7 @@ object Listen {
                             val end = chunk.start + chunk.samples.size * 1000L / 16000
                             val w = JSONArray()
                             for ((word, at) in words) w.put(JSONArray().put(word).put((at * 1000).toInt()))
+                            if (chunkEnd > 0 && (chunk.start - chunkEnd >= 3000 || chunk.start < chunkEnd - 60_000)) closeChunk()
                             val line = db.add(chunk.start, end, text, w.toString(), chunk.quiet)
                             val h = Heard(line.id, line.start, line.end, line.text, line.quiet)
                             val p = prints
@@ -568,6 +621,10 @@ object Listen {
                                 recentLines.addLast(h)
                                 while (recentLines.size > 60) recentLines.removeFirst()
                             }
+                            group += Turns.Piece(line.id, line.start, chunk.samples, text,
+                                words.map { (word, at) -> word to (at * 1000).toInt() }, chunk.quiet)
+                            chunkEnd = end
+                            if (group.sumOf { it.samples.size } >= 16000 * 30) closeChunk()
                             if (ListenDb.dayStart(line.start) == ListenDb.dayStart(System.currentTimeMillis())) today++
                             else today = db.count(ListenDb.dayStart(System.currentTimeMillis()))
                             days += ListenDb.dayStart(line.start)
@@ -583,6 +640,8 @@ object Listen {
                     if (hot(c)) break
                 }
                 waiting = ListenQueue.seconds(c)
+                // Nothing more waiting and 3 s quiet since: the chunk is complete.
+                if (ListenQueue.count(c) == 0 && System.currentTimeMillis() - chunkEnd >= 3000) closeChunk()
                 // Conversations that ended (5 min of quiet): their voice groups that sound alike become one.
                 if (speakers && ident != null) runCatching {
                     val ended = db.conversations(0, System.currentTimeMillis() - ListenDb.GAP_MS)
@@ -604,6 +663,7 @@ object Listen {
             if (engine != null) Parakeet.done("listen")
             prints?.release()
             tone?.release()
+            turns?.release()
             if (settings.listenFiles) for (d in days) runCatching { Transcripts.write(c, d) }
         }
     }

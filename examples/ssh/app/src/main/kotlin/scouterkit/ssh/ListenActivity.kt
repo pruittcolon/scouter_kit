@@ -187,6 +187,8 @@ class ListenActivity : Activity(), HearingCheck.Ui {
             settings.listenSpeakers = it
             Listen.peopleChanged()
         })
+        who.addToggle(toggle("Split where the speaker changes", "A phrase with two people in it becomes a line each " +
+            "(pyannote segmentation, 6 MB, fetched with the voiceprint model)", settings.listenSplit) { settings.listenSplit = it })
         who.addView(text("Voiceprint model", 13f, Ui.FAINT).apply { setPadding(0, dp(6), 0, 0) })
         who.addView(segmented(VoiceprintModel.CHOICES.map { it.id to it.name }, settings.listenVoiceModel) {
             settings.listenVoiceModel = it

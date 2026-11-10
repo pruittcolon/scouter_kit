@@ -1,7 +1,7 @@
 sherpa_onnx_kotlin
 
 OfflineRecognizer.kt, OfflineStream.kt, FeatureConfig.kt, HomophoneReplacerConfig.kt, QnnConfig.kt, Vad.kt, Tts.kt,
-Speaker.kt, SpeakerEmbeddingExtractorConfig.kt and OnlineStream.kt are unmodified files of sherpa-onnx 1.13.8's Kotlin API (https://github.com/k2-fsa/sherpa-onnx, tag v1.13.8,
+Speaker.kt, SpeakerEmbeddingExtractorConfig.kt, OnlineStream.kt and OfflineSpeakerDiarization.kt are unmodified files of sherpa-onnx 1.13.8's Kotlin API (https://github.com/k2-fsa/sherpa-onnx, tag v1.13.8,
 commit 11afbd009a7f8c08f4bcf2fc1b265d0df4670fbf, directory sherpa-onnx/kotlin-api), and LICENSE its licence
 file. SHA-256:
   85054fa9722913bce96c94c5c7eaaa7fd99606b79fbfbeac6cfb60040eae2164  OfflineRecognizer.kt
@@ -14,10 +14,11 @@ file. SHA-256:
   4dcc84f4cf0682e0e4da837ba00130d66ad7aec4f803af4c021de3434246e871  Speaker.kt
   d90c0ce88dce309813e720ff46abba737401e7e562f9635ee13fd5b32ce106c6  SpeakerEmbeddingExtractorConfig.kt
   6b9f8de317e6a0bb51f0f29d940617b781cb31b190e1c725dd438231836c06ab  OnlineStream.kt
+  4017f3b1359f6c3f35a0c46ed4e939d2578fe7773c8686c786bd6a591e4b8921  OfflineSpeakerDiarization.kt
   cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30  LICENSE
 
 Copyright Xiaomi Corporation and the sherpa-onnx authors. Apache License, Version 2.0 (LICENSE).
 
-Used by examples/ssh (voice commands; Tts.kt: Car mode's Kokoro voice; Speaker.kt: Listen mode's voiceprints) with the matching JNI library, fetched by
+Used by examples/ssh (voice commands; Tts.kt: Car mode's Kokoro voice; Speaker.kt: Listen mode's voiceprints; OfflineSpeakerDiarization.kt: its speaker changes) with the matching JNI library, fetched by
 examples/ssh/native/third_party/fetch_sherpa.sh (sherpa-onnx-v1.13.8-android-static-link-onnxruntime: ONNX Runtime
-is linked into it, MIT). The rest of the Kotlin API (other recognisers, diarization) is left out.
+is linked into it, MIT). The rest of the Kotlin API (other recognisers and tools) is left out.

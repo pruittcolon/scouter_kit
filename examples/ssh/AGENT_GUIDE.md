@@ -49,7 +49,7 @@ detailed manual; this is the map.
 | Listen mode | All-day transcript from the phone mic: shared mic, disk queue, Live/Eco, soft-voice hearing, check, day files, glasses panel | `Listen.kt`, `ListenService.kt`, `MicHub.kt`, `ListenDb.kt`, `Hearing.kt`, `ListenActivity.kt` |
 | Meetings, tone, words | Meeting mode (calendar start, bookmarks, action items, catch-up), LLM notes file; SenseVoice tone; talk stats | `Meetings.kt`, `Words.kt` |
 | Search and ask | llama.cpp (vox_llm) with LFM2.5 (quick/deep) and EmbeddingGemma; FTS4 BM25 + vectors fused (RRF); time words | `Search.kt`, `Llm.kt`, `native/llm_jni.cpp`, `native/third_party/fetch_llama.sh` |
-| Who speaks | Voiceprints (WeSpeaker via sherpa), identifier ported from Vox Amelior, voice groups, enrollment, naming | `Speakers.kt`, `ListenDb` (people, samples, voices) |
+| Who speaks | Voiceprints (WeSpeaker via sherpa), identifier ported from Vox Amelior, voice groups, enrollment, naming; speaker-change cuts | `Speakers.kt`, `Turns.kt`, `ListenDb` (people, samples, voices) |
 | Text editor | Alt+N (E on the hub): .txt/.md files in the app's external files dir `docs/`, list + wrapped editor, autosave | `Editor.kt`, `ScouterService.editor*` |
 | TV remote | A Vizio SmartCast TV's remote: Alt+Y turns the keyboard into it and shows the remote on the glasses; the app's TV tab has the buttons. Alt+F runs the phone's `phone` mirror command in a tmux tab | `Vizio.kt`, `TvPage.kt`, `Panels.tvLines`, `Tabs.tv` |
 | Preview mode | Alt+D / Preview button: a short live tour (phone screen, phone terminal, laptop screen, laptop terminal), each after a full-screen title card | `ScouterService.demoStart`, `Intro.kt` |

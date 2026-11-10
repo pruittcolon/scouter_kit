@@ -509,7 +509,10 @@ with the app in the back.
   30, the oldest make room). The person bar calibrates itself from the people's own samples. When a conversation
   ends, its voice groups that sound alike merge (voiceprints only, no audio again). People: "Record my voice" (30 s,
   the Rainbow Passage), "Remember this voice" after the quiet-voice check (marked soft), naming a voice group on the
-  phone or on the glasses (N types a name, M "that's me").
+  phone or on the glasses (N types a name, M "that's me"). Speaker changes (`Turns.kt`): per chunk of recent lines
+  (30 s of speech or until 3 s of quiet) sherpa-onnx's diarization (pyannote segmentation 3.0 with the voiceprint
+  model) says who talked when; a line of 3 s or more is cut at its word times when every part lasts 1.5 s and has
+  two words (slivers and parts that cannot be named join a neighbour), each part named from its own audio.
   Search and ask (`Search.kt`, `Llm.kt`, `native/llm_jni.cpp`): llama.cpp (`native/third_party/fetch_llama.sh`,
   pinned) in its own library `vox_llm` (glasses flavor; ARMv8.2 + dot product + int8 matrix multiply, checked on
   the phone) runs GGUF models downloaded on the Listen page (pinned revisions, SHA-256): Liquid's LFM2.5 1.2B

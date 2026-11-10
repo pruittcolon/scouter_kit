@@ -489,6 +489,49 @@ class ListenDb private constructor(context: Context) : SQLiteOpenHelper(context,
         return out
     }
 
+    // A line cut where the speaker changed: it goes, its parts come in its place (same conversation), each with
+    // its words, who and print. The new ids.
+    class NewPart(val start: Long, val end: Long, val text: String, val words: String, val person: String, val voice: String,
+                  val print: FloatArray?, val model: String)
+
+    @Synchronized
+    fun replaceLine(id: Long, parts: List<NewPart>): List<Long> {
+        val db = writableDatabase
+        val old = line(id) ?: return emptyList()
+        val ids = ArrayList<Long>()
+        db.beginTransaction()
+        try {
+            db.delete("lines", "id = ?", arrayOf(id.toString()))
+            db.delete("lines_fts", "docid = ?", arrayOf(id.toString()))
+            for (p in parts) {
+                val n = db.insert("lines", null, ContentValues().apply {
+                    put("conv", old.conv)
+                    put("start", p.start)
+                    put("end", p.end)
+                    put("text", p.text)
+                    put("words", p.words)
+                    put("person", p.person)
+                    put("voice", p.voice)
+                    put("quiet", if (old.quiet) 1 else 0)
+                    put("stage", 1)
+                    if (p.print != null) {
+                        put("print", Speakers.blob(p.print))
+                        put("model", p.model)
+                    }
+                })
+                db.insert("lines_fts", null, ContentValues().apply {
+                    put("docid", n)
+                    put("text", p.text)
+                })
+                ids += n
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return ids
+    }
+
     fun line(id: Long): Line? = lines("WHERE id = ?", arrayOf(id.toString()), "start", 1).firstOrNull()
 
     companion object {

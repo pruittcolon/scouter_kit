@@ -492,6 +492,7 @@ class Settings(context: Context) {
     var listenVoiceModel: String by Text("listen_voice_model", "campp") // VoiceprintModel.CHOICES
     var listenMeaning: Boolean by Flag("listen_meaning", true) // search by meaning (EmbeddingGemma vectors per line)
     var listenTone: Boolean by Flag("listen_tone", true) // each line's emotion and sounds (SenseVoice, Words.kt)
+    var listenSplit: Boolean by Flag("listen_split", true) // cut lines where the speaker changes (Turns.kt)
     var listenMeetingsAuto: Boolean by Flag("listen_meetings_auto", true) // calendar events with people start meetings
 
     private inner class Flag(val key: String, val default: Boolean) {
