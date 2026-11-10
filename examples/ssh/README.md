@@ -531,6 +531,13 @@ with the app in the back.
   emotion and sounds; the audio gives loudness and speed; the stats are talk time and share, words a minute,
   questions, filler words, talking over, the longest stretch, moods, laughter, and the words that stood out
   against the last 30 days (Today's talk on the Listen page, the meeting notes, the glasses' meeting line).
+  Live view (VOX//LIVE, hub L or Alt+E): the microphone's level and what is ready (voices, tone, LFM, meaning,
+  automations), each line as it is written with who, mood and the automations it fired, the words being said now,
+  meetings, answers; it stays until Esc and keeps Listen at Live speed. A fault in Listen's threads starts them
+  again (it never stays deaf). Automations (`Automations.kt`): rules on each line as it is written (words, who,
+  mood) that show it on the glasses, notify, buzz, keep a hub note, set a reminder ("remind me to … in 20
+  minutes / at 7:30"), ask the phone's LFM what follows the phrase ("hey vox, …"), run a Vox command or POST a
+  webhook; "Hey Vox" and "Remind me" come on, others ready to switch on; edited and tried on the Listen page.
 - **Alt+N** (or **E** on the hub) opens the text editor on the glasses (`Editor.kt`, `Panels.EDITOR`): the .txt and
   .md files in Vox's folder `Android/data/<app id>/files/docs` (copy files there from a computer or with `adb push`),
   newest first; the arrows pick, Enter opens, N makes a new one. A file's lines wrap at the panel's width, a ▌ is the

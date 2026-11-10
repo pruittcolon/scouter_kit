@@ -34,7 +34,7 @@ import kotlin.math.tanh
 // first missed, when they hold real words.
 object Listen {
     class Heard(val id: Long, val start: Long, val end: Long, val text: String, val quiet: Boolean, var who: String = "",
-                var voice: String = "")
+                var voice: String = "", var mood: String = "", var fired: String = "")
 
     @Volatile var on = false
         private set
@@ -135,7 +135,8 @@ object Listen {
     private fun loadRecent(c: Context) {
         val db = ListenDb.get(c)
         val names = db.names()
-        val lines = db.recent(40).map { Heard(it.id, it.start, it.end, it.text, it.quiet, names[it.person.ifEmpty { it.voice }] ?: "", it.voice) }
+        val lines = db.recent(40).map { Heard(it.id, it.start, it.end, it.text, it.quiet, names[it.person.ifEmpty { it.voice }] ?: "", it.voice,
+            it.emotion.ifEmpty { it.sound }) }
         synchronized(recentLines) {
             recentLines.clear()
             recentLines.addAll(lines)
@@ -192,7 +193,7 @@ object Listen {
 
         @Synchronized
         fun slice(from: Long, to: Long): FloatArray {
-            val f = max(from, total - size + 1)
+            val f = max(max(from, 0L), total - size + 1)
             val t = min(to, total)
             if (t <= f) return FloatArray(0)
             return FloatArray((t - f).toInt()) { a[((f + it) % size).toInt()] }
@@ -204,6 +205,7 @@ object Listen {
 
     private fun hear(c: Context, run: Int) {
         val settings = Settings(c)
+        var failed = false
         var sub: MicHub.Sub? = null
         var main: Vad? = null
         var second: Vad? = null
@@ -229,7 +231,7 @@ object Listen {
                 if (checking) return
                 val samples = r.slice(a - 4000, b + 1600) // a quarter second before, a tenth after
                 if (samples.size < 4800) return
-                ListenQueue.push(c, samples, wall(max(a - 4000, r.total - 16000L * 40 + 1)), quiet)
+                ListenQueue.push(c, samples, wall(max(max(a - 4000, 0L), r.total - 16000L * 40 + 1)), quiet)
                 waiting = ListenQueue.seconds(c)
                 synchronized(lock) { lock.notifyAll() }
             }
@@ -339,8 +341,9 @@ object Listen {
             }
         } catch (_: InterruptedException) {
         } catch (e: Exception) {
-            Log.w(ScouterService.TAG, "listen: hearing stopped: ${e.message}")
-            setState("stopped: ${e.message}")
+            Log.w(ScouterService.TAG, "listen: hearing stopped: $e")
+            setState("hearing again after a fault")
+            failed = true
         } finally {
             sub?.let { MicHub.close(it) }
             main?.release()
@@ -348,6 +351,11 @@ object Listen {
             ring = null
             speaking = false
         }
+        // A fault never leaves Listen deaf: the hearing starts again (and again) while it is on.
+        if (failed && on && run == gen) Thread({
+            Thread.sleep(2000)
+            if (on && run == gen) hear(c, run)
+        }, "listen-hear").start()
     }
 
     // ------------------------------------------------ working (phrases to lines)
@@ -369,7 +377,7 @@ object Listen {
     private fun live(c: Context, settings: Settings) = when (settings.listenSpeed) {
         "live" -> true
         "eco" -> false
-        else -> SystemClock.elapsedRealtime() < lookUntil.get() || charging(c)
+        else -> SystemClock.elapsedRealtime() < lookUntil.get() || charging(c) || Automations.anyOn(c)
     }
 
     private fun due(c: Context, settings: Settings): Boolean {
@@ -422,6 +430,7 @@ object Listen {
 
     private fun work(c: Context, run: Int) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+        var failed = false
         val settings = Settings(c)
         val db = ListenDb.get(c)
         var engine: VoiceEngine? = null
@@ -588,6 +597,8 @@ object Listen {
                             val h = Heard(line.id, line.start, line.end, line.text, line.quiet)
                             val p = prints
                             val id = ident
+                            var personId = ""
+                            var emotion = ""
                             if (speakers && p != null && id != null) runCatching {
                                 // The first 10 s are plenty for a voiceprint.
                                 val v = p.print(if (chunk.samples.size > 160_000) chunk.samples.copyOf(160_000) else chunk.samples)
@@ -600,6 +611,7 @@ object Listen {
                                     }
                                     h.who = names[m.person ?: m.voice?.id ?: ""] ?: ""
                                     h.voice = m.voice?.id ?: ""
+                                    personId = m.person ?: ""
                                 }
                             }.onFailure { Log.w(ScouterService.TAG, "listen: voiceprint: ${it.message}") }
                             // How it was said: loudness, speed, and (SenseVoice) emotion and sounds.
@@ -616,7 +628,14 @@ object Listen {
                                     snd = s
                                 }
                                 db.setTone(line.id, emo, snd, loud, rate)
+                                emotion = emo
+                                h.mood = emo.ifEmpty { snd }
                             }.onFailure { Log.w(ScouterService.TAG, "listen: tone: ${it.message}") }
+                            // The automations, on the line as it was just written.
+                            if (!chunk.quiet || text.length > 6) runCatching {
+                                h.fired = Automations.run(c, text, h.who, personId, emotion, line.start).joinToString(", ")
+                            }
+                                .onFailure { Log.w(ScouterService.TAG, "listen: automations: ${it.message}") }
                             synchronized(recentLines) {
                                 recentLines.addLast(h)
                                 while (recentLines.size > 60) recentLines.removeFirst()
@@ -658,7 +677,8 @@ object Listen {
             }
         } catch (_: InterruptedException) {
         } catch (e: Exception) {
-            Log.w(ScouterService.TAG, "listen: work stopped: ${e.message}")
+            Log.w(ScouterService.TAG, "listen: work stopped: $e")
+            failed = true
         } finally {
             if (engine != null) Parakeet.done("listen")
             prints?.release()
@@ -666,6 +686,10 @@ object Listen {
             turns?.release()
             if (settings.listenFiles) for (d in days) runCatching { Transcripts.write(c, d) }
         }
+        if (failed && on && run == gen) Thread({
+            Thread.sleep(2000)
+            if (on && run == gen) work(c, run)
+        }, "listen-work").start()
     }
 }
 

@@ -67,7 +67,7 @@ object Panels {
         ),
         "Hub and AI" to listOf(
             "Alt+G" to "hub: timer, alarm, notes",
-            "Alt+E" to "captions (Listen: its lines)",
+            "Alt+E" to "captions (Listen: live view)",
             "Alt+I" to "translate to English",
             "Alt+O" to "smart home",
             "Alt+J" to "calls and texts",

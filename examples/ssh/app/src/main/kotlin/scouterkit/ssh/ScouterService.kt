@@ -428,7 +428,13 @@ class ScouterService : Service() {
                         if (!settings.voiceAlways && listener?.once == false) stopListening()
                         voiceAlways()
                     }
-                    else -> listen(true)
+                    else -> {
+                        val m = intent.getStringExtra("mode") ?: ""
+                        if (m.startsWith("do:")) {
+                            val said = m.removePrefix("do:")
+                            VoiceCommands.match(settings, said)?.let { voiceDo(it) } ?: note("No Vox command \"$said\"")
+                        } else listen(true)
+                    }
                 }
             }
             // Android reported keyer near (or gone): a report of near gets keyer's link 30 s to come.
@@ -1532,8 +1538,14 @@ class ScouterService : Service() {
             what == "listen" -> listenOpen()
             what.startsWith("lkey:") -> listenKey(what.removePrefix("lkey:"))
             what.startsWith("lchar:") -> listenChar(what.removePrefix("lchar:").toIntOrNull() ?: 0)
+            what.startsWith("lnote:") -> { // an automation's words on the glasses: "lnote:<ms>:<text>"
+                val rest = what.removePrefix("lnote:")
+                val ms = rest.substringBefore(':').toLongOrNull() ?: 6000L
+                val t = rest.substringAfter(':')
+                if (Session.overlay == Panels.LISTEN) { listenSaid = t.take(120); listenDraw() } else note(t, ms)
+            }
             what.startsWith("edkey:") -> editorKey(what.removePrefix("edkey:"))
-            what == "captions" && Listen.on -> listenOpen()
+            what == "captions" && (Listen.on || settings.listenOn) -> listenOpen()
             what == "captions" || what == "translate" -> captions(what)
             what == "capesc" -> if (Session.captions.isNotEmpty()) captionsStop("")
             what == "home" -> homeOpen()
@@ -2721,9 +2733,27 @@ class ScouterService : Service() {
         }
         val foot = if (Meetings.current != null) "S end · B bookmark · I action · T note · C catch up · A ask"
             else "O on/off · P pause · N name · M me · A ask · D deep · S meeting · C catch up"
-        framePanel(Panels.LISTEN, "VOX//LISTEN", "Esc closes", foot) { width, max ->
+        framePanel(Panels.LISTEN, "VOX//LIVE", "Esc closes", foot) { width, max ->
             val rows = mutableListOf<Pair<String, Int>>()
-            rows += ("▌▌ LISTEN ▐░▒▓ ${Listen.today} lines today · $head" + if (listenSaid.isNotEmpty()) " · $listenSaid" else "") to 1
+            val recent = Listen.recent(40)
+            val unnamed = recent.filter { it.voice.isNotEmpty() }.map { it.voice }.distinct().size
+            rows += ("▌▌ LIVE ▐░▒▓ ${Listen.today} lines today · $head" + (if (unnamed > 0) " · $unnamed voices to name (N)" else "") +
+                if (listenSaid.isNotEmpty()) " · $listenSaid" else "") to 1
+            if (on) {
+                // The microphone: what the detector hears against the room's level, and what is ready.
+                val lv = ((Listen.level + Listen.gainDb + 70f) / 60f).coerceIn(0f, 1f)
+                val bars = 16
+                val n = (lv * bars).toInt()
+                val ready = listOfNotNull(
+                    if (Settings(this).listenSpeakers && VoiceprintModel.ready(this)) "voices" else null,
+                    if (Settings(this).listenTone && ToneModel.ready(this)) "tone" else null,
+                    if (LlmModels.usable() && LlmModels.ALL.any { it.role != "embed" && LlmModels.ready(this, it) }) "LFM" else null,
+                    if (Settings(this).listenMeaning && LlmModels.ready(this, LlmModels.EMBED)) "meaning" else null,
+                    if (Automations.anyOn(this)) "${Automations.rules(this).count { it.on }} automations" else null,
+                ).joinToString(" · ")
+                rows += (" mic [" + "█".repeat(n) + "░".repeat(bars - n) + "] " + (if (Listen.speaking) "speech" else "quiet") +
+                    "  ·  " + ready.ifEmpty { "models: the phone's Listen page" }) to 2
+            }
             Meetings.current?.let { m ->
                 val min = (System.currentTimeMillis() - m.started) / 60000
                 val st = runCatching { Meetings.stats(this) }.getOrNull()
@@ -2747,9 +2777,10 @@ class ScouterService : Service() {
             }
             val fmt = java.text.SimpleDateFormat("h:mm", java.util.Locale.US)
             val body = mutableListOf<Pair<String, Int>>()
-            for (h in Listen.recent(40)) {
+            for (h in recent) {
                 val first = fmt.format(java.util.Date(h.start)) + " " + (if (h.who.isNotEmpty()) "${h.who} › " else "› ")
-                val wrapped = Panels.wrap(h.text, maxOf(10, width - first.length))
+                val tail = (if (h.mood.isNotEmpty()) " [${h.mood}]" else "") + (if (h.fired.isNotEmpty()) " ■ ${h.fired}" else "")
+                val wrapped = Panels.wrap(h.text + tail, maxOf(10, width - first.length))
                 for ((i, l) in wrapped.withIndex()) body += ((if (i == 0) first else " ".repeat(first.length)) + l) to (if (h.quiet) 2 else 0)
             }
             if (on && (Listen.speaking || Listen.partial.isNotEmpty())) {

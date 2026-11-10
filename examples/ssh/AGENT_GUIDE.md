@@ -47,6 +47,7 @@ detailed manual; this is the map.
 | Calls and texts | Alt+J: starred contacts, call, text typed or said | `People.kt`, `ScouterService.people*` |
 | Hub | Alt+G: timer, stopwatch, alarm (the phone's clock), reminders, notes, the next events, on the glasses | `Hub.kt`, `Panels.hubLines`, `ScouterService.hub*` |
 | Listen mode | All-day transcript from the phone mic: shared mic, disk queue, Live/Eco, soft-voice hearing, check, day files, glasses panel | `Listen.kt`, `ListenService.kt`, `MicHub.kt`, `ListenDb.kt`, `Hearing.kt`, `ListenActivity.kt` |
+| Automations, live view | Rules on each new line (words/who/mood → glasses, notify, buzz, note, reminder, ask LFM, Vox command, webhook); VOX//LIVE | `Automations.kt`, `ScouterService.listen*` |
 | Meetings, tone, words | Meeting mode (calendar start, bookmarks, action items, catch-up), LLM notes file; SenseVoice tone; talk stats | `Meetings.kt`, `Words.kt` |
 | Search and ask | llama.cpp (vox_llm) with LFM2.5 (quick/deep) and EmbeddingGemma; FTS4 BM25 + vectors fused (RRF); time words | `Search.kt`, `Llm.kt`, `native/llm_jni.cpp`, `native/third_party/fetch_llama.sh` |
 | Who speaks | Voiceprints (WeSpeaker via sherpa), identifier ported from Vox Amelior, voice groups, enrollment, naming; speaker-change cuts | `Speakers.kt`, `Turns.kt`, `ListenDb` (people, samples, voices) |

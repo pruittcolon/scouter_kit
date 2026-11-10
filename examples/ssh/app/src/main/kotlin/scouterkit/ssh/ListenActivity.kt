@@ -49,6 +49,7 @@ class ListenActivity : Activity(), HearingCheck.Ui {
     private lateinit var search: EditText
     private lateinit var peopleBox: LinearLayout
     private lateinit var modelsBox: LinearLayout
+    private lateinit var autoBox: LinearLayout
     private lateinit var meetingsBox: LinearLayout
     private lateinit var meetingLine: TextView
     private lateinit var insights: TextView
@@ -249,6 +250,28 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         mt.addView(meetingsBox)
         page.addView(mt)
 
+        // Automations: rules on each line as it is written.
+        val au = card("Automations", "Rules run on every line the moment it is written (Listen reads at once while any is " +
+            "on). Words: phrases, comma-separated (* any line). Who: anyone, me, not me, or a name. Try a line below.")
+        autoBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        au.addView(autoBox)
+        au.addView(chipRow(chip("Add a rule", true) { editRule(null) }))
+        val tryLine = field("Try a line", "", "hey vox, what did we decide yesterday")
+        au.addView(tryLine, lp().apply { topMargin = dp(6) })
+        val tryWho = field("Said by", "You", "a name, or You")
+        au.addView(tryWho, lp().apply { topMargin = dp(6) })
+        val tryOut = text("", 13f, Ui.MUTED)
+        au.addView(chipRow(chip("Which rules fire?", false) {
+            val who = tryWho.text.toString().trim()
+            val person = if (who.equals("you", true) || who.equals("me", true)) Speakers.ME else ""
+            val hits = Automations.rules(this).filter { it.on }.mapNotNull { r ->
+                Automations.match(r, tryLine.text.toString(), who, person, "")?.let { r.name + (if (it.isNotEmpty()) " (\"$it\")" else "") }
+            }
+            tryOut.text = if (hits.isEmpty()) "None would fire." else "Would fire: " + hits.joinToString(", ")
+        }))
+        au.addView(tryOut)
+        page.addView(au)
+
         // Insights: today's talk.
         val ins = card("Today's talk", "Who talked how much, questions, filler words, talking over, moods and the words that " +
             "stood out against the last 30 days.")
@@ -310,6 +333,56 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         showMeetings()
         showInsights()
         showTone()
+        showRules()
+    }
+
+    private fun showRules() {
+        autoBox.removeAllViews()
+        for (r in Automations.rules(this)) {
+            autoBox.addToggle(toggle(r.name, r.summary(), r.on) { on ->
+                r.on = on
+                Automations.save(this, Automations.rules(this))
+            })
+            autoBox.addView(chipRow(chip("Edit", false) { editRule(r) }, chip("Delete", false) {
+                Automations.save(this, Automations.rules(this).filter { it.id != r.id })
+                showRules()
+            }))
+        }
+    }
+
+    // A rule's fields in a dialog (new when r is null).
+    private fun editRule(r: Automations.Rule?) {
+        val rule = r ?: Automations.Rule(java.util.UUID.randomUUID().toString().take(8), "", true, "", "", "", mutableSetOf("glasses"), "", "", 30)
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0) }
+        val name = field("Name", rule.name, "what it is for").also { box.addField(it) }
+        val words = field("Words", rule.words, "phrases, comma-separated; * any line").also { box.addField(it) }
+        val who = field("Who", rule.who, "anyone, me, not me, or a name").also { box.addField(it) }
+        val mood = field("Sounding", rule.mood, "blank, or happy / sad / angry / fearful / surprised").also { box.addField(it) }
+        val checks = Automations.ACTIONS.map { (k, label) ->
+            android.widget.CheckBox(this).apply {
+                text = label
+                setTextColor(Ui.TEXT)
+                isChecked = k in rule.actions
+                box.addView(this)
+            } to k
+        }
+        val cmd = field("Vox command", rule.command, "lights off, timer 5 minutes…").also { box.addField(it) }
+        val url = field("Webhook URL", rule.url, "https://…").also { box.addField(it) }
+        val rest = field("Rest after firing (s)", rule.restS.toString(), "30", numeric = true).also { box.addField(it) }
+        dialog().setTitle(if (r == null) "New rule" else "Edit ${r.name}").setView(android.widget.ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Save") { _, _ ->
+                rule.name = name.text.toString().trim().ifEmpty { "Rule" }
+                rule.words = words.text.toString().trim()
+                rule.who = who.text.toString().trim()
+                rule.mood = mood.text.toString().trim().lowercase(Locale.US)
+                rule.actions = checks.filter { it.first.isChecked }.map { it.second }.toMutableSet()
+                rule.command = cmd.text.toString().trim()
+                rule.url = url.text.toString().trim()
+                rule.restS = rest.text.toString().toIntOrNull()?.coerceIn(0, 86400) ?: 30
+                val list = Automations.rules(this).filter { it.id != rule.id } + rule
+                Automations.save(this, list)
+                showRules()
+            }.setNegativeButton("Cancel", null).show()
     }
 
     private fun showTone() {
