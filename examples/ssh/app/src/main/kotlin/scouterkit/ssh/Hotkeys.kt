@@ -145,6 +145,11 @@ object Hotkeys {
                 KeyEvent.KEYCODE_N -> { Session.listenTyping = true; "n" }
                 KeyEvent.KEYCODE_A -> { Session.listenTyping = true; "a" }
                 KeyEvent.KEYCODE_D -> { Session.listenTyping = true; "d" }
+                KeyEvent.KEYCODE_S -> { if (Meetings.current == null) Session.listenTyping = true; "s" }
+                KeyEvent.KEYCODE_B -> "b"
+                KeyEvent.KEYCODE_I -> { if (Meetings.current != null) Session.listenTyping = true; "i" }
+                KeyEvent.KEYCODE_T -> { if (Meetings.current != null) Session.listenTyping = true; "t" }
+                KeyEvent.KEYCODE_C -> "c"
                 KeyEvent.KEYCODE_M -> "m"
                 KeyEvent.KEYCODE_O, KeyEvent.KEYCODE_SPACE -> "o"
                 KeyEvent.KEYCODE_P -> "p"

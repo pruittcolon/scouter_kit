@@ -426,6 +426,7 @@ object Listen {
         val db = ListenDb.get(c)
         var engine: VoiceEngine? = null
         var prints: Voiceprints? = null
+        var tone: Tone? = null
         var ident: Speakers.Identifier? = null
         var names = emptyMap<String, String>()
         var regrouped = c.getSharedPreferences("listen", Context.MODE_PRIVATE).getLong("regrouped", 0L)
@@ -441,6 +442,7 @@ object Listen {
                 if (!(on && run == gen)) break
                 val nowE = SystemClock.elapsedRealtime()
                 waiting = ListenQueue.seconds(c)
+                runCatching { Meetings.tick(c) }
                 // Someone looks: the model ready for the words as they are said.
                 if (engine == null && nowE < lookUntil.get() && !hot(c))
                     engine = runCatching { Parakeet.use(c, "listen") }.getOrNull()
@@ -477,6 +479,8 @@ object Listen {
                         engine = null
                         prints?.release()
                         prints = null
+                        tone?.release()
+                        tone = null
                         Log.i(ScouterService.TAG, "listen: the speech model unloaded (quiet for 10 min)")
                     }
                     continue
@@ -545,6 +549,21 @@ object Listen {
                                     h.voice = m.voice?.id ?: ""
                                 }
                             }.onFailure { Log.w(ScouterService.TAG, "listen: voiceprint: ${it.message}") }
+                            // How it was said: loudness, speed, and (SenseVoice) emotion and sounds.
+                            runCatching {
+                                val secs = chunk.samples.size / 16000f
+                                val loud = db(rms(chunk.samples))
+                                val rate = if (secs > 0.5f) words.size / secs else 0f
+                                var emo = ""
+                                var snd = ""
+                                if (settings.listenTone && ToneModel.ready(c)) {
+                                    val t = tone ?: Tone(c).also { tone = it }
+                                    val (e, s) = t.hear(chunk.samples)
+                                    emo = e
+                                    snd = s
+                                }
+                                db.setTone(line.id, emo, snd, loud, rate)
+                            }.onFailure { Log.w(ScouterService.TAG, "listen: tone: ${it.message}") }
                             synchronized(recentLines) {
                                 recentLines.addLast(h)
                                 while (recentLines.size > 60) recentLines.removeFirst()
@@ -584,6 +603,7 @@ object Listen {
         } finally {
             if (engine != null) Parakeet.done("listen")
             prints?.release()
+            tone?.release()
             if (settings.listenFiles) for (d in days) runCatching { Transcripts.write(c, d) }
         }
     }

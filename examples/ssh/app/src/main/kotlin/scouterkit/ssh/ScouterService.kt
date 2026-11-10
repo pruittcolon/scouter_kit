@@ -281,6 +281,7 @@ class ScouterService : Service() {
         }
         work.postDelayed({ LogBook.sendPending(this, vault) }, 20000)
         work.postDelayed({ ListenService.ensure(this) }, 3000) // Listen mode, if it is on (Android may want Vox opened)
+        Meetings.onDone = { said -> work.post { note(said, 4000) } }
         Native.onChanged = { work.post { poll() } }
         Native.onGesture = { a, g -> work.post { gesture(a, g) } }
         VoxKeys.onMouse = { x, y -> mouse(x, y) }
@@ -467,6 +468,7 @@ class ScouterService : Service() {
         work.removeCallbacks(editorTick)
         runCatching { editor?.save() }
         Listen.unwatch(listenWatch)
+        Meetings.onDone = null
         Thread { Bootstrap.dropShared() }.start()
         runCatching { dim?.release() } // pocket mode's screen lock
         dim = null
@@ -2570,14 +2572,20 @@ class ScouterService : Service() {
     private var listenQuestion = ""
     private var listenAnswer = "" // the answer to the last question, as it comes ("" none)
 
-    // A question about the transcript (Search.ask, on the phone's LFM2.5): the answer grows on the panel.
+    // A question about the transcript (Search.ask, on the phone's LFM2.5; in a meeting, about the meeting): the
+    // answer grows on the panel. "catch up": the last 5 minutes.
     private fun listenAsk(q: String, deep: Boolean) {
-        listenQuestion = q
+        listenQuestion = if (q == "catch up") "Catch me up (the last 5 minutes)" else q
         listenAnswer = "thinking…"
         listenDraw()
         Thread {
+            val grow: (String) -> Unit = { t -> work.post { listenAnswer = t.ifEmpty { "thinking…" }; listenSoon() } }
             val got = runCatching {
-                Search.ask(this, q, deep) { t -> work.post { listenAnswer = t.ifEmpty { "thinking…" }; listenSoon() } }
+                when {
+                    q == "catch up" -> Meetings.catchUp(this, grow)
+                    Meetings.current != null && !deep -> Meetings.ask(this, q, grow)
+                    else -> Search.ask(this, q, deep, grow)
+                }
             }.getOrElse { "it stopped: ${it.message}" }
             work.post {
                 listenAnswer = got ?: "no language model yet: Vox, Voice tab, Listen mode, AI models"
@@ -2616,6 +2624,14 @@ class ScouterService : Service() {
                     if (listenFor == "name") {
                         val h = listenNaming
                         if (h != null && n.isNotEmpty()) listenAssign(h, n, n.equals("me", true) || n.equals("you", true))
+                    } else if (listenFor == "action" || listenFor == "note") {
+                        if (n.isNotEmpty()) {
+                            Meetings.mark(this, listenFor, n)
+                            listenSaid = if (listenFor == "action") "action item kept" else "note kept"
+                        }
+                    } else if (listenFor == "meeting") {
+                        Meetings.start(this, n)
+                        listenSaid = "meeting started"
                     } else if (n.isNotEmpty()) listenAsk(n, listenFor == "deep")
                     listenName = null
                     Session.listenTyping = false
@@ -2639,6 +2655,27 @@ class ScouterService : Service() {
                     Session.listenTyping = true
                 } else Session.listenTyping = false
             }
+            "s" -> if (Meetings.current != null) {
+                Meetings.stop(this)
+                listenSaid = "meeting ended: its notes are being written"
+            } else {
+                listenFor = "meeting"
+                listenName = StringBuilder()
+                Session.listenTyping = true
+            }
+            "b" -> if (Meetings.current != null) {
+                Thread { Meetings.bookmark(this) }.start()
+                listenSaid = "bookmarked the last 30 s"
+            } else listenSaid = "bookmarks are for meetings: S starts one"
+            "i", "t" -> if (Meetings.current != null) {
+                listenFor = if (k == "i") "action" else "note"
+                listenName = StringBuilder()
+                Session.listenTyping = true
+            } else {
+                listenSaid = "S starts a meeting first"
+                Session.listenTyping = false
+            }
+            "c" -> listenAsk("catch up", false)
             "a", "d" -> {
                 listenFor = if (k == "d") "deep" else "ask"
                 listenName = StringBuilder()
@@ -2682,12 +2719,25 @@ class ScouterService : Service() {
             Listen.paused -> "paused (P listens again)"
             else -> Listen.state
         }
-        framePanel(Panels.LISTEN, "VOX//LISTEN", "Esc closes", "O on/off · P pause · N name · M me · A ask · D ask deep") { width, max ->
+        val foot = if (Meetings.current != null) "S end · B bookmark · I action · T note · C catch up · A ask"
+            else "O on/off · P pause · N name · M me · A ask · D deep · S meeting · C catch up"
+        framePanel(Panels.LISTEN, "VOX//LISTEN", "Esc closes", foot) { width, max ->
             val rows = mutableListOf<Pair<String, Int>>()
             rows += ("▌▌ LISTEN ▐░▒▓ ${Listen.today} lines today · $head" + if (listenSaid.isNotEmpty()) " · $listenSaid" else "") to 1
+            Meetings.current?.let { m ->
+                val min = (System.currentTimeMillis() - m.started) / 60000
+                val st = runCatching { Meetings.stats(this) }.getOrNull()
+                rows += ("▌▌ MEETING ▐░▒▓ ${m.title} · $min min" + (st?.let { " · " + Words.line(it) } ?: "")) to 1
+            }
+            if (Meetings.writing.isNotEmpty()) rows += " writing the notes of \"${Meetings.writing}\"…" to 2
             listenName?.let { n ->
-                rows += (if (listenFor == "name") " ■ Who is ${listenNaming?.who?.ifEmpty { "this voice" }}? Type the name (or me), Enter, Esc no"
-                    else " ■ Ask ${if (listenFor == "deep") "(deep)" else ""} about what was said: type, Enter, Esc no") to 3
+                rows += when (listenFor) {
+                    "name" -> " ■ Who is ${listenNaming?.who?.ifEmpty { "this voice" }}? Type the name (or me), Enter, Esc no"
+                    "meeting" -> " ■ A meeting: its title (or just Enter), Esc no"
+                    "action" -> " ■ Action item: who, what, by when; Enter keeps it"
+                    "note" -> " ■ A note for this moment; Enter keeps it"
+                    else -> " ■ Ask ${if (listenFor == "deep") "(deep) " else ""}about what was said: type, Enter, Esc no"
+                } to 3
                 rows += "   › $n█" to 1
             }
             if (listenAnswer.isNotEmpty() && listenName == null) {

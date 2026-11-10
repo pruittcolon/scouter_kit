@@ -518,6 +518,16 @@ with the app in the back.
   quiet moments), fused by reciprocal rank; meaning only for two or more real words and within Vox Amelior's
   calibration. Ask finds the lines (or a named time's: today, yesterday, last week, a weekday...) and LFM2.5
   answers from them with times and names; on the glasses, A asks (D the deep model) in VOX//LISTEN.
+  Meetings (`Meetings.kt`): started on the glasses (S in VOX//LISTEN, a title or Enter), on the Listen page, or by
+  a calendar event with two or more people invited (ends 5 min after it). Meanwhile B bookmarks the last 30 s, I
+  keeps an action item, T a note, C catches you up (the last 5 minutes in three lines), A asks about the meeting;
+  the panel shows its minutes and the talk share. At the end the deep model writes SUMMARY, DECISIONS, ACTION
+  ITEMS and OPEN QUESTIONS (long meetings in parts, then together), saved with the bookmarks and notes, who talked
+  how much and the transcript as "Meeting <date> <time> <title>.md" in the docs folder; "Write the notes again" on
+  the Listen page. Tone and words (`Words.kt`): SenseVoice Small (downloaded on the Listen page) tags each line's
+  emotion and sounds; the audio gives loudness and speed; the stats are talk time and share, words a minute,
+  questions, filler words, talking over, the longest stretch, moods, laughter, and the words that stood out
+  against the last 30 days (Today's talk on the Listen page, the meeting notes, the glasses' meeting line).
 - **Alt+N** (or **E** on the hub) opens the text editor on the glasses (`Editor.kt`, `Panels.EDITOR`): the .txt and
   .md files in Vox's folder `Android/data/<app id>/files/docs` (copy files there from a computer or with `adb push`),
   newest first; the arrows pick, Enter opens, N makes a new one. A file's lines wrap at the panel's width, a ▌ is the

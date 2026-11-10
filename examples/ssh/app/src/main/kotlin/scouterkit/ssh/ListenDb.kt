@@ -13,7 +13,7 @@ import java.util.Locale
 // Listen mode's memory (listen.db, the app's private files): conversations (a new one after 5 min without speech),
 // their lines (text, word times, who, how), the people Vox knows by voice and the voices it has not been told about.
 // lines_fts: the lines' words for searching (FTS4, English stemming).
-class ListenDb private constructor(context: Context) : SQLiteOpenHelper(context, "listen.db", null, 3) {
+class ListenDb private constructor(context: Context) : SQLiteOpenHelper(context, "listen.db", null, 4) {
     class Line(
         val id: Long, val conv: Long, val start: Long, val end: Long, val text: String,
         val person: String, val voice: String, val quiet: Boolean, val emotion: String, val sound: String,
@@ -40,11 +40,24 @@ class ListenDb private constructor(context: Context) : SQLiteOpenHelper(context,
             "count INTEGER NOT NULL, updated INTEGER NOT NULL)")
         v2(db)
         v3(db)
+        v4(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) v2(db)
         if (oldVersion < 3) v3(db)
+        if (oldVersion < 4) v4(db)
+    }
+
+    // Version 4: how a line was said (loudness dBFS, words a second), meetings and their notes.
+    private fun v4(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE lines ADD COLUMN loud REAL NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE lines ADD COLUMN rate REAL NOT NULL DEFAULT 0")
+        db.execSQL("CREATE TABLE meetings(id INTEGER PRIMARY KEY, title TEXT NOT NULL, started INTEGER NOT NULL, " +
+            "ended INTEGER NOT NULL DEFAULT 0, people TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', " +
+            "file TEXT NOT NULL DEFAULT '')")
+        db.execSQL("CREATE TABLE notes(id INTEGER PRIMARY KEY, meeting INTEGER NOT NULL, at INTEGER NOT NULL, " +
+            "kind TEXT NOT NULL, text TEXT NOT NULL)")
     }
 
     // Version 3: a line's meaning vector (EmbeddingGemma, Llm.pack), for search by meaning.
@@ -415,6 +428,65 @@ class ListenDb private constructor(context: Context) : SQLiteOpenHelper(context,
             score += idf * hits * 2.2 / (hits + 1.2 * (0.25 + 0.75 * len / avg))
         }
         return score
+    }
+
+    // ------------------------------------------------ tone and meetings (Words.kt, Meetings.kt)
+
+    @Synchronized
+    fun setTone(id: Long, emotion: String, sound: String, loud: Float, rate: Float) {
+        writableDatabase.update("lines", ContentValues().apply {
+            put("emotion", emotion)
+            put("sound", sound)
+            put("loud", loud.toDouble())
+            put("rate", rate.toDouble())
+        }, "id = ?", arrayOf(id.toString()))
+    }
+
+    class Meeting(val id: Long, val title: String, val started: Long, val ended: Long, val people: String, val summary: String,
+                  val file: String)
+
+    @Synchronized
+    fun meetingStart(title: String, started: Long, people: String): Long = writableDatabase.insert("meetings", null, ContentValues().apply {
+        put("title", title)
+        put("started", started)
+        put("people", people)
+    })
+
+    @Synchronized
+    fun meetingEnd(id: Long, ended: Long) = writableDatabase.execSQL("UPDATE meetings SET ended = ? WHERE id = ?", arrayOf<Any>(ended, id))
+
+    @Synchronized
+    fun meetingSummary(id: Long, summary: String, file: String) = writableDatabase.execSQL(
+        "UPDATE meetings SET summary = ?, file = ? WHERE id = ?", arrayOf<Any>(summary, file, id))
+
+    fun meetings(limit: Int = 30): List<Meeting> {
+        val out = ArrayList<Meeting>()
+        readableDatabase.rawQuery("SELECT id, title, started, ended, people, summary, file FROM meetings ORDER BY started DESC LIMIT $limit", null).use { c ->
+            while (c.moveToNext()) out += Meeting(c.getLong(0), c.getString(1), c.getLong(2), c.getLong(3), c.getString(4),
+                c.getString(5), c.getString(6))
+        }
+        return out
+    }
+
+    fun meeting(id: Long): Meeting? = meetings(1000).firstOrNull { it.id == id }
+
+    @Synchronized
+    fun addNote(meeting: Long, at: Long, kind: String, text: String) {
+        writableDatabase.insert("notes", null, ContentValues().apply {
+            put("meeting", meeting)
+            put("at", at)
+            put("kind", kind)
+            put("text", text)
+        })
+    }
+
+    // A meeting's notes: (time, kind: bookmark / action / note, text), in time order.
+    fun notes(meeting: Long): List<Triple<Long, String, String>> {
+        val out = ArrayList<Triple<Long, String, String>>()
+        readableDatabase.rawQuery("SELECT at, kind, text FROM notes WHERE meeting = ? ORDER BY at", arrayOf(meeting.toString())).use { c ->
+            while (c.moveToNext()) out += Triple(c.getLong(0), c.getString(1), c.getString(2))
+        }
+        return out
     }
 
     fun line(id: Long): Line? = lines("WHERE id = ?", arrayOf(id.toString()), "start", 1).firstOrNull()

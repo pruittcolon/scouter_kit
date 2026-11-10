@@ -49,6 +49,11 @@ class ListenActivity : Activity(), HearingCheck.Ui {
     private lateinit var search: EditText
     private lateinit var peopleBox: LinearLayout
     private lateinit var modelsBox: LinearLayout
+    private lateinit var meetingsBox: LinearLayout
+    private lateinit var meetingLine: TextView
+    private lateinit var insights: TextView
+    private lateinit var toneLine: TextView
+    private lateinit var toneChip: TextView
     private lateinit var answer: TextView
     private lateinit var modelLine: TextView
     private lateinit var modelChip: TextView
@@ -224,11 +229,44 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         askCard.addView(answer)
         page.addView(askCard)
 
+        // Meetings.
+        val mt = card("Meetings", "A meeting gets notes when it ends: summary, decisions, action items, open questions, " +
+            "your bookmarks and notes, who talked how much, the transcript; a file in the docs folder (Alt+N). On the " +
+            "glasses' Listen panel: S starts / ends, B bookmark, I action item, T note, C catch me up, A ask about it.")
+        val title = field("Title", "", "what the meeting is about")
+        mt.addView(title, lp().apply { topMargin = dp(4); bottomMargin = dp(6) })
+        meetingLine = text("", 13.5f, Ui.TEXT, Ui.BOLD)
+        mt.addView(meetingLine)
+        mt.addView(chipRow(chip("Start / end the meeting", true) {
+            if (Meetings.current != null) Meetings.stop(this) else Meetings.start(this, title.text.toString().trim())
+            main.postDelayed({ showMeetings() }, 300)
+        }, chip("Bookmark", false) { Thread { Meetings.bookmark(this) }.start() }))
+        mt.addToggle(toggle("Start from the calendar", "An event with two or more people invited starts a meeting while " +
+            "Listen mode is on, and ends it 5 minutes after the event", settings.listenMeetingsAuto) { settings.listenMeetingsAuto = it })
+        meetingsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        mt.addView(meetingsBox)
+        page.addView(mt)
+
+        // Insights: today's talk.
+        val ins = card("Today's talk", "Who talked how much, questions, filler words, talking over, moods and the words that " +
+            "stood out against the last 30 days.")
+        insights = text("", 13.5f, Ui.TEXT)
+        ins.addView(insights)
+        ins.addView(chipRow(chip("Count again", false) { showInsights() }))
+        page.addView(ins)
+
         // The models.
         val ai = page.section("AI models", "listen_models", "spark", hint = "On this phone, offline: Liquid's LFM2.5 " +
             "answers and summarizes, EmbeddingGemma finds by meaning. Wi-Fi is best for the downloads.")
         modelsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         ai.addView(modelsBox)
+        toneLine = text("", 12.5f, Ui.MUTED)
+        ai.addView(text("Tone of voice (SenseVoice Small)", 15f, Ui.TEXT, Ui.BOLD).apply { setPadding(0, dp(10), 0, 0) })
+        ai.addView(toneLine)
+        toneChip = chip("Download", true) { toneAction() }
+        ai.addView(chipRow(toneChip))
+        ai.addToggle(toggle("Tone of voice", "Each line's emotion (happy, sad, angry...) and sounds (laughter, music...)",
+            settings.listenTone) { settings.listenTone = it })
         ai.addToggle(toggle("Search by meaning", "A meaning vector for every line of four words or more, made while the " +
             "phone is quiet (more often while charging)", settings.listenMeaning) { settings.listenMeaning = it })
 
@@ -267,6 +305,82 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         showModel()
         showPeople()
         showModels()
+        showMeetings()
+        showInsights()
+        showTone()
+    }
+
+    private fun showTone() {
+        fun mb(b: Long) = "${b / 1_000_000} MB"
+        val ready = ToneModel.ready(this)
+        toneLine.text = when {
+            ToneModel.progress >= 0 -> "Downloading… ${mb(ToneModel.progress)} of ${mb(ToneModel.bytes)}"
+            ready -> "ready · ${mb(ToneModel.bytes)}"
+            ToneModel.problem != null -> "not downloaded: ${ToneModel.problem}"
+            else -> "not downloaded · ${mb(ToneModel.bytes)}"
+        }
+        toneChip.visibility = if (ToneModel.progress >= 0) View.GONE else View.VISIBLE
+        toneChip.text = if (ready) "Delete" else "Download"
+    }
+
+    private fun toneAction() {
+        if (ToneModel.ready(this)) {
+            ToneModel.delete(this)
+            return showTone()
+        }
+        Thread {
+            ToneModel.download(this)
+            main.post { showTone() }
+        }.start()
+        val ticker = object : Runnable {
+            override fun run() {
+                showTone()
+                if (ToneModel.progress >= 0) main.postDelayed(this, 500)
+            }
+        }
+        main.postDelayed(ticker, 300)
+    }
+
+    private fun showMeetings() {
+        val cur = Meetings.current
+        meetingLine.text = when {
+            cur != null -> "In a meeting: ${cur.title} · ${(System.currentTimeMillis() - cur.started) / 60000} min"
+            Meetings.writing.isNotEmpty() -> "Writing the notes of ${Meetings.writing}…"
+            else -> "No meeting now."
+        }
+        Thread {
+            val list = ListenDb.get(this).meetings(10)
+            main.post {
+                meetingsBox.removeAllViews()
+                val fmt = SimpleDateFormat("EEE MMM d, h:mm a", Locale.US)
+                for (m in list) {
+                    meetingsBox.addView(text(m.title, 14.5f, Ui.TEXT, Ui.BOLD).apply { setPadding(0, dp(10), 0, 0) })
+                    meetingsBox.addView(text(fmt.format(Date(m.started)) + (if (m.ended > 0) " · ${(m.ended - m.started) / 60000} min" else " · going on") +
+                        (if (m.file.isNotEmpty()) " · ${m.file}" else ""), 12f, Ui.FAINT))
+                    if (m.summary.isNotEmpty()) meetingsBox.addView(text(m.summary.take(600), 13f, Ui.MUTED).apply { setTextIsSelectable(true) })
+                    if (m.ended > 0) meetingsBox.addView(chipRow(chip("Write the notes again", false) {
+                        meetingLine.text = "Writing the notes of ${m.title}…"
+                        Thread {
+                            val f = runCatching { Meetings.write(this, m.id) }.getOrNull()
+                            main.post {
+                                meetingLine.text = if (f != null) "Saved ${f.name}" else "The notes could not be written"
+                                showMeetings()
+                            }
+                        }.start()
+                    }))
+                }
+            }
+        }.start()
+    }
+
+    private fun showInsights() {
+        Thread {
+            val db = ListenDb.get(this)
+            val day = ListenDb.dayStart(System.currentTimeMillis())
+            val (base, n) = Words.baseline(this)
+            val st = Words.stats(db.between(day, Long.MAX_VALUE), db.names(), base, n)
+            main.post { insights.text = if (st.lines == 0) "Nothing heard today yet." else Words.report(st) }
+        }.start()
     }
 
     // Each model: what it is for, its size, downloaded or not (Download / Delete).
