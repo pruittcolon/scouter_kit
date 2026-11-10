@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The launcher icon: a pair of glasses (inside the adaptive icon's 66 dp safe circle). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:strokeColor="#FF0B1220" android:strokeWidth="5" android:fillColor="#00000000"
+        android:strokeLineJoin="round"
+        android:pathData="M33,44 H45 A6,6 0 0 1 51,50 V56 A6,6 0 0 1 45,62 H33 A6,6 0 0 1 27,56 V50 A6,6 0 0 1 33,44 Z" />
+    <path android:strokeColor="#FF0B1220" android:strokeWidth="5" android:fillColor="#00000000"
+        android:strokeLineJoin="round"
+        android:pathData="M63,44 H75 A6,6 0 0 1 81,50 V56 A6,6 0 0 1 75,62 H63 A6,6 0 0 1 57,56 V50 A6,6 0 0 1 63,44 Z" />
+    <path android:strokeColor="#FF0B1220" android:strokeWidth="4" android:fillColor="#00000000"
+        android:strokeLineCap="round" android:pathData="M51,50 Q54,46 57,50" />
+    <path android:fillColor="#B3FFFFFF" android:pathData="M31,48 h6 v3 h-6 z M61,48 h6 v3 h-6 z" />
+</vector>

@@ -4,26 +4,64 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
     <uses-feature android:name="android.software.companion_device_setup" android:required="false" />
 
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission
         android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- The phone's screen on the glasses (Android's screen sharing). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- Car mode listening on the phone's own microphone while Vox is in the back. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Updates from inside the app (Settings, Troubleshooting): Android asks before installing. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Termux on this phone as the server: its sshd started through Termux's RUN_COMMAND. -->
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+    <!-- Settings, "Let it run in the background": Android's own dialog. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- The hub's alarm (the phone's clock app sets it) and the buzz of a timer's end or a reminder. -->
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Calls and texts (Alt+J): the starred contacts, a call, a text. -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The look-up dashboard's calendar widget (asked for only when it is used). -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <!-- Tunes: the music's beat and volume from Android's output mix (Visualizer), asked for only when it is used. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Start by itself after the phone starts (Settings.autoStart). -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
     <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
     <uses-permission android:name="android.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND" />
     <uses-permission android:name="android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE" />
 
+    <queries>
+        <package android:name="com.termux" />
+        <!-- Google's Reading mode, opened from the Screen tab. -->
+        <package android:name="com.google.android.accessibility.reader" />
+        <!-- The look-up header names the apps whose notifications it shows. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="false"
-        android:icon="@drawable/icon"
+        android:icon="@mipmap/ic_vox"
+        android:roundIcon="@mipmap/ic_vox"
         android:label="@string/app_name"
-        android:theme="@android:style/Theme.DeviceDefault">
+        android:theme="@android:style/Theme.Material.NoActionBar">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -32,8 +70,39 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- vox://server?name=…&host=…&port=…&user=…&command=… adds a saved server (the app asks first). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="vox" android:host="server" />
+            </intent-filter>
         </activity>
+        <!-- The shortcuts' taps (launcher, home screen): no screen of its own. -->
+        <activity
+            android:name=".ShortcutActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay" />
         <activity android:name=".SettingsActivity" android:exported="false" />
+        <activity android:name=".TvActivity" android:exported="false" />
+        <activity android:name=".ListenActivity" android:exported="false" />
+        <!-- The charging case's own log over its USB-C port (a USB-to-serial chip): offered when one is plugged in. -->
+        <activity android:name=".CaseLogActivity" android:exported="true" android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" android:resource="@xml/case_usb" />
+        </activity>
+        <!-- A notification clicked on the glasses: opens its app, unseen, then goes (LookUp.kt). -->
+        <activity
+            android:name=".NoteActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <activity android:name=".HidSpikeActivity" android:exported="false" />
         <activity android:name=".PairingActivity" android:exported="false" />
         <service
@@ -47,7 +116,65 @@
         <service
             android:name=".ScouterService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
+            android:foregroundServiceType="connectedDevice|mediaProjection|microphone" />
+        <!-- Quick Settings: the glasses' display off / on. -->
+        <service
+            android:name=".ListenService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <service
+            android:name=".GlassesTile"
+            android:exported="true"
+            android:icon="@android:drawable/stat_sys_data_bluetooth"
+            android:label="Glasses"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <!-- Quick Settings: the next source on the glasses. -->
+        <service
+            android:name=".SourceTile"
+            android:exported="true"
+            android:icon="@drawable/ic_sc_next"
+            android:label="Next source"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <!-- The phone's notifications for the look-up header, once the user allows it (Notification access). -->
+        <service
+            android:name=".VoxNotifications"
+            android:exported="true"
+            android:label="Vox: notifications on the glasses"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+        <!-- A keyboard's Alt shortcuts in every app (Hotkeys): key events only, no screen content. -->
+        <service
+            android:name=".VoxKeys"
+            android:exported="false"
+            android:label="Vox keyboard shortcuts"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/vox_keys" />
+        </service>
+        <!-- Termux's answer to the setup (its RUN_COMMAND pending intent). -->
+        <receiver
+            android:name=".TermuxResult"
+            android:exported="false" />
+        <!-- Android's package installer answering an in-app update (Reliability.kt). -->
+        <receiver
+            android:name=".UpdateResult"
+            android:exported="false" />
         <!-- The Bluetooth switch: keyer's presence is observed only while Bluetooth is on (system broadcasts). -->
         <receiver
             android:name=".BluetoothSwitch"
@@ -57,6 +184,9 @@
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
     </application>

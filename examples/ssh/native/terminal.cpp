@@ -1,4 +1,5 @@
 #include "terminal.hpp"
+#include "screen.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -25,21 +26,34 @@ namespace ssh {
 namespace {
 
 // State words from Layout::state. The host writes wTop ... wBattFont with each frame, wForce and wPeer.
+// wHold: the host holds the frames for a transition (0 none, 1 the terminal, 2 with the dashboard): they are
+// rendered, not drawn, and the dashboard (2) waits too; the host reveals them (Fx).
 enum {
   wTop, wFull, wCurSlot, wCurX, wShowAt, wFrame, wFont, wBattFont, wNext, wShown, wForce, wPeer, wHideAt, wUp,
+  wHold, wPtrX, wPtrY, wPtrOn, wPtrDX, wPtrDY, wPtrDrawn,
+  wH0, wH1, wH2, wH3, wH4, wH5, wH6, wH7, wHX, wHY, // the pointer's working words for the host's code
+  wQ0, wQ1, wQ2, wQ3, wQ4, wQ5, wQ6, wQ7, wQX, wQY, // and for the program's
   kStateWords
 };
+constexpr int kPtrW = kArrowW, kPtrH = kArrowH; // the arrow's box (1 bpp masks 2 bytes a row; 4 bpp scratch 8)
 
 constexpr int kRecordBytes = 512; // u8 runs; each u8 x, u8 cells, u8 bg<<4|fg, u8 1: underline, u8 n, n varint bytes
 constexpr int kMaxRuns = 32;
 constexpr int kRowsPerTask = 6; // rows rendered per activation, within the jump budget
-constexpr int kCodeBytes = 2048;
+constexpr int kCodeBytes = 6144; // the program, with the fade, the dashboard and the pointer
+constexpr int kPtrCode = 1024;   // the host's pointer code (its own table and pool)
 constexpr int kPoolWords = 96;
 constexpr uint32_t kNoCursor = 0xFFFFFFFF;
 constexpr int kHysteresis = 5;      // degrees below the angle at which the terminal hides again
 constexpr int kHoldUs = 1000000;    // shown this long after the head went down
+constexpr int kFadeSteps = 8;       // brightness steps of the look-up fade in (Config::fade_ms)
+constexpr int kFadeOutSteps = 5;    // and out
 constexpr uint32_t kByHost = 16;    // NOTIFY a: a visibility change the host asked for (wForce, wPeer)
 constexpr int kForceWatchUs = 5000000; // while forced, how often the arm checks that the host is still linked
+constexpr int kLostWatchUs = 2000000;  // while the force is lost (the link dropped), how often it looks for the link
+constexpr uint32_t kForceLost = 2;     // wForce: forced, but the link dropped: the head decides until it is back
+constexpr uint32_t kForceDoubt = 3;    // wForce: forced, the link read 0 once: still forced until a second look
+constexpr int kLinkGraceUs = 6000000;  // how long after that first 0 the second look comes (a blip passes unseen)
 constexpr int kBattPad = 3, kBattPadY = 1; // the battery band: pixels between its frame and the text
 constexpr int kDefaultLevel = 12;
 
@@ -179,19 +193,174 @@ std::vector<uint8_t> Words(std::initializer_list<uint32_t> words) {
 }
 
 // The battery band's top on the panel: centred vertically.
-int BattY(const GlassesTerminal::Geometry &g) { return (480 - g.bh) / 2; }
+// The panel's middle, kept beside the terminal's rows (moved down or up by its margins).
+int BattY(const GlassesTerminal::Geometry &g) {
+  return std::clamp((480 - g.bh) / 2, g.y, std::max(g.y, g.y + g.rows * g.ch - g.bh));
+}
 
-GlassesTerminal::Layout MakeLayout(uint32_t base, const GlassesTerminal::Geometry &g) {
+// The dashboard's picture right above the terminal's area (one bitmap with it, for the transitions).
+GlassesTerminal::Layout MakeLayout(uint32_t base, const GlassesTerminal::Geometry &g, int dash_h) {
   GlassesTerminal::Layout l;
   l.base = base;
   l.state = base + kCodeBytes;
   l.dirty = l.state + 4 * kStateWords;
   l.ring = l.dirty + uint32_t((g.rows + 3) & ~3);
-  l.area = l.ring + uint32_t(g.rows * kRecordBytes);
+  l.dash = l.ring + uint32_t(g.rows * kRecordBytes);
+  l.area = l.dash + uint32_t(g.W() / 2 * dash_h);
   l.batt = l.area + uint32_t(g.W() / 2 * g.rows * g.ch);
   l.batt_text = l.batt + uint32_t(g.bw / 2 * g.bh); // 3 digits and %
-  l.end = l.batt_text + 4;
+  l.ptr_fill = l.batt_text + 4;
+  l.ptr_edge = l.ptr_fill + 2 * kPtrH;
+  l.ptr_host = l.ptr_edge + 2 * kPtrH;
+  l.ptr_prog = l.ptr_host + kPtrW / 2 * kPtrH;
+  l.ptr_code = (l.ptr_prog + kPtrW / 2 * kPtrH + 3) & ~3u;
+  l.end = l.ptr_code + kPtrCode;
   return l;
+}
+
+// The pointer's code (in a program p): `compose` draws the arrow over the content at (X, Y) of the terminal's region
+// (y < 0: the dashboard's rows) from the area's ring (top: wTop) and the dashboard's picture, clipped to the region;
+// `restore` puts the content back over (X, Y)'s box. X, Y and t: working words; scr: a 4 bpp kPtrW x kPtrH scratch.
+struct PointerCode {
+  g1::Program::Label compose, restore;
+};
+PointerCode EmitPointer(g1::Program &p, const GlassesTerminal::Layout &l, const GlassesTerminal::Geometry &g, int dash_h,
+                        int px, int py, ArenaWord top, ArenaWord X, ArenaWord Y, std::array<ArenaWord, 8> t, uint32_t scr) {
+  auto c = [&](uint32_t v) { return p.Const(v); };
+  auto n = [&](int v) { return p.Const(uint32_t(int32_t(v))); };
+  ArenaWord i = t[0], yy = t[1], sy = t[2], src = t[3], x0 = t[4], x1 = t[5], tmp = t[6], tmp2 = t[7];
+  const int H = g.rows * g.ch, W = g.W(), stride = g.W() / 2;
+  PointerCode pc{p.NewLabel(), p.NewLabel()};
+  // yy (inside the region) to its source row: the dashboard's, or the area's slot row.
+  auto row_src = p.NewLabel(), rs_dash = p.NewLabel();
+  p.Bind(row_src);
+  p.BltS(yy, c(0), rs_dash);
+  p.DivU(sy, yy, n(g.ch));
+  p.ModU(tmp, yy, n(g.ch));
+  p.Add(sy, sy, top);
+  p.ModU(sy, sy, n(g.rows));
+  p.Mul(sy, sy, n(g.ch));
+  p.Add(sy, sy, tmp);
+  p.Mov(src, c(l.area));
+  p.Ret();
+  p.Bind(rs_dash);
+  p.Add(sy, yy, n(dash_h));
+  p.Mov(src, c(l.dash));
+  p.Ret();
+  // The box's columns inside the region: [x0, x1).
+  auto cols = p.NewLabel(), c0 = p.NewLabel(), c1 = p.NewLabel();
+  p.Bind(cols);
+  p.Mov(x0, X);
+  p.BgeS(x0, c(0), c0);
+  p.Mov(x0, c(0));
+  p.Bind(c0);
+  p.Add(x1, X, n(kPtrW));
+  p.BltS(x1, n(W), c1);
+  p.Mov(x1, n(W));
+  p.Bind(c1);
+  p.Ret();
+  // compose: the content under the box into scr (black outside the region), the arrow's dark edge and bright body
+  // over it, then the part inside the region to the panel.
+  auto cl = p.NewLabel(), cnext = p.NewLabel(), cdone = p.NewLabel(), y0 = p.NewLabel(), y1 = p.NewLabel(),
+       cret = p.NewLabel();
+  p.Bind(pc.compose);
+  p.Fill(c(scr), n(kPtrW / 2), c(0), c(0), n(kPtrW), n(kPtrH), c(0));
+  p.Call(cols);
+  p.Mov(i, c(0));
+  p.Bind(cl);
+  p.BgeU(i, n(kPtrH), cdone);
+  p.Add(yy, Y, i);
+  p.BltS(yy, n(-dash_h), cnext);
+  p.BgeS(yy, n(H), cnext);
+  p.BgeS(x0, x1, cnext);
+  p.Call(row_src);
+  p.Sub(tmp, x1, x0);
+  p.Sub(tmp2, x0, X);
+  p.Blit(src, n(stride), x0, sy, c(scr), n(kPtrW / 2), tmp2, i, tmp, c(1), c(0), c(15));
+  p.Bind(cnext);
+  p.Add(i, i, c(1));
+  p.Jmp(cl);
+  p.Bind(cdone);
+  p.Blit(c(l.ptr_edge), c(2), c(0), c(0), c(scr), n(kPtrW / 2), c(0), c(0), n(kPtrW), n(kPtrH), c(4 | g1::MODE_ERASE), c(15));
+  p.Blit(c(l.ptr_fill), c(2), c(0), c(0), c(scr), n(kPtrW / 2), c(0), c(0), n(kPtrW), n(kPtrH), c(4 | g1::MODE_MASK), c(15));
+  p.Mov(yy, Y);
+  p.BgeS(yy, n(-dash_h), y0);
+  p.Mov(yy, n(-dash_h));
+  p.Bind(y0);
+  p.Add(tmp, Y, n(kPtrH));
+  p.BltS(tmp, n(H), y1);
+  p.Mov(tmp, n(H));
+  p.Bind(y1);
+  p.BgeS(yy, tmp, cret);
+  p.BgeS(x0, x1, cret);
+  p.Sub(tmp, tmp, yy);   // rows
+  p.Sub(tmp2, x1, x0);   // columns
+  p.Sub(sy, x0, X);      // in the scratch
+  p.Sub(src, yy, Y);
+  p.Add(i, x0, n(px));   // on the panel
+  p.Add(yy, yy, n(py));
+  p.Draw(c(scr), n(kPtrW / 2), sy, src, i, yy, tmp2, tmp);
+  p.Bind(cret);
+  p.Ret();
+  // restore: the content again over the box, row by row.
+  auto rl = p.NewLabel(), rnext = p.NewLabel(), rdone = p.NewLabel();
+  p.Bind(pc.restore);
+  p.Call(cols);
+  p.Mov(i, c(0));
+  p.Bind(rl);
+  p.BgeU(i, n(kPtrH), rdone);
+  p.Add(yy, Y, i);
+  p.BltS(yy, n(-dash_h), rnext);
+  p.BgeS(yy, n(H), rnext);
+  p.BgeS(x0, x1, rnext);
+  p.Call(row_src);
+  p.Sub(tmp, x1, x0);
+  p.Add(tmp2, x0, n(px));
+  p.Add(yy, yy, n(py));
+  p.Draw(src, n(stride), x0, sy, tmp2, yy, tmp, c(1));
+  p.Bind(rnext);
+  p.Add(i, i, c(1));
+  p.Jmp(rl);
+  p.Bind(rdone);
+  p.Ret();
+  return pc;
+}
+
+// The host's pointer code (its own block, called by a host packet): the content back where the arrow was, then the
+// arrow where it is asked to be (wPtrX, wPtrY, wPtrOn); while the terminal is hidden (or the panel policy holds the
+// panel off) only the place is kept, for the program's paint when it shows.
+g1::Program MakePointerCode(const GlassesTerminal::Layout &l, const GlassesTerminal::Geometry &g, int dash_h, int px,
+                            int py, ArenaWord hidden, uint32_t *entry) {
+  g1::Program p(l.ptr_code, 24);
+  auto c = [&](uint32_t v) { return p.Const(v); };
+  auto w = [&](int i) { return ArenaWord(l.state / 4 + i); };
+  PointerCode pc = EmitPointer(p, l, g, dash_h, px, py, w(wTop), w(wHX), w(wHY),
+                               {w(wH0), w(wH1), w(wH2), w(wH3), w(wH4), w(wH5), w(wH6), w(wH7)}, l.ptr_host);
+  auto keep = p.NewLabel(), fresh = p.NewLabel(), done = p.NewLabel();
+  *entry = p.Here();
+  p.Beq(w(wShown), c(0), keep);
+  if (hidden) p.Bne(hidden, c(0), keep);
+  p.Beq(w(wPtrDrawn), c(0), fresh);
+  p.Mov(w(wHX), w(wPtrDX));
+  p.Mov(w(wHY), w(wPtrDY));
+  p.Call(pc.restore);
+  p.Bind(fresh);
+  p.Mov(w(wPtrDrawn), c(0));
+  p.Beq(w(wPtrOn), c(0), done);
+  p.Mov(w(wHX), w(wPtrX));
+  p.Mov(w(wHY), w(wPtrY));
+  p.Call(pc.compose);
+  p.Mov(w(wPtrDX), w(wPtrX));
+  p.Mov(w(wPtrDY), w(wPtrY));
+  p.Mov(w(wPtrDrawn), c(1));
+  p.Bind(done);
+  p.Ret();
+  p.Bind(keep);
+  p.Mov(w(wPtrDX), w(wPtrX));
+  p.Mov(w(wPtrDY), w(wPtrY));
+  p.Mov(w(wPtrDrawn), w(wPtrOn));
+  p.Ret();
+  return p;
 }
 
 // The terminal at panel (px, py) (program.go), and its visibility. USER0 (the host wrote a frame) renders
@@ -200,14 +369,14 @@ GlassesTerminal::Layout MakeLayout(uint32_t base, const GlassesTerminal::Geometr
 // whether the terminal shows and NOTIFY (shown | kByHost when the host caused it, PITCH). The battery band
 // shows at (bx, by) with the terminal; BATTERY redraws it.
 g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal::Geometry &g, int px, int py,
-                        int bx, int by, int angle, bool ignore_worn) {
+                        int bx, int by, int angle, bool ignore_worn, int fade_us, int dash_h, ArenaWord *hidden) {
   g1::Program p(l.base, kPoolWords);
   auto c = [&](uint32_t v) { return p.Const(v); };
   auto n = [&](int v) { return p.Const(uint32_t(int32_t(v))); };
   auto w = [&](int i) { return ArenaWord(l.state / 4 + i); };
   ArenaWord top = w(wTop), full = w(wFull), cur_slot = w(wCurSlot), cur_x = w(wCurX), show_at = w(wShowAt),
             frame = w(wFrame), font = w(wFont), batt_font = w(wBattFont), next = w(wNext), shown = w(wShown),
-            force = w(wForce), peer = w(wPeer), hide_at = w(wHideAt), up = w(wUp);
+            force = w(wForce), peer = w(wPeer), hide_at = w(wHideAt), up = w(wUp), hold = w(wHold);
   ArenaWord area = c(l.area), stride = n(g.W() / 2);
   ArenaWord pitch = c(g1::PROP_PITCH), lo = c(g1::PROP_PITCH_LO), hi = c(g1::PROP_PITCH_HI);
   ArenaWord time_us = c(g1::PROP_TIME_US), timer = c(g1::PROP_TIMER), panel = c(g1::PROP_PANEL);
@@ -218,6 +387,9 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   // setting leaves it out, for tests with the glasses folded on the table.
   auto redraw = p.NewLabel();
   if (!ignore_worn) p.PanelPolicy(redraw);
+  *hidden = ignore_worn ? 0 : p.PanelHidden();
+  // The pointer painted again over what was just drawn (where the host's code last put it).
+  auto ptr_paint = p.NewLabel(), ptr_none = p.NewLabel();
 
   auto render = p.NewLabel(), runs = p.NewLabel(), no_bg = p.NewLabel(), no_line = p.NewLabel(),
        runs_done = p.NewLabel(), no_cur = p.NewLabel();
@@ -261,6 +433,18 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.Ret();
 
   auto draw_all = p.NewLabel(); // the whole area, row 0 from slot wTop
+  {
+    auto ww = [&](int i) { return ArenaWord(l.state / 4 + i); };
+    PointerCode pc = EmitPointer(p, l, g, dash_h, px, py, top, ww(wQX), ww(wQY),
+                                 {ww(wQ0), ww(wQ1), ww(wQ2), ww(wQ3), ww(wQ4), ww(wQ5), ww(wQ6), ww(wQ7)}, l.ptr_prog);
+    p.Bind(ptr_paint);
+    p.Beq(ww(wPtrDrawn), c(0), ptr_none);
+    p.Mov(ww(wQX), ww(wPtrDX));
+    p.Mov(ww(wQY), ww(wPtrDY));
+    p.Call(pc.compose);
+    p.Bind(ptr_none);
+    p.Ret();
+  }
   p.Bind(draw_all);
   p.Sub(R(1), n(g.rows), top);
   p.Mul(R(1), R(1), n(g.ch));
@@ -309,6 +493,33 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   // only while the head is up. show / hide: r6 = 0 (the arm's own decision) or kByHost.
   auto up_range = p.NewLabel(), down_range = p.NewLabel(), show = p.NewLabel(), on_panel = p.NewLabel(),
        no_band = p.NewLabel(), hide = p.NewLabel(), band_off = p.NewLabel();
+  // The dashboard right above the terminal (dash_h > 0): its picture as the host left it in l.dash.
+  auto dash = p.NewLabel();
+  p.Bind(dash);
+  if (dash_h > 0) p.Draw(c(l.dash), stride, c(0), c(0), n(px), n(py - dash_h), n(g.W()), n(dash_h));
+  p.Ret();
+  // The look-up fade (fade_us > 0): BRIGHTNESS from 0 to r10 (the level it had: the host's, kept while hidden) in
+  // kFadeSteps, or from r10 to 0 in kFadeOutSteps, on a square curve (the eye sees brightness about so). Uses
+  // r10 ... r13.
+  ArenaWord bright = c(g1::PROP_BRIGHTNESS);
+  auto fade = [&](bool in) {
+    int steps = in ? kFadeSteps : kFadeOutSteps;
+    int step_us = (in ? fade_us : fade_us * 5 / 8) / steps;
+    auto loop = p.NewLabel();
+    p.SysRead(R(11), time_us);
+    p.Mov(R(12), c(1));
+    p.Bind(loop);
+    p.Add(R(11), R(11), n(step_us));
+    p.SleepUntil(R(11));
+    if (in) p.Mov(R(13), R(12));
+    else p.Sub(R(13), n(steps), R(12));
+    p.Mul(R(13), R(13), R(13));
+    p.Mul(R(13), R(13), R(10));
+    p.DivU(R(13), R(13), n(steps * steps));
+    p.SysWrite(bright, R(13));
+    p.Add(R(12), R(12), c(1));
+    p.BltU(R(12), n(steps + 1), loop);
+  };
   p.Bind(up_range);
   p.SysWrite(lo, n(angle - kHysteresis));
   p.SysWrite(hi, n(90));
@@ -317,24 +528,51 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.SysWrite(lo, n(-90));
   p.SysWrite(hi, n(angle - 1));
   p.Ret();
+  // Held for a transition: the panel only comes on (black, unless the panel policy keeps it off), without the
+  // fade; the host's reveal draws the picture.
+  auto held_show = p.NewLabel(), shown_now = p.NewLabel(), no_fade = p.NewLabel();
   p.Bind(show);
   p.Bne(shown, c(0), on_panel);
+  p.Bne(hold, c(0), held_show);
+  if (fade_us > 0) { // the panel comes on dark (BRIGHTNESS is applied at power-on)
+    p.SysRead(R(10), bright);
+    p.SysWrite(bright, c(0));
+  }
   p.Call(draw_all);
+  p.Call(dash);
+  p.Call(ptr_paint);
+  p.Jmp(shown_now);
+  p.Bind(held_show);
+  if (!ignore_worn) p.Bne(p.PanelHidden(), c(0), shown_now);
+  p.SysRead(R(7), panel);
+  p.Beq(R(7), c(1), shown_now);
+  p.SysWrite(panel, c(1));
+  p.Bind(shown_now);
   p.Mov(shown, c(1));
   p.SysRead(R(7), pitch);
   p.Or(R(8), shown, R(6));
-  p.Notify(R(8), R(7));
+  p.Notify(R(8), R(7)); // first: the other eye shows at once too
+  if (fade_us > 0) {
+    p.Bne(hold, c(0), no_fade);
+    fade(true);
+    p.Bind(no_fade);
+  }
   p.Bind(on_panel);
   p.Beq(up, c(0), no_band);
   p.Call(label);
   p.Bind(no_band);
   p.Ret();
   p.Bind(hide);
-  p.SysWrite(panel, c(0));
   p.Mov(shown, c(0));
   p.SysRead(R(7), pitch);
   p.Or(R(8), shown, R(6));
   p.Notify(R(8), R(7));
+  if (fade_us > 0) {
+    p.SysRead(R(10), bright);
+    fade(false);
+  }
+  p.SysWrite(panel, c(0));
+  if (fade_us > 0) p.SysWrite(bright, R(10)); // the level again, for the next power-on
   p.Ret();
   // The band off while the terminal stays (forced): black over it, then the terminal where they overlap.
   p.Bind(band_off);
@@ -367,6 +605,7 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.Bind(present);
   p.Beq(shown, c(0), presented); // hidden: the panel stays off
   p.SleepUntil(show_at);
+  p.Bne(hold, c(0), presented); // held: the host reveals it
   p.Beq(full, c(0), slots);
   p.Call(draw_all);
   p.Jmp(drawn);
@@ -387,6 +626,7 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.Draw(area, stride, c(0), R(4), n(px), R(3), n(g.W()), n(g.ch));
   p.Jmp(skip);
   p.Bind(drawn);
+  p.Call(ptr_paint);
   p.Beq(up, c(0), presented);
   p.Call(label); // again on top, where a row overlaps it
   p.Bind(presented);
@@ -394,12 +634,20 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.End();
 
   // TILT: PITCH left its range. Up: the head is up; down from up: the hold (looking up again ends it).
-  auto tilt = p.NewLabel(), head_up = p.NewLabel(), done = p.NewLabel();
+  // The head is read again here: near the threshold that reading can be back inside the hysteresis band, so up
+  // stays up while the head is at least kHysteresis below the angle (its range written again, so the next crossing
+  // fires), and only below that goes down; down, it goes up from the angle.
+  auto tilt = p.NewLabel(), head_up = p.NewLabel(), done = p.NewLabel(), going_down = p.NewLabel();
   p.Bind(tilt);
   p.Mov(peer, c(0));
   p.SysRead(R(0), pitch);
   p.Beq(R(0), c(g1::UNKNOWN), done);
   p.BgeS(R(0), n(angle), head_up);
+  p.Bne(up, c(1), going_down);
+  p.BltS(R(0), n(angle - kHysteresis), going_down);
+  p.Call(up_range);
+  p.End();
+  p.Bind(going_down);
   p.Call(down_range);
   p.Bne(up, c(1), done);
   p.Mov(up, c(2));
@@ -416,9 +664,12 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.End();
 
   // TIMER: the hold's end (the terminal goes, or while forced only the band), and while forced the force's
-  // watch: once the host is gone (LINK 0: the phone let go, keyer with it), the head alone decides.
+  // watch: once the host is gone (LINK 0: the phone let go, keyer with it, or a drop), the head alone decides
+  // (wForce kForceLost) until the link is back, when the force holds again. The host doesn't know an arm lost it,
+  // so the arm takes it back itself (a phone that let go for good wrote wForce 0 before).
   auto tick = p.NewLabel(), held = p.NewLabel(), watch = p.NewLabel(), rearm = p.NewLabel(),
-       unforce = p.NewLabel(), own = p.NewLabel(), own_show = p.NewLabel();
+       unforce = p.NewLabel(), own = p.NewLabel(), own_show = p.NewLabel(), forced = p.NewLabel(),
+       lost = p.NewLabel(), lost_again = p.NewLabel(), suspect = p.NewLabel(), doubt = p.NewLabel();
   p.Bind(tick);
   p.Bne(up, c(2), watch);
   p.SysRead(R(1), time_us);
@@ -426,19 +677,50 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.BltS(R(2), c(0), rearm);
   p.Mov(up, c(0));
   p.Beq(force, c(1), held);
+  p.Beq(force, c(kForceDoubt), held); // unsure of the link: still forced
   p.Mov(R(6), c(0));
-  p.Beq(shown, c(0), done);
+  p.Beq(shown, c(0), watch);
   p.Call(hide);
-  p.End();
+  p.Jmp(watch); // the force lost: its watch goes on after the hold
   p.Bind(held);
   p.Beq(shown, c(0), watch);
   p.Call(band_off);
   p.Bind(watch);
+  p.Beq(force, c(kForceLost), lost);
+  p.Beq(force, c(kForceDoubt), doubt);
   p.Bne(force, c(1), done);
   p.SysRead(R(0), link);
-  p.Beq(R(0), c(0), unforce);
+  p.Beq(R(0), c(0), suspect);
   p.SysRead(R(1), time_us);
   p.Add(R(1), R(1), n(kForceWatchUs));
+  p.SysWrite(timer, R(1));
+  p.End();
+  // LINK 0 once: a Bluetooth blip (Wi-Fi traffic, the phone's other devices) as often as a host gone. The force
+  // holds and the arm looks again after kLinkGraceUs; only a link still down then hands over to the head. Without
+  // this a blip turned an always-on terminal off for a few seconds (until the link and the force came back).
+  p.Bind(suspect);
+  p.Mov(force, c(kForceDoubt));
+  p.SysRead(R(1), time_us);
+  p.Add(R(1), R(1), n(kLinkGraceUs));
+  p.SysWrite(timer, R(1));
+  p.End();
+  p.Bind(doubt);
+  p.SysRead(R(0), link);
+  p.Beq(R(0), c(0), unforce);
+  p.Mov(force, c(1)); // back in time: forced as before
+  p.SysRead(R(1), time_us);
+  p.Add(R(1), R(1), n(kForceWatchUs));
+  p.SysWrite(timer, R(1));
+  p.End();
+  p.Bind(lost);
+  p.SysRead(R(0), link);
+  p.Beq(R(0), c(0), lost_again);
+  p.Mov(force, c(1));
+  p.Mov(R(6), c(kByHost));
+  p.Jmp(forced);
+  p.Bind(lost_again);
+  p.SysRead(R(1), time_us);
+  p.Add(R(1), R(1), n(kLostWatchUs));
   p.SysWrite(timer, R(1));
   p.End();
   p.Bind(rearm);
@@ -447,11 +729,12 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
 
   // USER2: the host changed wForce or wPeer (the other eye's decision). START: the same, from hidden with the
   // panel off and the head's state from PITCH.
-  auto user2 = p.NewLabel(), forced = p.NewLabel(), peer_up = p.NewLabel(), peer_down = p.NewLabel(),
-       start = p.NewLabel(), start_down = p.NewLabel();
+  auto user2 = p.NewLabel(), peer_up = p.NewLabel(), peer_down = p.NewLabel(), start = p.NewLabel(),
+       start_down = p.NewLabel();
   p.Bind(user2);
   p.Mov(R(6), c(kByHost));
   p.Beq(force, c(1), forced);
+  p.Beq(force, c(kForceDoubt), forced);
   p.Beq(peer, c(1), peer_up);
   p.Beq(peer, c(2), peer_down);
   p.Bind(own);
@@ -482,8 +765,11 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.SysWrite(timer, R(1));
   p.End();
   p.Bind(unforce);
-  p.Mov(force, c(0));
+  p.Mov(force, c(kForceLost));
   p.Mov(peer, c(0));
+  p.SysRead(R(1), time_us);
+  p.Add(R(1), R(1), n(kLostWatchUs));
+  p.SysWrite(timer, R(1));
   p.Jmp(own);
   p.Bind(start);
   p.SysWrite(panel, c(0));
@@ -504,8 +790,20 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.Bind(redraw);
   p.Beq(shown, c(0), done);
   p.Call(draw_all);
+  p.Call(dash);
+  p.Call(ptr_paint);
   p.Beq(up, c(0), done);
   p.Call(label);
+  p.End();
+
+  // USER3: the host wrote the dashboard's picture: drawn while the terminal shows (and the dashboard is not
+  // held for a transition).
+  auto user3 = p.NewLabel();
+  p.Bind(user3);
+  p.Beq(shown, c(0), done);
+  p.Beq(hold, c(2), done);
+  p.Call(dash);
+  p.Call(ptr_paint);
   p.End();
 
   // BATTERY: the band again where it shows.
@@ -520,13 +818,17 @@ g1::Program MakeProgram(const GlassesTerminal::Layout &l, const GlassesTerminal:
   p.On(g1::TRIGGER_USER0, chunk);
   p.On(g1::TRIGGER_USER1, present);
   p.On(g1::TRIGGER_USER2, user2);
+  p.On(g1::TRIGGER_USER3, user3);
   p.On(g1::TRIGGER_TILT, tilt);
   p.On(g1::TRIGGER_TIMER, tick);
   p.On(g1::TRIGGER_BATTERY, battery);
-  p.Changes(l.state + 4 * wNext, 4 * (kStateWords - wNext));
-  p.Changes(l.area, l.end - l.area);
+  p.Changes(l.state + 4 * wNext, 4 * (wHold - wNext));
+  p.Changes(l.state + 4 * wPtrDX, 4 * (kStateWords - wPtrDX)); // the pointer's place drawn and working words
+  p.Changes(l.dash, l.ptr_fill - l.dash);
+  p.Changes(l.ptr_host, l.ptr_code - l.ptr_host); // the pointer's scratches
   return p;
 }
+
 
 } // namespace
 
@@ -577,14 +879,19 @@ bool GlassesTerminal::LoadGlyphs(const std::set<uint32_t> &chars) {
   std::string error;
   sk::Font &font = sk::LoadFont(std::span<const uint8_t>(blob_), Chars(chars), &error);
   if (!font.pimpl) return false;
-  font_ = &font;
+  Adopt(&font, chars);
+  return true;
+}
+
+// A font on the arms with these characters becomes the terminal's.
+void GlassesTerminal::Adopt(sk::Font *font, const std::set<uint32_t> &chars) {
+  font_ = font;
   loaded_ = chars;
   glyphs_.clear();
-  auto space = g1::GlyphIndices(font, " ");
-  auto q = g1::GlyphIndices(font, "?");
+  auto space = g1::GlyphIndices(*font, " ");
+  auto q = g1::GlyphIndices(*font, "?");
   space_ = space.empty() ? 0 : space[0];
   unknown_ = q.size() == 1 ? q[0] : space_;
-  return true;
 }
 
 // The wanted characters go to the arms too: the font again with them (the glyph indices change, so the
@@ -677,9 +984,13 @@ std::vector<GlassesTerminal::Row> GlassesTerminal::Rows(const Snapshot &s) {
 
 bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std::function<void()> changed,
                             std::string *error) {
+  int64_t start_t0 = g1::NowUs();
   blob_ = std::move(font);
   changed_ = std::move(changed);
+  fx_ = config.fx;
   angle_ = config.angle;
+  battery_ = config.battery;
+  on_touch_ = config.on_touch;
   arms_ = {&g1::left, &g1::right};
   for (int i = 0; i < 2; i++) present_[i] = arms_[i]->GetState().present;
   has_ = Codepoints(blob_);
@@ -687,7 +998,13 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
   for (uint32_t c : has_)
     for (auto &r : kBaseRanges)
       if (c >= r[0] && c <= r[1]) base.insert(c);
-  if (has_.empty() || !LoadGlyphs(base)) {
+  // The fonts kept from the last run (the same blob): nothing to upload.
+  font_ = batt_font_ = nullptr;
+  if (config.fonts && config.fonts->font && config.fonts->batt && config.fonts->blob == blob_.size() && !has_.empty()) {
+    Adopt(config.fonts->font, config.fonts->loaded);
+    batt_font_ = config.fonts->batt;
+    *config.fonts = Fonts{};
+  } else if (has_.empty() || !LoadGlyphs(base)) {
     *error = "cannot load the terminal font";
     return false;
   }
@@ -698,28 +1015,42 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
   geo_.ch = font_->line_spacing;
   geo_.ascent = font_->ascent;
   geo_.cols = std::min(255, (vw - 2 * std::abs(config.dx)) / geo_.cw);
-  geo_.rows = std::min(255, vh / geo_.ch);
+  // The margins leave at least two rows.
+  int top = std::clamp(config.top, 0, std::max(0, vh - 2 * geo_.ch));
+  int bottom = std::clamp(config.bottom, 0, std::max(0, vh - 2 * geo_.ch - top));
+  // The dashboard takes its height above the terminal (it leaves the terminal at least four rows).
+  dash_h_ = std::clamp(config.dash_h, 0, std::max(0, vh - top - bottom - 4 * geo_.ch)) & ~1;
+  int avail = vh - top - bottom - dash_h_;
+  geo_.rows = std::min(255, avail / geo_.ch);
   geo_.x = (vw - geo_.W()) / 2;
-  geo_.y = (vh - geo_.rows * geo_.ch) / 2;
+  geo_.y = top + dash_h_ + (avail - geo_.rows * geo_.ch) / 2;
   // The battery band's font: the digits (glyphs 0 ... 9, VM.md §4.1) and % at 2x.
-  sk::Font &batt = sk::LoadFont(std::span<const uint8_t>(blob_), "0123456789%", nullptr, 2);
-  auto percent = batt.pimpl ? g1::GlyphIndices(batt, "%") : std::vector<uint32_t>{};
-  if (percent.size() != 1 || percent[0] > 127 || g1::GlyphIndices(batt, "0") != std::vector<uint32_t>{0}) {
-    if (batt.pimpl) sk::Unload(batt);
+  if (!batt_font_) {
+    sk::Font &loaded = sk::LoadFont(std::span<const uint8_t>(blob_), "0123456789%", nullptr, 2);
+    batt_font_ = loaded.pimpl ? &loaded : nullptr;
+  }
+  auto percent = batt_font_ ? g1::GlyphIndices(*batt_font_, "%") : std::vector<uint32_t>{};
+  if (percent.size() != 1 || percent[0] > 127 || g1::GlyphIndices(*batt_font_, "0") != std::vector<uint32_t>{0}) {
+    if (batt_font_) sk::Unload(*batt_font_);
+    sk::Unload(*font_);
+    font_ = batt_font_ = nullptr;
     *error = "cannot load the battery font";
     return false;
   }
-  batt_font_ = &batt;
+  sk::Font &batt = *batt_font_;
   batt.Measure("0", &geo_.bcw);
   geo_.bascent = batt.ascent;
   geo_.bw = (4 * geo_.bcw + 2 + 2 * kBattPad + 1) & ~1;
   geo_.bh = batt.line_spacing + 2 + 2 * kBattPadY;
-  int64_t base_address = g1::Alloc(MakeLayout(0, geo_).end);
+  int64_t base_address = g1::Alloc(MakeLayout(0, geo_, dash_h_).end);
   if (base_address < 0) {
+    sk::Unload(*font_);
+    sk::Unload(*batt_font_);
+    font_ = batt_font_ = nullptr;
     *error = "the terminal does not fit the arena";
     return false;
   }
-  l_ = MakeLayout(uint32_t(base_address), geo_);
+  l_ = MakeLayout(uint32_t(base_address), geo_, dash_h_);
   for (int i = 0; i < 2; i++) {
     if (!present_[i]) continue;
     pos_[i] = i == 0 ? std::array<int, 2>{geo_.x - std::max(0, -config.dx), geo_.y + std::max(0, -config.dy)}
@@ -728,22 +1059,36 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
     // room), centred vertically: the left eye's on the left, the right eye's on the right.
     int right = pos_[i][0] + geo_.W();
     int bx = i == 0 ? std::max(2, (pos_[i][0] - geo_.bw) / 2) : std::min(640 - geo_.bw - 2, right + (640 - right - geo_.bw) / 2);
-    g1::Program p = MakeProgram(l_, geo_, pos_[i][0], pos_[i][1], bx, BattY(geo_), angle_, config.ignore_worn);
+    ArenaWord hidden = 0;
+    g1::Program p = MakeProgram(l_, geo_, pos_[i][0], pos_[i][1], bx, BattY(geo_), angle_, config.ignore_worn,
+                                std::clamp(config.fade_ms, 0, 1000) * 1000, dash_h_, &hidden);
     if (!p.Valid(error)) return false;
-    if (p.Here() > l_.state) {
-      *error = "the terminal program overlaps its state";
+    g1::Program pointer = MakePointerCode(l_, geo_, dash_h_, pos_[i][0], pos_[i][1], hidden, &ptr_entry_);
+    if (!pointer.Valid(error) || pointer.Here() > l_.end) {
+      if (error && error->empty()) *error = "the pointer's code does not fit";
       return false;
     }
-    arms_[i]->WriteArena(l_.state, std::vector<uint8_t>(4 * kStateWords + geo_.rows, 0));
+    if (p.Here() > l_.state) {
+      *error = "the terminal program overlaps its state (" + std::to_string(p.Here() - l_.base) + " bytes)";
+      return false;
+    }
+    // The first screen held for a transition (Reveal before Start): the panel comes on black at START.
+    std::vector<uint8_t> state(4 * kStateWords + geo_.rows, 0);
+    hold_sent_ = reveal_style_ && fx_ ? (reveal_dash_ && dash_h_ ? 2 : 1) : 0;
+    state[4 * wHold] = uint8_t(hold_sent_);
+    arms_[i]->WriteArena(l_.state, state);
+    arms_[i]->WriteArena(l_.dash, std::vector<uint8_t>(size_t(geo_.W() / 2) * dash_h_, 0));
     std::vector<uint8_t> band(l_.end - l_.batt, 0);
     band.back() = uint8_t(percent[0]);
     arms_[i]->WriteArena(l_.batt, band);
-    if (!arms_[i]->Load(p) || !arms_[i]->Start(l_.base)) {
+    arms_[i]->WriteArena(l_.ptr_fill, ArrowMasks());
+    if (!arms_[i]->Load(pointer) || !arms_[i]->Load(p) || !arms_[i]->Start(l_.base)) {
       *error = "the terminal program did not start";
       return false;
     }
   }
-  LOG("terminal: %d x %d at %u, angle %d", geo_.cols, geo_.rows, l_.base, angle_);
+  LOG("terminal: %d x %d at %u, angle %d, started in %lld ms", geo_.cols, geo_.rows, l_.base, angle_,
+      (long long)((g1::NowUs() - start_t0) / 1000));
   stop_ = false;
   thread_ = std::thread([this] { Run(); });
   for (int i = 0; i < 2; i++)
@@ -751,7 +1096,7 @@ bool GlassesTerminal::Start(const Config &config, std::vector<uint8_t> font, std
   return true;
 }
 
-void GlassesTerminal::Stop(bool keep) {
+void GlassesTerminal::Stop(bool keep, Fonts *keep_fonts) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     stop_ = true;
@@ -770,8 +1115,12 @@ void GlassesTerminal::Stop(bool keep) {
     WriteWord(i, wPeer, 0);
     arms_[i]->Raise(g1::TRIGGER_USER2);
   }
-  if (font_) sk::Unload(*font_);
-  if (batt_font_) sk::Unload(*batt_font_);
+  if (keep_fonts && font_ && batt_font_) {
+    *keep_fonts = Fonts{font_, batt_font_, loaded_, blob_.size()};
+  } else {
+    if (font_) sk::Unload(*font_);
+    if (batt_font_) sk::Unload(*batt_font_);
+  }
   font_ = batt_font_ = nullptr;
   if (l_.base) g1::Free(l_.base);
   l_ = {};
@@ -786,6 +1135,93 @@ void GlassesTerminal::Show(std::shared_ptr<const Snapshot> s) {
     pending_ = std::move(s);
   }
   cv_.notify_all();
+}
+
+void GlassesTerminal::Reveal(int style, bool with_dash) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (style <= 0) return;
+  reveal_style_ = style;
+  reveal_dash_ = with_dash;
+  reveal_until_ = g1::NowUs() + 4000000;
+  pending_.reset(); // the old screen: not shown any more
+  if (wiped_until_) wiped_until_ = reveal_until_; // drawn again only if nothing comes for it
+}
+
+void GlassesTerminal::Pointer(int x, int y, bool on) {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    x = std::clamp(x, 0, geo_.W() - 1);
+    y = std::clamp(y, -dash_h_, geo_.rows * geo_.ch - 1);
+    if (x == ptr_x_ && y == ptr_y_ && on == ptr_on_) return;
+    ptr_x_ = x;
+    ptr_y_ = y;
+    ptr_on_ = on;
+    ptr_dirty_ = true;
+  }
+  cv_.notify_all();
+}
+
+// The pointer's place to both arms and their code that moves it (mutex_ held); at most every 15 ms and while the
+// links keep up, so a quick stroke sends its latest place, not every step.
+void GlassesTerminal::SendPointer() {
+  for (int i = 0; i < 2; i++)
+    if (present_[i] && arms_[i]->GetState().queued > 3) return;
+  ptr_dirty_ = false;
+  ptr_sent_ = g1::NowUs();
+  for (int i = 0; i < 2; i++) {
+    if (!present_[i]) continue;
+    arms_[i]->WriteArena(l_.state + 4 * wPtrX, Words({uint32_t(ptr_x_), uint32_t(ptr_y_), uint32_t(ptr_on_)}));
+    arms_[i]->Call(ptr_entry_);
+  }
+}
+
+void GlassesTerminal::Wiped(bool with_dash) {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    wiped_until_ = g1::NowUs() + 1500000;
+    wiped_dash_ = with_dash;
+  }
+  cv_.notify_all();
+}
+
+Fx::Region GlassesTerminal::FxRegion(bool with_dash) const {
+  Fx::Region r;
+  int above = with_dash ? dash_h_ : 0;
+  r.w = geo_.W();
+  r.h = geo_.rows * geo_.ch + above;
+  for (int i = 0; i < 2; i++) r.at[size_t(i)] = {pos_[size_t(i)][0], pos_[size_t(i)][1] - above};
+  return r;
+}
+
+Fx::Source GlassesTerminal::FxSource(bool with_dash) const {
+  return Fx::Source{with_dash ? l_.dash : l_.area, uint32_t(geo_.W() / 2), 4};
+}
+
+void GlassesTerminal::SetDash(const std::vector<uint8_t> &pixels) {
+  int stride = geo_.W() / 2;
+  if (!dash_h_ || pixels.size() != size_t(stride) * dash_h_) return;
+  std::lock_guard<std::mutex> lock(dash_mutex_);
+  for (int i = 0; i < 2; i++) {
+    if (!present_[i]) continue;
+    std::vector<uint8_t> &had = dash_sent_[size_t(i)];
+    bool all = had.size() != pixels.size();
+    bool any = false;
+    // Each row's changed span (all of it the first time).
+    for (int y = 0; y < dash_h_; y++) {
+      const uint8_t *now = pixels.data() + size_t(y) * stride;
+      int a = 0, b = stride;
+      if (!all) {
+        const uint8_t *old = had.data() + size_t(y) * stride;
+        while (a < stride && now[a] == old[a]) a++;
+        if (a == stride) continue;
+        while (b > a && now[b - 1] == old[b - 1]) b--;
+      }
+      arms_[i]->WriteArena(l_.dash + uint32_t(y * stride + a), std::span<const uint8_t>(now + a, size_t(b - a)));
+      any = true;
+    }
+    had = pixels;
+    if (any) arms_[i]->Raise(g1::TRIGGER_USER3);
+  }
 }
 
 void GlassesTerminal::Force(bool on) {
@@ -821,6 +1257,13 @@ void GlassesTerminal::WriteWord(int arm, int word, uint32_t value) {
   arms_[arm]->WriteArena(l_.state + 4 * word, Words({value}));
 }
 
+// The arms' wHold (mutex_ held). Cleared after a reveal is sent: in packet order, after it.
+void GlassesTerminal::SetHold(uint32_t hold) {
+  for (int i = 0; i < 2; i++)
+    if (present_[i]) WriteWord(i, wHold, hold);
+  hold_sent_ = hold;
+}
+
 // Both eyes follow the latest decision an arm took itself (the first NOTIFY wins near the threshold, R24).
 void GlassesTerminal::SyncPeers(int from) {
   for (int i = 0; i < 2; i++) {
@@ -836,6 +1279,7 @@ void GlassesTerminal::Restart(int arm) {
   WriteWord(arm, wNext, 0);
   WriteWord(arm, wForce, force_sent_);
   WriteWord(arm, wPeer, 0);
+  WriteWord(arm, wHold, hold_sent_);
   shown_[arm] = 0;
   screen_.fresh = true;
   if (!pending_ && last_) { // the screen again, in full (R5)
@@ -849,6 +1293,10 @@ void GlassesTerminal::Restart(int arm) {
 
 void GlassesTerminal::Handle(const ArmEvent &ae) {
   const g1::Event &e = ae.e;
+  if (e.type == g1::EVENT_INPUT) {
+    if (e.trigger == g1::TRIGGER_TOUCH && on_touch_) on_touch_(ae.arm, e.a);
+    return;
+  }
   if (e.type != g1::EVENT_NOTIFY) LOG("terminal: arm %d event %d trigger %d code %d", ae.arm, e.type, e.trigger, e.code);
   if (e.type == g1::EVENT_RESET || e.type == g1::EVENT_HALT) return Restart(ae.arm);
   if (e.type != g1::EVENT_NOTIFY) return;
@@ -876,8 +1324,20 @@ void GlassesTerminal::Send() {
     if (!Grow()) return;
     rows = Rows(*s);
   }
+  // A transition: the whole screen with its first row in slot 0 (the area is then the picture as it shows),
+  // held on the arms until both have it.
+  bool reveal = reveal_style_ && fx_ && g1::NowUs() < reveal_until_;
+  if (!reveal) reveal_style_ = 0;
+  if (reveal) {
+    screen_.fresh = true;
+    screen_.top = 0;
+  }
+  uint32_t hold = reveal ? (reveal_dash_ && dash_h_ ? 2 : 1) : 0;
   Frame f;
-  if (!screen_.Next(rows, &f)) return;
+  if (!screen_.Next(rows, &f)) {
+    if (hold != hold_sent_) SetHold(hold);
+    return;
+  }
   frame_++;
   size_t bytes = f.dirty.size() + 4 * kStateWords;
   for (auto &[slot, rec] : f.recs) bytes += rec.size();
@@ -887,9 +1347,19 @@ void GlassesTerminal::Send() {
     auto st = arms_[i]->GetState();
     lead = std::max<int64_t>(lead, 2 * st.interval_us + st.clock_error_us + 15000);
   }
-  lead += int64_t(bytes / 200 + 1) * 10000 + int64_t(f.recs.size()) * 2000;
+  // Shown at once: time for its bytes to reach both arms first, so the eyes change together. Held for a transition
+  // (on the panel only at its reveal, which waits for both arms to have it): due as soon as it is in.
+  if (!reveal) lead += int64_t(bytes / 200 + 1) * 10000 + int64_t(f.recs.size()) * 2000;
   uint32_t cur = f.cur_slot >= 0 ? uint32_t(f.cur_slot) : kNoCursor;
-  uint32_t font = g1::AddressOf(*font_), batt_font = batt_font_ ? g1::AddressOf(*batt_font_) : 0;
+  // No battery band: the program draws none while wBattFont is 0.
+  uint32_t font = g1::AddressOf(*font_), batt_font = battery_ && batt_font_ ? g1::AddressOf(*batt_font_) : 0;
+  if (hold != hold_sent_) SetHold(hold);
+  if (reveal) {
+    held_frame_ = frame_;
+    held_style_ = reveal_style_;
+    held_dash_ = reveal_dash_ && dash_h_ > 0;
+    reveal_style_ = 0;
+  }
   for (int i = 0; i < 2; i++) {
     done_[i] = !present_[i];
     if (!present_[i]) continue;
@@ -912,6 +1382,9 @@ void GlassesTerminal::Run() {
     int64_t wake = now + 1000000;
     if (pending_ && !inflight_ && visible) wake = std::min(last_us_ + 10000, first_us_ + 40000);
     if (inflight_) wake = std::min(wake, inflight_us_ + 10000000);
+    if (wiped_until_) wake = std::min(wake, wiped_until_);
+    if (reveal_style_) wake = std::min(wake, reveal_until_);
+    if (ptr_dirty_) wake = std::min(wake, ptr_sent_ + 15000);
     if (events_.empty() && force_ == force_sent_ && wake > now)
       cv_.wait_for(lock, std::chrono::microseconds(wake - now));
     if (stop_) break;
@@ -930,13 +1403,34 @@ void GlassesTerminal::Run() {
     }
     now = g1::NowUs();
     if (inflight_ && ((done_[0] && done_[1]) || now - inflight_us_ > 10000000)) {
-      if (!(done_[0] && done_[1])) screen_.fresh = true;
+      bool done = done_[0] && done_[1];
+      if (!done) screen_.fresh = true;
+      // The held frame is on both arms: revealed while the terminal shows (else the next look-up draws it).
+      if (held_frame_ && held_frame_ == inflight_) {
+        held_frame_ = 0;
+        wiped_until_ = 0;
+        if (done && (shown_[0] || shown_[1]))
+          fx_->In(Fx::Style(held_style_), FxRegion(held_dash_), FxSource(held_dash_));
+        SetHold(0);
+        if (ptr_on_) ptr_dirty_ = true; // the arrow again over the revealed picture
+      }
       inflight_ = 0;
       cv_.notify_all(); // Check waits for this
+    }
+    if (reveal_style_ && now >= reveal_until_) reveal_style_ = 0; // lapsed
+    // Wiped and nothing revealed since: the last screen in full again, the dashboard with it.
+    if (wiped_until_ && now >= wiped_until_ && !reveal_style_ && !held_frame_) {
+      wiped_until_ = 0;
+      screen_.fresh = true;
+      if (!pending_ && last_) pending_ = last_, first_us_ = last_us_ = now;
+      if (wiped_dash_)
+        for (int i = 0; i < 2; i++)
+          if (present_[i]) arms_[i]->Raise(g1::TRIGGER_USER3);
     }
     if (pending_ && !inflight_ && (shown_[0] || shown_[1]) &&
         (now - last_us_ >= 10000 || now - first_us_ >= 40000))
       Send();
+    if (ptr_dirty_ && now - ptr_sent_ >= 15000) SendPointer();
     if (notify_ && changed_) {
       notify_ = false;
       lock.unlock();

@@ -1,0 +1,177 @@
+# SSH Scouter (examples/ssh): the native host tests on emulated arms, then the release APK for the phone
+# (arm64), published as the prerelease "scouter-phone-latest".
+#
+# Signing: the secrets SCOUTER_KEYSTORE_B64 (a PKCS12 keystore, base64) and SCOUTER_KEYSTORE_PASSWORD (store
+# and key password, alias "scouter") when they are set; otherwise a key made once in CI and kept in the
+# Actions cache (updates install over each other while that cache lives).
+name: SSH Scouter Android
+
+on:
+  push:
+    branches: [phone-termux-screen]
+    paths:
+      - "examples/ssh/**"
+      - "src/**"
+      - "go/examples/term/fonts/**"
+      - "third_party/sherpa_onnx_kotlin/**"
+      - "third_party/liblc3/**"
+      - "third_party/departure_mono_nerd/**"
+      - ".github/workflows/ssh-android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ssh-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      NDK_VERSION: 27.3.13750724
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android SDK parts (NDK, CMake, platform 34)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" "cmake;3.31.6" \
+            "platforms;android-34" "build-tools;34.0.0" > /tmp/sdkmanager.log
+          tail -n 3 /tmp/sdkmanager.log
+
+      - name: Host tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build libssl-dev zlib1g-dev mosh > /dev/null
+
+      - name: Third-party cache
+        uses: actions/cache@v4
+        with:
+          path: examples/ssh/native/third_party/out
+          key: ssh-third-party-${{ hashFiles('examples/ssh/native/third_party/build.sh') }}-ndk27.3
+
+      - name: Third-party code (pinned, checked by SHA-256)
+        run: ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/$NDK_VERSION" examples/ssh/native/third_party/build.sh
+
+      - name: Speech engine for voice commands (sherpa-onnx 1.13.8, checked by SHA-256)
+        run: examples/ssh/native/third_party/fetch_sherpa.sh examples/ssh/native/third_party/sherpa
+
+      - name: Language model engine (llama.cpp v0.9.0, checked by SHA-256)
+        run: examples/ssh/native/third_party/fetch_llama.sh examples/ssh/native/third_party/llama
+
+      - name: Native host tests (screen mirror, terminal and transitions on emulated arms, keys)
+        working-directory: examples/ssh
+        run: |
+          cmake -S native -B /tmp/host -G Ninja -DTHIRD_PARTY_DIR="$PWD/native/third_party/out" > /dev/null
+          cmake --build /tmp/host
+          ctest --test-dir /tmp/host --output-on-failure -R '^(screen|terminal|keys|fx)$'
+
+      - name: mosh client test (informational)
+        continue-on-error: true
+        working-directory: examples/ssh
+        run: ctest --test-dir /tmp/host --output-on-failure -R '^mosh_client$'
+
+      - name: Signing key from secrets
+        id: secret_key
+        env:
+          KEYSTORE_B64: ${{ secrets.SCOUTER_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.SCOUTER_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
+            mkdir -p "$RUNNER_TEMP/signing"
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/signing/scouter-release.p12"
+            printf '%s' "$KEYSTORE_PASSWORD" > "$RUNNER_TEMP/signing/password.txt"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Signing key from the cache
+        if: steps.secret_key.outputs.found != 'true'
+        id: cached_key
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/signing
+          key: ssh-ci-signing-v1
+
+      - name: Make a CI signing key (first run without secrets)
+        if: steps.secret_key.outputs.found != 'true' && steps.cached_key.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/signing"
+          pw=$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | cut -c1-28)
+          printf '%s' "$pw" > "$RUNNER_TEMP/signing/password.txt"
+          keytool -genkeypair -keystore "$RUNNER_TEMP/signing/scouter-release.p12" -storetype PKCS12 \
+            -storepass "$pw" -keypass "$pw" -alias scouter -keyalg RSA -keysize 4096 -validity 10000 \
+            -dname "CN=SSH Scouter CI" > /dev/null
+
+      - name: Keep the CI signing key
+        if: steps.secret_key.outputs.found != 'true' && steps.cached_key.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/signing
+          key: ssh-ci-signing-v1
+
+      - name: keystore.properties
+        working-directory: examples/ssh
+        run: |
+          pw=$(cat "$RUNNER_TEMP/signing/password.txt")
+          {
+            echo "storeFile=$RUNNER_TEMP/signing/scouter-release.p12"
+            echo "storePassword=$pw"
+            echo "keyAlias=scouter"
+            echo "keyPassword=$pw"
+          } > keystore.properties
+
+      - name: Build the APKs (glasses release, emulated debug)
+        working-directory: examples/ssh
+        run: ./gradlew --no-daemon --stacktrace assembleGlassesRelease assembleEmulatedDebug
+
+      - name: Name and fingerprint
+        id: apk
+        working-directory: examples/ssh
+        run: |
+          src=$(ls app/build/outputs/apk/glasses/release/*.apk | head -n 1)
+          mkdir -p "$RUNNER_TEMP/out"
+          cp "$src" "$RUNNER_TEMP/out/scouter-phone.apk"
+          cp app/build/outputs/apk/emulated/debug/*.apk "$RUNNER_TEMP/out/scouter-phone-emulated-debug.apk"
+          sha=$(sha256sum "$RUNNER_TEMP/out/scouter-phone.apk" | cut -d' ' -f1)
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)
+          cert=$("$bt/apksigner" verify --print-certs "$RUNNER_TEMP/out/scouter-phone.apk" | grep -m1 'SHA-256 digest' | sed 's/.*: //')
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "cert=$cert" >> "$GITHUB_OUTPUT"
+          echo "APK $sha, signer $cert"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scouter-phone
+          path: ${{ runner.temp }}/out/*.apk
+
+      - name: Publish the prerelease scouter-phone-latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.apk.outputs.sha }}
+          CERT: ${{ steps.apk.outputs.cert }}
+        run: |
+          notes=$(printf '%s\n' \
+            "**Test build** from \`${GITHUB_SHA::8}\` on \`${GITHUB_REF_NAME}\`, for G1 glasses running g1v0 0.5.60. Android 12+, arm64." \
+            "" \
+            "- \`scouter-phone.apk\`: install this one on the phone." \
+            "- \`scouter-phone-emulated-debug.apk\`: two emulated arms inside the app, no glasses needed (separate app)." \
+            "- \`scouter.sh\`: the server in Termux. In Termux run:" \
+            "  \`curl -fsSLO https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/examples/ssh/termux/scouter.sh && bash scouter.sh\`" \
+            "  then in the app: Settings, Terminal server, \"Termux on this phone\"." \
+            "" \
+            "APK SHA-256: \`$SHA\`" \
+            "Signer certificate SHA-256: \`$CERT\`" \
+            "" \
+            "Source: branch \`${GITHUB_REF_NAME}\`. GPL-3.0 (includes mosh).")
+          gh release delete scouter-phone-latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create scouter-phone-latest --prerelease --target "$GITHUB_SHA" \
+            --title "SSH Scouter for the phone (latest test build)" --notes "$notes" \
+            "$RUNNER_TEMP/out/scouter-phone.apk" "$RUNNER_TEMP/out/scouter-phone-emulated-debug.apk" \
+            examples/ssh/termux/scouter.sh

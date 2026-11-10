@@ -79,7 +79,7 @@ std::string EncodeKey(int kind, uint8_t m, uint32_t v, bool app) {
   switch (v) {
   case 0x28: return alt + "\r";                                // Enter
   case 0x29: return alt + "\x1b";                              // Escape
-  case 0x2A: return alt + (Ctrl(m) ? "\x08" : "\x7f");         // Backspace
+  case 0x2A: return Ctrl(m) ? std::string("\x1b\x7f") : alt + "\x7f"; // Backspace (Ctrl: a word, as on Linux)
   case 0x2B: return Shift(m) ? "\x1b[Z" : alt + "\t";          // Tab
   case 0x2C: return Ctrl(m) ? alt + '\0' : alt + " ";          // Space
   case 0x3A: return ss3('P');                                  // F1 ... F4

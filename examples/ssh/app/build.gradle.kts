@@ -8,6 +8,13 @@ plugins {
 // native/third_party/build.sh's output directory.
 val thirdParty: String = providers.gradleProperty("thirdPartyDir")
     .getOrElse(rootProject.file("native/third_party/out").path)
+// native/third_party/fetch_sherpa.sh's output directory (the speech engine for voice commands; without it the
+// app builds and says voice is not in this build).
+val sherpa: String = providers.gradleProperty("sherpaDir")
+    .getOrElse(rootProject.file("native/third_party/sherpa").path)
+// native/third_party/fetch_llama.sh's llama.cpp (the on-phone language models; without it the app says so).
+val llama: String = providers.gradleProperty("llamaDir")
+    .getOrElse(rootProject.file("native/third_party/llama/llama.cpp").path)
 
 // Release signing: only from keystore.properties next to settings.gradle.kts (git-ignored; storeFile,
 // storePassword, keyAlias, keyPassword; storeFile absolute or relative to that file). Without it the release
@@ -25,11 +32,13 @@ android {
         applicationId = "io.github.pruittcolon.scouter" // this fork's ID; the code stays in package scouterkit.ssh (JNI names)
         minSdk = 31
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 72
+        versionName = "0.70"
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild {
-            cmake { arguments += listOf("-DTHIRD_PARTY_DIR=$thirdParty", "-DANDROID_STL=c++_static") }
+            // 16 KB pages: newer Android builds may use them; the library loads either way.
+            cmake { arguments += listOf("-DTHIRD_PARTY_DIR=$thirdParty", "-DANDROID_STL=c++_static",
+                "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON") }
         }
     }
 
@@ -38,7 +47,7 @@ android {
     productFlavors {
         create("glasses") {
             dimension = "arms"
-            externalNativeBuild { cmake { arguments += "-DARMS=glasses" } }
+            externalNativeBuild { cmake { arguments += listOf("-DARMS=glasses", "-DVOX_LLM=ON", "-DLLAMA_DIR=$llama") } }
         }
         create("emulated") {
             dimension = "arms"
@@ -107,6 +116,9 @@ val copyRes = tasks.register<Sync>("copyRes") {
 android.sourceSets.getByName("main") {
     assets.srcDir(copiedAssets)
     res.srcDir(copiedRes)
+    // Voice: sherpa-onnx's Kotlin API (scouter_kit/third_party/sherpa_onnx_kotlin) and its JNI library.
+    java.srcDir(scouterKit.resolve("third_party/sherpa_onnx_kotlin"))
+    jniLibs.srcDir("$sherpa/jniLibs")
 }
 // The merge tasks do not take task dependencies from srcDir; they all run after preBuild.
 tasks.named("preBuild") { dependsOn(copyAssets, copyRes) }

@@ -24,6 +24,16 @@ class TerminalView(context: Context) : View(context) {
             field = value
             invalidate()
         }
+    // The glasses' look: every colour as this colour's brightness (0: the terminal's own colours).
+    var tint = 0
+        set(value) {
+            field = value
+            invalidate()
+        }
+    // Pinch and drag (false: touches go to the parent, e.g. a tap that opens the terminal's tab).
+    var interactive = true
+    // The whole screen in the view, centred (no zoom or pan).
+    var fit = false
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.createFromAsset(context.assets, "departure_mono_nerd.otf")
@@ -63,6 +73,7 @@ class TerminalView(context: Context) : View(context) {
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        if (!interactive) return false
         scaler.onTouchEvent(e)
         panner.onTouchEvent(e)
         return true
@@ -71,7 +82,7 @@ class TerminalView(context: Context) : View(context) {
     override fun onDraw(canvas: Canvas) {
         canvas.drawColor(Color.BLACK)
         val s = screen ?: return
-        val cellW = width * zoom / s.cols
+        val cellW = if (fit) minOf(width.toFloat() / s.cols, height / (s.rows * 2f)) else width * zoom / s.cols
         val cellH = cellW * 2
         paint.textSize = cellW / advance
         val maxX = (s.cols * cellW - width).coerceAtLeast(0f)
@@ -79,7 +90,8 @@ class TerminalView(context: Context) : View(context) {
         panX = panX.coerceIn(0f, maxX)
         panY = panY.coerceIn(0f, maxY)
         canvas.save()
-        canvas.translate(-panX, -panY)
+        if (fit) canvas.translate((width - s.cols * cellW) / 2, (height - s.rows * cellH) / 2)
+        else canvas.translate(-panX, -panY)
         val baseline = cellH * 0.78f
         for (r in 0 until s.rows) {
             for (c in 0 until s.cols) {
@@ -88,6 +100,10 @@ class TerminalView(context: Context) : View(context) {
                 var fg = colour(cell.fg, true, cell.attrs and BOLD != 0)
                 var bg = colour(cell.bg, false, false)
                 if ((cell.attrs and INVERSE != 0) != cursor) fg = bg.also { bg = fg }
+                if (tint != 0) {
+                    fg = glow(fg)
+                    if (bg != Color.BLACK) bg = glow(bg)
+                }
                 val x = c * cellW
                 val y = r * cellH
                 if (bg != Color.BLACK) {
@@ -103,6 +119,12 @@ class TerminalView(context: Context) : View(context) {
             }
         }
         canvas.restore()
+    }
+
+    // A colour as the tint at that colour's brightness (the glasses show levels of one green).
+    private fun glow(c: Int): Int {
+        val l = (Color.red(c) * 77 + Color.green(c) * 150 + Color.blue(c) * 29) shr 8
+        return (tint and 0xFFFFFF) or ((40 + l * 215 / 255) shl 24)
     }
 
     companion object {

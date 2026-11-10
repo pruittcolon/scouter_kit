@@ -36,6 +36,7 @@ int main() {
   Check(KEY_HID, 0, 0x29, false, "\x1b");
   Check(KEY_HID, 0, 0x2A, false, "\x7f");
   Check(KEY_HID, 0x04, 0x2A, false, "\x1b\x7f");
+  Check(KEY_HID, 0x01, 0x2A, false, "\x1b\x7f"); // Ctrl+Backspace: a word, as on Linux
   Check(KEY_HID, 0x02, 0x2B, false, "\x1b[Z");
   Check(KEY_HID, 0, 0x52, false, "\x1b[A");
   Check(KEY_HID, 0, 0x52, true, "\x1bOA");

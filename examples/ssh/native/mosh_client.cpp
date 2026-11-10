@@ -100,6 +100,8 @@ std::shared_ptr<Snapshot> MakeSnapshot(const Terminal::Framebuffer &fb) {
   s->cursor_col = fb.ds.get_cursor_col();
   s->cursor_visible = fb.ds.cursor_visible;
   s->application_cursor_keys = fb.ds.application_mode_cursor_keys;
+  s->mouse = int(fb.ds.mouse_reporting_mode);
+  s->mouse_encoding = int(fb.ds.mouse_encoding_mode);
   for (wchar_t c : fb.get_window_title()) AppendUtf8(s->title, uint32_t(c));
   return s;
 }

@@ -101,10 +101,15 @@ int main(int argc, char **argv) {
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
   CHECK(!term.Shown() && Lit(0) == 0 && Lit(1) == 0);
 
+  uint32_t level = 0, base_level = 0;
+  CHECK(g1::left.Prop(g1::PROP_BRIGHTNESS, &base_level));
   Pitch(0, 30); // looking up
   Pitch(1, 30);
   CHECK(WaitFor([&] { return term.Shown(); }));
   CHECK(WaitFor([&] { return Lit(0) > 200 && Lit(1) > 200; }));
+  // The look-up fade (400 ms by default) ends at the panel's level as it was.
+  std::this_thread::sleep_for(std::chrono::milliseconds(700));
+  CHECK(g1::left.Prop(g1::PROP_BRIGHTNESS, &level) && level == base_level);
   // dx 100, dy 9: the 539 x 462 area at (100, 4) on the left panel and at (0, 13) on the right.
   int w = 77 * 7, h = 33 * 14, x = (740 - 540) / 2, y = (471 - h) / 2;
   CHECK(SameArea(x, y, x - 100, y + 9, w, h));
@@ -189,18 +194,35 @@ int main(int argc, char **argv) {
   term.Show(Screen(77, 33, "after the reboot"));
   CHECK(WaitFor([&] { return SameArea(x, y, x - 100, y + 9, w, h) && Lit(0) > 200; }, 5000));
 
-  // The left arm's link drops while keyer's force holds: the arm's own watch ends the force within 5 s, and
-  // the lowered head hides the terminal there; the right arm, still linked, stays forced.
+  // The left arm's link blips (3 s) while keyer's force holds: the arm doubts, looks again 6 s later and finds
+  // the link back, so the terminal never goes (the head is down: only the force holds it).
   Pitch(0, -30);
   Pitch(1, -30);
   CHECK(WaitFor([&] { return PanelProp(0) == 0 && PanelProp(1) == 0; }, 3000));
   term.Force(true); // on again only through the force
   CHECK(WaitFor([&] { return PanelProp(0) != 0 && PanelProp(1) != 0; }));
-  auto back = std::chrono::steady_clock::now() + std::chrono::milliseconds(10000);
-  g1::emulator::Disconnect(0, 9000);
-  CHECK(WaitFor([&] { return Lit(0) == 0; }, 8000)); // its panel, unlinked: no PanelProp
+  {
+    auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(14000);
+    g1::emulator::Disconnect(0, 3000);
+    bool dark = false;
+    while (std::chrono::steady_clock::now() < until) {
+      if (Lit(0) == 0) dark = true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    CHECK(!dark);
+    CHECK(PanelProp(0) != 0);
+  }
+
+  // The left arm's link drops for good (18 s): within the watch (5 s) and the second look (6 s) the force is
+  // suspended and the lowered head hides the terminal there; the right arm, still linked, stays forced. The
+  // link back, the left arm is forced again (the host never knew).
+  auto back = std::chrono::steady_clock::now() + std::chrono::milliseconds(19000);
+  g1::emulator::Disconnect(0, 18000);
+  CHECK(WaitFor([&] { return Lit(0) == 0; }, 14000)); // its panel, unlinked: no PanelProp
   CHECK(PanelProp(1) != 0);
-  std::this_thread::sleep_until(back); // the link back
+  std::this_thread::sleep_until(back); // the link back: the arm takes the force again by itself
+  CHECK(WaitFor([&] { return PanelProp(0) != 0 && Lit(0) > 200; }, 5000));
+  CHECK(PanelProp(1) != 0);
   term.Force(false);
   CHECK(WaitFor([&] { return PanelProp(0) == 0 && PanelProp(1) == 0; }, 3000));
 
@@ -219,6 +241,8 @@ int main(int argc, char **argv) {
   Pitch(0, 10);
   Pitch(1, 10);
   CHECK(WaitFor([&] { return PanelProp(0) == 0 && PanelProp(1) == 0; }, 3000));
+  // Faded out and off: the level is back for the next power-on.
+  CHECK(WaitFor([&] { return g1::left.Prop(g1::PROP_BRIGHTNESS, &level) && level == base_level; }, 2000));
   g1::left.Stop();
   g1::right.Stop();
 
@@ -230,6 +254,152 @@ int main(int argc, char **argv) {
   table.Force(true);
   CHECK(WaitFor([&] { return table.Shown() && PanelProp(0) != 0 && PanelProp(1) != 0; }));
   table.Stop();
+
+  // Space at the top (where the display is hard to see): fewer rows, drawn lower, the same on both eyes.
+  ssh::GlassesTerminal::Config lc{100, 9, 20, true};
+  lc.top = 140;
+  ssh::GlassesTerminal low;
+  CHECK(low.Start(lc, font, [] {}, &error));
+  int lrows = (471 - 140) / 14;
+  CHECK(low.cols() == 77 && low.rows() == lrows);
+  low.Show(Screen(77, lrows, "lower down"));
+  low.Force(true);
+  CHECK(WaitFor([&] { return low.Shown() && PanelProp(0) != 0 && PanelProp(1) != 0; }));
+  int ly = 140 + (471 - 140 - lrows * 14) / 2;
+  CHECK(WaitFor([&] {
+    const uint8_t *p = g1::emulator::Panel(0);
+    int n = 0;
+    for (int yy = ly; yy < ly + 14; yy++)
+      for (int xx = x; xx < x + w; xx++) n += p[yy * 640 + xx] != 0;
+    return n > 50; // the first row's text, at the new top
+  }));
+  CHECK(SameArea(x, ly, x - 100, ly + 9, w, lrows * 14));
+  std::string lcheck = low.Check();
+  if (lcheck.rfind("ok", 0) != 0) std::printf("margins: %s", lcheck.c_str());
+  CHECK(lcheck.rfind("ok", 0) == 0);
+  low.Stop();
+
+  // The dashboard: 80 px above the terminal (fewer rows), its picture drawn there on both eyes when the
+  // terminal shows, and again when it changes.
+  ssh::GlassesTerminal::Config dc{100, 9, 20, true};
+  dc.dash_h = 80; // with the fade (400 ms by default): the program as the app runs it
+  ssh::GlassesTerminal dashed;
+  CHECK(dashed.Start(dc, font, [] {}, &error));
+  int drows = (471 - 80) / 14;
+  int dw = dashed.dash_w(); // the terminal's width, even
+  CHECK(dashed.rows() == drows && dashed.dash_h() == 80 && dw == 540);
+  std::vector<uint8_t> pic(size_t(dw / 2) * 80, 0);
+  for (int yy = 20; yy < 60; yy++)
+    for (int xx = 10; xx < 110; xx++) pic[size_t(yy) * (dw / 2) + xx / 2] |= uint8_t(xx % 2 ? 0x0F : 0xF0);
+  dashed.SetDash(pic);
+  dashed.Show(Screen(77, drows, "under the dashboard"));
+  dashed.Force(true);
+  CHECK(WaitFor([&] { return dashed.Shown() && PanelProp(0) != 0; }));
+  int dy0 = 80 + (471 - 80 - drows * 14) / 2 - 80; // the dashboard's top: the terminal's top less its height
+  auto lit_in = [&](int arm, int x0, int y0, int x1, int y1) {
+    const uint8_t *p = g1::emulator::Panel(arm);
+    int k = 0;
+    for (int yy = y0; yy < y1; yy++)
+      for (int xx = x0; xx < x1; xx++) k += p[yy * 640 + xx] != 0;
+    return k;
+  };
+  CHECK(WaitFor([&] { return lit_in(0, x + 10, dy0 + 20, x + 110, dy0 + 60) == 4000; }));
+  CHECK(SameArea(x, dy0, x - 100, dy0 + 9, dw, 80));
+  std::fill(pic.begin(), pic.end(), 0);
+  dashed.SetDash(pic); // cleared while shown
+  CHECK(WaitFor([&] { return lit_in(0, x + 10, dy0 + 20, x + 110, dy0 + 60) == 0; }));
+  dashed.Stop();
+
+  // Transitions (Fx): a terminal that starts with one shows its first screen (with the dashboard) through the
+  // reveal; then a switch reveals the next screen (the terminal only, the dashboard staying). Afterwards both
+  // eyes hold exactly what the terminal would have drawn.
+  auto fx = std::make_shared<ssh::Fx>();
+  CHECK(fx->Start(&error));
+  ssh::GlassesTerminal::Config fc{100, 9, 20, true};
+  fc.dash_h = 80;
+  fc.fx = fx;
+  ssh::GlassesTerminal moving;
+  moving.Reveal(ssh::Fx::kDown, true); // before Start: its first screen
+  CHECK(moving.Start(fc, font, [] {}, &error));
+  for (int yy = 20; yy < 60; yy++)
+    for (int xx = 10; xx < 110; xx++) pic[size_t(yy) * (dw / 2) + xx / 2] |= uint8_t(xx % 2 ? 0x0F : 0xF0);
+  moving.SetDash(pic);
+  moving.Show(Screen(77, drows, "revealed"));
+  int64_t sent = fx->busy_until();
+  moving.Force(true);
+  CHECK(WaitFor([&] { return fx->busy_until() != sent; }));
+  CHECK(WaitFor([&] { return g1::NowUs() > fx->busy_until() + 150000; }));
+  CHECK(lit_in(0, x + 10, dy0 + 20, x + 110, dy0 + 60) == 4000); // the dashboard came with it
+  CHECK(SameArea(x, dy0, x - 100, dy0 + 9, dw, 80 + drows * 14));
+  std::string mcheck = moving.Check();
+  if (mcheck.rfind("ok", 0) != 0) std::printf("revealed: %s", mcheck.c_str());
+  CHECK(mcheck.rfind("ok", 0) == 0);
+  sent = fx->busy_until();
+  fx->Out(ssh::Fx::kRight, moving.FxRegion(false));
+  moving.Reveal(ssh::Fx::kRight, false);
+  moving.Show(Screen(77, drows, "the next one, with more text on its first row"));
+  CHECK(WaitFor([&] { return fx->busy_until() != sent; }));
+  sent = fx->busy_until();
+  CHECK(WaitFor([&] { return fx->busy_until() != sent; })); // the out, then the reveal
+  CHECK(WaitFor([&] { return g1::NowUs() > fx->busy_until() + 150000; }));
+  mcheck = moving.Check();
+  if (mcheck.rfind("ok", 0) != 0) std::printf("switched: %s", mcheck.c_str());
+  CHECK(mcheck.rfind("ok", 0) == 0);
+  CHECK(SameArea(x, dy0, x - 100, dy0 + 9, dw, 80 + drows * 14));
+  CHECK(lit_in(0, x + 10, dy0 + 20, x + 110, dy0 + 60) == 4000); // the dashboard stayed
+  // Afterwards a screen draws at once again.
+  moving.Show(Screen(77, drows, "at once"));
+  std::this_thread::sleep_for(std::chrono::milliseconds(400));
+  mcheck = moving.Check();
+  CHECK(mcheck.rfind("ok", 0) == 0);
+  // Its fonts kept on the arms (a screen shows meanwhile): the next run takes them and uploads none, and
+  // draws as before.
+  ssh::GlassesTerminal::Fonts kept;
+  moving.Stop(false, &kept);
+  CHECK(kept.font && kept.batt && !kept.loaded.empty());
+  int free_kept = scouter_kit::free_memory;
+  ssh::GlassesTerminal again;
+  fc.fonts = &kept;
+  fc.fx = nullptr;
+  CHECK(again.Start(fc, font, [] {}, &error));
+  CHECK(!kept.font && !kept.batt); // taken
+  again.Show(Screen(77, drows, "fonts kept"));
+  again.Force(true);
+  CHECK(WaitFor([&] { return again.Shown() && PanelProp(0) != 0; }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(600));
+  std::string kcheck = again.Check();
+  if (kcheck.rfind("ok", 0) != 0) std::printf("fonts kept: %s", kcheck.c_str());
+  CHECK(kcheck.rfind("ok", 0) == 0);
+  CHECK(free_kept - scouter_kit::free_memory < 200000); // the layout only (about 150 KB): no second font (27 KB)
+
+  // The pointer: an arrow drawn by the arms where it is asked to be (over the terminal or the dashboard), the same
+  // on both eyes; moved, the content under it comes back exactly; off, the panels are as before it.
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  std::vector<uint8_t> before(g1::emulator::Panel(0), g1::emulator::Panel(0) + 640 * 480);
+  int ax = x, ay = dy0 + 80; // the area's top left on the left eye
+  auto at = [&](int arm, int px, int py) { return g1::emulator::Panel(arm)[py * 640 + px]; };
+  again.Pointer(100, 50, true);
+  CHECK(WaitFor([&] { return at(0, ax + 100 + 2, ay + 50 + 4) == 15; }, 2000)); // the body, below its tip
+  CHECK(at(0, ax + 100 + 0, ay + 50 + 4) == 0); // its dark edge
+  CHECK(SameArea(x, dy0, x - 100, dy0 + 9, dw, 80 + drows * 14));
+  again.Pointer(300, 120, true);
+  CHECK(WaitFor([&] { return at(0, ax + 300 + 2, ay + 120 + 4) == 15; }, 2000));
+  auto same_box = [&](int bx, int by) {
+    const uint8_t *p = g1::emulator::Panel(0);
+    for (int yy = by; yy < by + 20; yy++)
+      for (int xx = bx; xx < bx + 16; xx++)
+        if (p[yy * 640 + xx] != before[size_t(yy * 640 + xx)]) return false;
+    return true;
+  };
+  CHECK(same_box(ax + 100, ay + 50)); // the old place as it was
+  again.Pointer(40, -60, true); // over the dashboard
+  CHECK(WaitFor([&] { return at(0, ax + 40 + 2, ay - 60 + 4) == 15; }, 2000));
+  CHECK(same_box(ax + 300, ay + 120));
+  again.Pointer(40, -60, false);
+  CHECK(WaitFor([&] { return same_box(ax + 40, ay - 60); }, 2000));
+  CHECK(std::equal(before.begin(), before.end(), g1::emulator::Panel(0)));
+  again.Stop();
+  fx->Stop();
   g1::Deinit();
   std::printf("%s (%d failures)\n", failures ? "FAILED" : "all tests passed", failures);
   return failures ? 1 : 0;

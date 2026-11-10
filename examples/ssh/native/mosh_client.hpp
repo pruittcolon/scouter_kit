@@ -28,6 +28,8 @@ struct Snapshot {
   int cursor_row = 0, cursor_col = 0;
   bool cursor_visible = true;
   bool application_cursor_keys = false;
+  int mouse = 0;          // the program's mouse reporting (xterm mode 9, 1000 ... 1003; 0: off)
+  int mouse_encoding = 0; // and its encoding (1006 SGR, 1015 urxvt, 1005 UTF-8, 0 the default)
   std::string title;
   const Cell &At(int row, int col) const { return cells[size_t(row) * cols + col]; }
 };
