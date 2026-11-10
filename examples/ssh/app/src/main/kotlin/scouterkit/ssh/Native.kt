@@ -70,6 +70,8 @@ object Native {
     // frame is not on the display yet. One of SCREEN_*.
     // options: Settings.screenOptions() (fit, pan x, pan y, zoom, rotate, place x, y, w, h, invert, levels,
     // contrast, sharpen, dark in the case, dark when folded, gamma, threshold, steady, dither, detail, budget).
+    // Heads-up on a screen, between frames: the head read, the panels off or on (1: on again, send a frame).
+    @JvmStatic external fun screenLook(options: IntArray): Int
     @JvmStatic external fun screenFrame(buffer: java.nio.ByteBuffer, width: Int, height: Int, stride: Int,
                                         options: IntArray): Int
     // What the glasses show (the last picture sent), else what they would show for this frame, into out (640 x 480

@@ -238,9 +238,26 @@ class ScouterService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    // Heads-up on a screen (the phone's or a server's): the head read five times a second between frames (a still
+    // picture sends none), on its own thread (two Bluetooth reads); the panels on again: a frame at once.
+    private val looker = HandlerThread("heads-up").apply { start() }
+    private val look = Handler(looker.looper)
+    private val lookTick = object : Runnable {
+        override fun run() {
+            if (ended) return
+            val on = !settings.phoneForce && settings.show == Settings.SCREEN && Session.glasses == "ready" && !Session.blank
+            if (on && runCatching { Native.screenLook(settings.screenOptions()) }.getOrDefault(0) == 1) {
+                screen?.poke()
+                remote?.redraw()
+            }
+            look.postDelayed(this, if (on) 200L else 1000L)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         running = true
+        look.postDelayed(lookTick, 1000)
         settings = Settings(this)
         vault = Vault(this)
         // A crash: its log kept, and sent to the phone's server the next time (LogBook).
@@ -432,6 +449,8 @@ class ScouterService : Service() {
     override fun onDestroy() {
         running = false
         ended = true
+        look.removeCallbacks(lookTick)
+        looker.quitSafely()
         LookUp.onChange = null
         work.removeCallbacks(headerTick)
         work.removeCallbacks(tabPoll)
@@ -523,8 +542,8 @@ class ScouterService : Service() {
         voiceAlways()
         // Keyboard mode: the terminal shows on the glasses whatever the head's angle, as while keyer's keys come.
         if (settings.keyboard && Session.keyer != KEYBOARD) {
-            Native.force(true)
             update(keyer = KEYBOARD)
+            forceApply()
         }
         // Started from the phone: the same, unless the user wants the looking-up rule.
         val force = settings.phone && settings.phoneForce
@@ -937,15 +956,15 @@ class ScouterService : Service() {
         val k = keyer ?: return
         k.quit()
         keyer = null
-        Native.force(forced)
         update(keyer = "off")
+        forceApply()
     }
 
     // While the app holds keyer's keys the glasses show the terminal whatever the head's angle (R25, the
     // user's rule); otherwise the arms' looking-up rule decides. keyer coming or going decides what runs.
     private fun keyerState(state: String) {
-        Native.force(state == "keys" || forced)
         update(keyer = state)
+        forceApply()
         refresh()
     }
 
@@ -1636,8 +1655,15 @@ class ScouterService : Service() {
 
     // The terminal shows whatever the head's angle: a session started from the phone (Always visible), keyer's
     // keys, the keyboard mode, or a panel open.
-    private fun forceApply() =
-        Native.force(forced || Session.overlay.isNotEmpty() || Session.keyer == "keys" || Session.keyer == KEYBOARD)
+    // Heads-up (look-up only, Alt+0) wins: then only a panel that is open for a moment (the help, the quick
+    // settings, a note, a title card) holds the terminal; voice mode's strip, the TV remote and the keyboard modes
+    // show while looking up, as the terminal does.
+    private fun forceApply() {
+        val brief = Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS || Session.overlay == Panels.NOTE ||
+            Session.overlay == Panels.INTRO
+        val held = Session.overlay.isNotEmpty() || Session.keyer == "keys" || Session.keyer == KEYBOARD
+        Native.force(forced || brief || (settings.phoneForce && held))
+    }
 
     // The look-up view's settings changed (the app, the quick settings).
     private fun lookUpChanged() {
@@ -1922,6 +1948,14 @@ class ScouterService : Service() {
             Thread { Native.brightness(level) }.start()
         }
         val speed = num("Cursor speed", { settings.trackpadSpeed }, { settings.trackpadSpeed = it }, 1, 10, 1)
+        val accel = num("Cursor acceleration", { settings.trackpadAccel }, { settings.trackpadAccel = it }, 0, 10, 1)
+        val scrollSpeed = num("Scroll speed", { settings.scrollSpeed }, { settings.scrollSpeed = it }, 1, 10, 1)
+        val natural = flag("Natural scrolling", { settings.scrollNatural }, { settings.scrollNatural = it })
+        val lowBat = Panels.Tweak("Low battery (10%)", { if (settings.lowBattery) "on" else "off" }) { _ -> lowBattery() }
+        val voice = Panels.Tweak("Voice mode (Alt+V)", { if (Session.voiceMode) "on: talking to the terminal" else "off" }) { _ ->
+            voiceModeSet(!Session.voiceMode)
+        }
+        val words = flag("Realtime words", { settings.voiceRealtime }, { settings.voiceRealtime = it })
         val t = mutableListOf<Panels.Tweak>()
         if (settings.show == Settings.SCREEN) {
             t += pick("Picture", listOf("2" to "black and white (fast)", "4" to "4 greys", "8" to "8 greys", "16" to "16 greys"),
@@ -1940,20 +1974,40 @@ class ScouterService : Service() {
             t += flag("Clean specks", { settings.screenClean }, { settings.screenClean = it })
             t += num("Frames a second", { settings.screenFps }, { settings.screenFps = it }, 1, 30, 1)
             t += bright
+            t += lowBat
             if (onPhone()) t += flag("Pocket mode", { settings.pocket }, { settings.pocket = it }) { trackpadMode() }
             t += speed
+            t += accel
+            t += scrollSpeed
+            t += natural
+            t += voice
         } else {
             t += bright
-            t += flag("Always visible", { settings.phoneForce }, { settings.phoneForce = it; settings.phone = true }) { refresh() }
+            t += lowBat
+            // Heads-up mode (Alt+0): the terminal only while looking up (it fades in and out with the head).
+            t += Panels.Tweak("Heads-up mode (Alt+0)", { if (settings.phoneForce) "off: always on" else "on: look up to see" }) { _ ->
+                settings.phone = true
+                settings.phoneForce = !settings.phoneForce
+                refresh()
+            }
+            t += num("Fade in / out", { settings.fadeMs }, { settings.fadeMs = it }, 0, 1500, 100,
+                { if (it == 0) "at once" else "${it} ms" }) { Native.terminalFade(settings.fadeMs) }
             t += flag("Look-up dashboard", { settings.dashboard }, { settings.dashboard = it }) { lookUpChanged() }
             t += pick("Dashboard", Dashboard.STYLES, { settings.dashStyle }, { settings.dashStyle = it }) { lookUpChanged() }
+            t += num("Dashboard height", { settings.dashHeight }, { settings.dashHeight = it }, 56, 140, 14,
+                { "$it px" }) { lookUpChanged() }
+            t += voice
+            t += words
             t += speed
-            t += num("Scroll speed", { settings.scrollSpeed }, { settings.scrollSpeed = it }, 1, 10, 1)
+            t += accel
+            t += scrollSpeed
+            t += natural
             t += flag("Type on the glasses", { settings.keysToGlasses }, { settings.keysToGlasses = it })
             t += flag("Animations", { settings.animations }, { settings.animations = it }) { Native.fxEnabled(settings.animations) }
             t += pick("Tunes follows", listOf(Tunes.BEAT to "the beat", Tunes.VOLUME to "the volume", Tunes.STEADY to "a steady tempo"),
                 { settings.tunesMode }, { settings.tunesMode = it })
         }
+        if (Vizio.paired(settings)) t += Panels.Tweak("TV remote (Alt+Y)", { if (Session.tvKeys) "on" else "off" }) { _ -> tvRemote() }
         return t
     }
 

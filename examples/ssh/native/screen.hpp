@@ -48,6 +48,11 @@ struct ScreenOptions {
   bool clean = true;       // black and white at every pixel: lone specks go, pinholes fill (cleaner, less to send)
   // Rows cut from the screen's top and bottom first (status and navigation bars), in 1/1000 of its height.
   int crop_top = 0, crop_bottom = 0;
+  // Heads-up: the panels on only while the head is up, as the terminal's looking-up rule (up at `angle` degrees,
+  // down again kLookDown lower after a hold); `hold` keeps them on meanwhile (a panel open over the picture).
+  bool look_up = false;
+  int angle = 20;
+  bool hold = false;
 };
 
 // What the mirror may take back when the arms' arena runs short (the terminal's kept fonts): called, with no lock
@@ -176,11 +181,15 @@ public:
   bool Preview(std::vector<uint8_t> *out, int *w, int *h);
   // Each eye's panel read back (CRC) against what the library sent: a line per eye. Frames wait meanwhile.
   std::string Check();
+  // Heads-up between frames: the head's angle read (Hidden's rule), the panels off or on now. 1: they came on
+  // again (the caller sends a frame: the power-on cleared them), 0 otherwise.
+  int Look(const ScreenOptions &);
 
   static constexpr int kShown = 0, kSame = 1, kHidden = 2, kStopped = 3, kBusy = 4, kLater = 5;
 
 private:
-  bool Hidden(const ScreenOptions &); // reads the arms' sensors at most once a second (mutex_ held)
+  bool Hidden(const ScreenOptions &); // reads the arms' sensors at most once a second, 5 times heads-up (mutex_ held)
+  bool ApplyHidden(bool hide);        // the panels off or on for it; true when they came on (mutex_ held)
   void Panels(bool on);
   bool Path(int levels);              // the drawing path for these levels (mutex_ held)
   void DropPath(bool keep_panels = false);
@@ -220,6 +229,8 @@ private:
   bool paused_ = false; // Check runs
   int64_t props_us_ = 0;
   bool props_hidden_ = false;
+  bool head_up_ = true;    // heads-up: the head counted as up (shown)
+  int64_t head_down_us_ = 0; // when it went below the angle's range (the hold's start), 0: not
   std::string hide_why_, error_;
   int frames_ = 0;
   int seen_ = 0; // frames handed in

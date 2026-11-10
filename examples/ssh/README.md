@@ -303,17 +303,23 @@ this phone's Ubuntu and Termux, mosh's ports and *Forget its host key*).
   comes back.
 - **Closing**: Alt+Q closes the source shown (a terminal's connection, the phone's sharing, a server's screen) and
   the glasses go to the next one still open; a closed one stays closed until it is chosen again.
-- **Look-up only** (heads-up mode): Alt+0 (or Alt+Z) switches between *Always visible* and look-up only (the terminal shows when
+- **Look-up only** (heads-up mode): Alt+0 (or Alt+Z, or the quick settings) switches between *Always visible* and look-up only (the terminal shows when
   looking up): a note says which, then the terminal fades away with the head level (or stays). The left TouchBar
   held 3 s turns *Always visible* off too; only the app or Alt+0 / Alt+Z turns it back on, so a stray touch cannot. The
   left hold's own action comes when it is let go. Each arm checks every 5 s that the phone is still linked; while
   its link is down the head decides there, and once it is back *Always visible* holds again (the arm takes it back
-  itself: the phone never learns it was lost).
+  itself: the phone never learns it was lost). Heads-up wins: then only a panel open for a moment (the help, the
+  quick settings, a note) holds the terminal on; voice mode's strip, the TV remote and *Keyboard mode* show while
+  looking up. A screen (the phone's, a server's) follows it too: the mirror reads both arms' pitch five times a
+  second (`ScreenMirror::Look`, also between frames), the panels go off a second after the head drops 5 degrees
+  below the angle and come back with the whole picture when it is up again.
 - **Panels over everything** (`Panels.kt`): Alt+A the help, every hotkey and what it does (the same list as the
   app's Settings, *Hotkeys*), also while Alt is held by itself (after 0.3 s, gone when it is let go; a key pressed
   with it closes it and does its own thing); Alt+S the quick settings of what shows (a screen: picture, invert, threshold,
-  contrast, zoom, fit, turn, cuts, frames a second, brightness, pocket mode, cursor speed; the terminal:
-  brightness, always visible, the look-up dashboard and its style, speeds, typing, animations, Tunes), one at a
+  contrast, zoom, fit, turn, cuts, frames a second, brightness, low battery, pocket mode, cursor speed and
+  acceleration, scroll speed, natural scrolling, voice mode; the terminal: brightness, low battery, heads-up mode, the
+  fade, the look-up dashboard, its style and height, voice mode, realtime words, speeds, natural scrolling, typing,
+  animations, Tunes; the TV remote when a TV is paired), one at a
   time: Up / Down the setting, Left / Right its value, live, Esc or Enter done (the trackpad: scroll, click
   closes). A note at the bottom says what a hotkey did (Alt+= / - brightness, Alt+P play or pause, Alt+, / . the
   track before / after). On the terminal they are its own lines (`Native.overlay`, over the band and the card);

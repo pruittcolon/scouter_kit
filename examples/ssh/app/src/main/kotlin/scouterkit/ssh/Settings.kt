@@ -132,7 +132,11 @@ class Settings(context: Context) {
         screenContrast, if (screenSharpen) 1 else 0, if (screenHideCase) 1 else 0, if (screenHideFolded) 1 else 0,
         screenGamma, screenThreshold, if (screenSteady) 1 else 0, if (screenDither) 1 else 0, screenDetail, screenBudget,
         Session.cursorX, Session.cursorY, if (screenClean) 1 else 0, screenCropTop, screenCropBottom,
-        Session.overlayGen) // last: a panel changed (the capture sends the frame again)
+        Session.overlayGen, // a panel changed (the capture sends the frame again)
+        // Heads-up (Alt+0) on the screen too: the head's angle decides, held on while a panel is open.
+        if (phoneForce) 0 else 1, angle,
+        if (Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS || Session.overlay == Panels.NOTE ||
+            Session.overlay == Panels.INTRO) 1 else 0)
 
     // Once: the fast path (black and white) for everyone, as 0.4 made it the default.
     fun migrate() {

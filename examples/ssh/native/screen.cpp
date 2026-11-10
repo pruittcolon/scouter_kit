@@ -1025,17 +1025,26 @@ std::string ScreenMirror::why() {
   return hidden_ ? hide_why_ : error_;
 }
 
+// Heads-up on a screen: the panels go this many degrees below the angle (after kLookHoldUs), as the terminal's.
+constexpr int kLookDown = 5;
+constexpr int64_t kLookHoldUs = 1000000;
+
 bool ScreenMirror::Hidden(const ScreenOptions &o) {
   int64_t now = g1::NowUs();
-  if (props_us_ && now - props_us_ < 1000000) return props_hidden_;
+  if (props_us_ && now - props_us_ < (o.look_up ? 200000 : 1000000)) return props_hidden_;
   props_us_ = now;
-  bool in_case = false, known = false, folded = true;
+  bool in_case = false, known = false, folded = true, up = false, pitched = false;
   for (g1::Arm *a : {&g1::left, &g1::right}) {
     g1::Arm::State s = a->GetState();
     if (!s.connected) continue;
-    const uint8_t ids[2] = {g1::PROP_IN_CASE, g1::PROP_WORN};
-    uint32_t v[2] = {g1::UNKNOWN, g1::UNKNOWN};
+    const uint8_t ids[3] = {g1::PROP_IN_CASE, g1::PROP_WORN, g1::PROP_PITCH};
+    uint32_t v[3] = {g1::UNKNOWN, g1::UNKNOWN, g1::UNKNOWN};
     bool got = a->Props(ids, v);
+    if (got && o.look_up && v[2] != g1::UNKNOWN) { // either eye up is up
+      pitched = true;
+      int pitch = int32_t(v[2]);
+      if (pitch >= o.angle || (head_up_ && pitch >= o.angle - kLookDown)) up = true;
+    }
     // The arm's IN_CASE now; State::in_case is only what its session's first message said (the glasses
     // connected in the case and taken out since: still true), so it counts only without the property.
     if (got && v[0] != g1::UNKNOWN) {
@@ -1049,10 +1058,43 @@ bool ScreenMirror::Hidden(const ScreenOptions &o) {
       folded = folded && v[1] == 0;
     }
   }
+  // Heads-up: up shows at once; down hides after the hold (a glance down at the keys keeps it a moment).
+  bool by_head = false;
+  if (!o.look_up || !pitched || o.hold || up) {
+    head_up_ = true;
+    head_down_us_ = 0;
+  } else if (head_up_) {
+    if (!head_down_us_) head_down_us_ = now;
+    if (now - head_down_us_ >= kLookHoldUs) head_up_ = false;
+  }
+  by_head = o.look_up && !head_up_;
   bool by_case = o.hide_case && in_case, by_fold = o.hide_folded && known && folded;
-  hide_why_ = by_case ? "in the case" : by_fold ? "folded" : "";
-  props_hidden_ = by_case || by_fold;
+  hide_why_ = by_case ? "in the case" : by_fold ? "folded" : by_head ? "heads-up: head down" : "";
+  props_hidden_ = by_case || by_fold || by_head;
   return props_hidden_;
+}
+
+bool ScreenMirror::ApplyHidden(bool hide) {
+  if (hide == hidden_) return false;
+  hidden_ = hide;
+  if (hide) {
+    LOG("screen: panels off (%s)", hide_why_.c_str());
+    sk::gray::Clear();
+    sk::Flush();
+    Panels(false);
+    return false;
+  }
+  LOG("screen: panels on again");
+  Panels(true);
+  prev_.clear();
+  video_.redraw = true; // the power-on cleared the panels: every row again
+  return true;
+}
+
+int ScreenMirror::Look(const ScreenOptions &o) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!started_ || paused_) return 0;
+  return ApplyHidden(Hidden(o)) ? 1 : 0;
 }
 
 int ScreenMirror::Frame(const uint8_t *rgba, int w, int h, int stride, const ScreenOptions &o) {
@@ -1064,20 +1106,7 @@ int ScreenMirror::Frame(const uint8_t *rgba, int w, int h, int stride, const Scr
   if (w <= 0 || h <= 0 || stride < w * 4) return kSame;
   if (seen_++ == 0) LOG("screen: first frame, %d x %d", w, h);
   bool hide = Hidden(o);
-  if (hide != hidden_) {
-    hidden_ = hide;
-    if (hide) {
-      LOG("screen: panels off (%s)", hide_why_.c_str());
-      sk::gray::Clear();
-      sk::Flush();
-      Panels(false);
-    } else {
-      LOG("screen: panels on again");
-      Panels(true);
-      prev_.clear();
-      video_.redraw = true; // the power-on cleared the panels: every row again
-    }
-  }
+  ApplyHidden(hide);
   if (hide) return kHidden;
   if (!Path(o.levels)) return kSame;
   // Where the cursor lands follows the screen's size and the options that place it.

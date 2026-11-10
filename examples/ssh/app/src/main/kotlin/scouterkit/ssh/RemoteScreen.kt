@@ -32,6 +32,13 @@ class RemoteScreen(private val context: Context, val server: Settings.Server, pr
     // Another go now (a panel over the picture changed: the options carry it).
     fun poke() = wake.release()
 
+    // The picture again (heads-up turned the panels on: they came on blank).
+    @Volatile private var again = false
+    fun redraw() {
+        again = true
+        wake.release()
+    }
+
     fun release() {
         if (released) return
         released = true
@@ -131,6 +138,10 @@ class RemoteScreen(private val context: Context, val server: Settings.Server, pr
             // Unseen (another source in front), the newest image waits undecoded; shown again, it goes at once.
             val mine = Session.screenSource == key
             if (mine && !wasMine) due = true
+            if (again) {
+                again = false
+                due = true
+            }
             wasMine = mine
             if (mine) latest.getAndSet(null)?.let { jpeg ->
                 val b = runCatching { BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, decode) }.getOrNull()

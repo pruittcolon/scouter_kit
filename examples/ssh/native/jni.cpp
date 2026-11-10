@@ -1319,10 +1319,11 @@ namespace {
 
 // Settings.screenOptions: fit, pan x, pan y, zoom, rotate, place x, y, w, h, invert %, levels, contrast,
 // sharpen, hide in the case, hide folded, gamma (x100), threshold, steady, dither, detail (0 auto), budget (KB),
-// the pointer's x, y (1/10000 of the screen; -1 none).
+// the pointer's x, y (1/10000 of the screen; -1 none), clean, crop top, crop bottom, (a panel's generation, unused
+// here), heads-up, its angle, a panel held on.
 ssh::ScreenOptions Options(JNIEnv *env, jintArray options) {
-  jint v[26] = {0, 50, 0, 100, 0, 0, 0, 100, 100, 100, 2, 0, 0, 1, 0, 100, 128, 1, 0, 1, 6, -1, -1, 1, 0, 0};
-  jsize n = std::min<jsize>(env->GetArrayLength(options), 26);
+  jint v[30] = {0, 50, 0, 100, 0, 0, 0, 100, 100, 100, 2, 0, 0, 1, 0, 100, 128, 1, 0, 1, 6, -1, -1, 1, 0, 0, 0, 0, 20, 0};
+  jsize n = std::min<jsize>(env->GetArrayLength(options), 30);
   env->GetIntArrayRegion(options, 0, n, v);
   ssh::ScreenOptions o;
   o.fit = std::clamp(int(v[0]), 0, 2);
@@ -1351,6 +1352,9 @@ ssh::ScreenOptions Options(JNIEnv *env, jintArray options) {
   o.clean = v[23] != 0;
   o.crop_top = std::clamp(int(v[24]), 0, 400);
   o.crop_bottom = std::clamp(int(v[25]), 0, 400);
+  o.look_up = v[27] != 0;
+  o.angle = std::clamp(int(v[28]), -60, 80);
+  o.hold = v[29] != 0;
   return o;
 }
 
@@ -1381,6 +1385,12 @@ JNIEXPORT jint JNICALL Java_scouterkit_ssh_Native_screenFrame(JNIEnv *env, jclas
   const uint8_t *p = Pixels(env, buffer, w, h, stride);
   if (!p) return ssh::ScreenMirror::kSame;
   return screen->Frame(p, w, h, stride, Options(env, options));
+}
+
+// Heads-up between frames (ScreenMirror::Look): 1 when the panels came on again (send a frame), else 0.
+JNIEXPORT jint JNICALL Java_scouterkit_ssh_Native_screenLook(JNIEnv *env, jclass, jintArray options) {
+  std::shared_ptr<ssh::ScreenMirror> screen = Mirror();
+  return screen ? screen->Look(Options(env, options)) : 0;
 }
 
 // What the glasses show (the last picture sent), else what they would show for this frame (the glasses off,
