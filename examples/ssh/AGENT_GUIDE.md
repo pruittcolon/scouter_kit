@@ -42,6 +42,9 @@ detailed manual; this is the map.
 | Hotkeys | Hold Alt for the list; Alt+Z, A, S, B, Y, X, C, P, U, M, K, T, W, Q... | `Hotkeys.kt`, `Panels.kt` |
 | Voice | Offline voice commands (Parakeet via sherpa-onnx); voice mode (Alt+V) types what is said into the terminal, with a strip at the bottom | `Voice.kt`, `ScouterService.voiceModeSet` |
 | Car mode | In a car (Bluetooth), the Next/Previous/Play keys talk to Claude on your server, the answer is spoken (Kokoro voice or Android TTS), nothing is shown on the glasses | `Car.kt` |
+| Captions / translation | Alt+E live captions (Parakeet), Alt+I translation into English (Whisper small), phone microphone | `ScouterService.captions*`, `Voice.kt` (`TranslateModel`, `TranslateEngine`) |
+| Smart home | Alt+O: Vizio, Roku (ECP), Home Assistant entities | `Home.kt`, `ScouterService.home*` |
+| Calls and texts | Alt+J: starred contacts, call, text typed or said | `People.kt`, `ScouterService.people*` |
 | Hub | Alt+G: timer, stopwatch, alarm (the phone's clock), reminders, notes, the next events, on the glasses | `Hub.kt`, `Panels.hubLines`, `ScouterService.hub*` |
 | TV remote | A Vizio SmartCast TV's remote: Alt+Y turns the keyboard into it and shows the remote on the glasses; the app's TV tab has the buttons. Alt+F runs the phone's `phone` mirror command in a tmux tab | `Vizio.kt`, `TvPage.kt`, `Panels.tvLines`, `Tabs.tv` |
 | Preview mode | Alt+D / Preview button: a short live tour (phone screen, phone terminal, laptop screen, laptop terminal), each after a full-screen title card | `ScouterService.demoStart`, `Intro.kt` |

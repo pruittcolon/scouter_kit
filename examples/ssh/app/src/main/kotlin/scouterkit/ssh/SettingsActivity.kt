@@ -220,6 +220,43 @@ class SettingsActivity : Activity() {
         tv.addView(button(if (Vizio.paired(settings)) "Open the remote" else "Find and pair the TV") {
             startActivity(Intent(this, TvActivity::class.java))
         })
+        // Smart home (Home.kt; Alt+O on the glasses): Roku TVs found on the Wi-Fi, Home Assistant's entities.
+        val home = page.section("Smart home", "set_home", "spark",
+            hint = "Alt+O on the glasses: the TVs, and Home Assistant's lights, switches, players and thermostats, one row each.")
+        val homeState = text(Home.rokus(this).let { r -> if (r.isEmpty()) "No Roku TV found yet." else "Roku: " + r.joinToString { it.second } },
+            12.5f, Ui.FAINT)
+        home.addView(homeState)
+        home.addView(button("Find Roku TVs on this Wi-Fi") {
+            homeState.text = "Looking…"
+            Thread {
+                val found = Home.findRokus(applicationContext)
+                runOnUiThread {
+                    homeState.text = if (found.isEmpty()) "No Roku answered (on the TV: Settings, System, Advanced, Control by mobile apps)"
+                    else "Roku: " + found.joinToString { it.second }
+                }
+            }.start()
+        })
+        home.addView(subhead("Home Assistant (lights, thermostat, speakers)"))
+        home.addField(editable("Its address", settings.haUrl, "http://homeassistant.local:8123") { settings.haUrl = it.trim() })
+        val haToken = field("Long-lived access token", settings.haToken, "your Home Assistant profile, Security", secret = true)
+        fields += haToken to { v: String -> settings.haToken = v.trim() }
+        home.addField(haToken)
+        home.addField(editable("Entities, comma separated", settings.haEntities, "light.kitchen, climate.living_room") {
+            settings.haEntities = it.trim()
+        })
+        home.addView(text("Lights or a thermostat on Alexa or Google Home: bring them into Home Assistant (its Matter, " +
+            "Alexa or Google integrations), then list them here.", 12.5f, Ui.FAINT))
+
+        // Calls and texts (People.kt; Alt+J on the glasses): the starred contacts.
+        val calls = page.section("Calls and texts", "set_calls", "phone",
+            hint = "Alt+J on the glasses: your starred contacts (the phone's Favorites), called or texted, typed or said.")
+        calls.addView(text(if (People.allowed(this)) "${People.favorites(this).size} starred contacts with a number."
+            else "Contacts, Phone and SMS are not allowed for Vox yet.", 12.5f, Ui.FAINT))
+        calls.addView(button("Allow contacts, calls and texts") {
+            requestPermissions(arrayOf(android.Manifest.permission.READ_CONTACTS, android.Manifest.permission.CALL_PHONE,
+                android.Manifest.permission.SEND_SMS), ASK)
+        })
+
         val pins = page.section("Shortcuts", "set_shortcuts", "spark",
             hint = "On your home screen. Long-pressing the Vox icon shows them too; Quick Settings has a \"Next source\" tile.")
         val chips = settings.sources().map { (k, name) -> chip("+ $name", false) { pin(k, name) } } +

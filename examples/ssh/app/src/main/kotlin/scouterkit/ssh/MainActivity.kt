@@ -84,11 +84,13 @@ class MainActivity : Activity() {
     private var haloAnim: android.animation.Animator? = null
     private lateinit var commandsBox: LinearLayout
     private lateinit var heardText: TextView
+    private var translateModel: TextView? = null // the translation model's state (Voice tab)
+    private var translateButton: TextView? = null
     // While the speech model downloads: its progress on the Voice tab.
     private val modelTicker = object : Runnable {
         override fun run() {
             showVoice()
-            if (VoiceModel.progress >= 0) content.postDelayed(this, 500)
+            if (VoiceModel.progress >= 0 || TranslateModel.progress >= 0) content.postDelayed(this, 500)
         }
     }
     private lateinit var previewView: PreviewView
@@ -871,6 +873,38 @@ class MainActivity : Activity() {
         model.addView(row)
         page.addView(model)
 
+        // Live captions (Parakeet) and translation into English (Whisper small): on the glasses, Alt+E / Alt+I.
+        val listen = card("Captions and translation", "What is said around you, on the glasses as it is said: Alt+E " +
+            "captions (the speech model above), Alt+I a translation into English from any language (its own model, " +
+            "below). The phone's microphone hears the room: allow it once. Each session's words are kept in Vox's files.")
+        val tRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val tTexts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        tTexts.addView(text("Translation model", 15f, Ui.TEXT, Ui.BOLD))
+        translateModel = text("", 12.5f, Ui.MUTED).also { tTexts.addView(it) }
+        tRow.addView(tTexts, lp(0, weight = 1f))
+        translateButton = chip("Download", true) {
+            if (TranslateModel.ready(this)) dialog().setTitle("Delete the translation model?")
+                .setMessage("Translation needs it; you can download it again.")
+                .setPositiveButton("Delete") { _, _ ->
+                    TranslateModel.delete(this)
+                    showVoice()
+                }
+                .setNegativeButton("Cancel", null).show()
+            else downloadTranslate()
+        }.also { tRow.addView(it) }
+        listen.addView(tRow, lp().apply { topMargin = dp(8) })
+        fun go(what: String) {
+            if (!ScouterService.running)
+                return android.widget.Toast.makeText(this, "Start Vox first (Glasses tab)", android.widget.Toast.LENGTH_SHORT).show()
+            ScouterService.send(this, ScouterService.ACTION_PANEL, "do" to what)
+        }
+        listen.addView(chipRow(chip("Captions (Alt+E)", true) { go("captions") }, chip("Translate (Alt+I)", false) { go("translate") }))
+        listen.addView(chipRow(chip("Allow the phone's microphone", false) { askMic() }))
+        page.addView(listen)
+
         // Car mode (Car.kt): Claude by voice through the car.
         val carBox = page.section("Car mode", "voice_car", "mic", open = true)
         carState = text("", 15f, Ui.TEXT, Ui.BOLD)
@@ -991,6 +1025,20 @@ class MainActivity : Activity() {
         val r = dp(18).toFloat()
         modelButton.background = ripple(if (ready) rounded(Ui.RAISED, r, dp(1), Ui.STROKE) else accentGradient(r), r)
         modelButton.setTextColor(if (ready) Ui.TEXT else Ui.ON_ACCENT)
+        val tReady = TranslateModel.ready(this)
+        translateModel?.text = when {
+            !VoiceModel.available -> "This build has no speech engine."
+            TranslateModel.progress >= 0 -> "Downloading… ${mb(TranslateModel.progress)} of ${mb(TranslateModel.bytes)}"
+            tReady -> "Whisper small, on this phone, offline · ${mb(TranslateModel.bytes)}"
+            TranslateModel.problem != null -> "Not downloaded: ${TranslateModel.problem}"
+            else -> "Not downloaded yet · ${mb(TranslateModel.bytes)}, Wi-Fi is best"
+        }
+        translateButton?.let { b ->
+            b.visibility = if (VoiceModel.available && TranslateModel.progress < 0) View.VISIBLE else View.GONE
+            b.text = if (tReady) "Delete" else "Download"
+            b.background = ripple(if (tReady) rounded(Ui.RAISED, r, dp(1), Ui.STROKE) else accentGradient(r), r)
+            b.setTextColor(if (tReady) Ui.TEXT else Ui.ON_ACCENT)
+        }
         val car = when (Session.car) {
             "" -> if (Settings(this).carMode == "off") "Off" else "Waiting for the car (its Bluetooth audio)"
             "listening" -> "Listening…"
@@ -1239,7 +1287,7 @@ class MainActivity : Activity() {
         buildServers()
         buildStyles()
         buildCommands()
-        if (VoiceModel.progress >= 0) content.post(modelTicker)
+        if (VoiceModel.progress >= 0 || TranslateModel.progress >= 0) content.post(modelTicker)
         selectTab(tab, animate = false)
         val keyboard = Settings(this).keyboard
         // Keyboard mode: the keys come only while this screen is in front, so it stays on (dimmed by Android).
@@ -1508,6 +1556,22 @@ class MainActivity : Activity() {
                 VoiceModel.progress = 0
                 Thread {
                     VoiceModel.download(applicationContext)
+                    runOnUiThread { showVoice() }
+                }.start()
+                content.post(modelTicker)
+            }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    private fun downloadTranslate() {
+        if (TranslateModel.progress >= 0) return
+        dialog().setTitle("Download the translation model?")
+            .setMessage("${TranslateModel.bytes / 1_000_000} MB (OpenAI's Whisper small) from Hugging Face and GitHub, each " +
+                "file checked. Wi-Fi is best. It goes on where it stopped if interrupted.")
+            .setPositiveButton("Download") { _, _ ->
+                TranslateModel.progress = 0
+                Thread {
+                    TranslateModel.download(applicationContext)
                     runOnUiThread { showVoice() }
                 }.start()
                 content.post(modelTicker)

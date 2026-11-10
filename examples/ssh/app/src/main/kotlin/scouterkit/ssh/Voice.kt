@@ -6,6 +6,7 @@ import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
+import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
 import com.k2fsa.sherpa.onnx.SileroVadModelConfig
 import com.k2fsa.sherpa.onnx.Vad
 import com.k2fsa.sherpa.onnx.VadModelConfig
@@ -121,9 +122,9 @@ object VoiceModel {
 
 // Parakeet on the phone (sherpa-onnx, 4 threads): a phrase's samples (16 kHz mono) to text. Loading takes a few
 // seconds; it stays loaded while the session runs.
-class VoiceEngine(context: Context) {
+class VoiceEngine(context: Context) : Transcriber {
     private val recognizer: OfflineRecognizer
-    val vadConfig: VadModelConfig
+    override val vadConfig: VadModelConfig
 
     init {
         fun f(name: String) = VoiceModel.file(context, name).path
@@ -140,7 +141,7 @@ class VoiceEngine(context: Context) {
     }
 
     @Synchronized
-    fun text(samples: FloatArray): String {
+    override fun text(samples: FloatArray): String {
         val s = recognizer.createStream()
         try {
             s.acceptWaveform(samples, 16000)
@@ -152,8 +153,96 @@ class VoiceEngine(context: Context) {
     }
 
     @Synchronized
-    fun release() = recognizer.release()
+    override fun release() = recognizer.release()
 }
+
+// Something that reads a phrase (16 kHz mono) to text: Parakeet (VoiceEngine) or Whisper translating (TranslateEngine).
+interface Transcriber {
+    val vadConfig: VadModelConfig
+    fun text(samples: FloatArray): String
+    fun release()
+}
+
+// Live translation's model: OpenAI's Whisper small (multilingual, int8; sherpa-onnx's export at a pinned revision),
+// whose own "translate" task turns any of its ~99 languages into English text, and Silero VAD. Downloaded once on
+// the Voice tab (about 375 MB), each file checked by SHA-256.
+object TranslateModel {
+    private const val HF = "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-small/resolve/8f3c18b358db4d1f2fc1eae49d75cd20989e4309"
+    val parts = listOf(
+        VoiceModel.Part("small-encoder.int8.onnx", "$HF/small-encoder.int8.onnx", 112442483,
+            "4cbe7b22fa9026b843b60a68640c747de05bafb1a11b57edc0e66c232d9f33a9"),
+        VoiceModel.Part("small-decoder.int8.onnx", "$HF/small-decoder.int8.onnx", 262226114,
+            "acad50b5c782696e91b55914cc5ab4f756f1532f76e22aa6fc615f39fb69a8ee"),
+        VoiceModel.Part("small-tokens.txt", "$HF/small-tokens.txt", 816730, "b34b360dbb493e781e479794586d661700670d65564001f23024971d1f2fa126"),
+        VoiceModel.Part("silero_vad.onnx", "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx", 643854,
+            "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"),
+    )
+    val bytes = parts.sumOf { it.size }
+
+    @Volatile var progress = -1L // bytes in place while downloading, else -1
+    @Volatile var problem: String? = null
+
+    fun dir(context: Context) = File(context.filesDir, "voice/whisper-small-int8")
+    fun file(context: Context, name: String) = File(dir(context), name)
+    fun ready(context: Context) = parts.all { file(context, it.name).length() == it.size }
+
+    fun download(context: Context): String? {
+        problem = null
+        try {
+            VoiceModel.fetch(dir(context), parts) { progress = it }
+            return null
+        } catch (e: Exception) {
+            problem = e.message ?: "the download stopped"
+            return problem
+        } finally {
+            progress = -1
+        }
+    }
+
+    fun delete(context: Context) {
+        dir(context).deleteRecursively()
+    }
+}
+
+// Whisper small translating into English (sherpa-onnx, 4 threads; the language found by itself). lang: the language
+// of the phrase read last ("es", "fr"...).
+class TranslateEngine(context: Context) : Transcriber {
+    private val recognizer: OfflineRecognizer
+    override val vadConfig: VadModelConfig
+    @Volatile var lang = ""
+
+    init {
+        fun f(name: String) = TranslateModel.file(context, name).path
+        recognizer = OfflineRecognizer(null, OfflineRecognizerConfig(
+            featConfig = FeatureConfig(sampleRate = 16000, featureDim = 80),
+            modelConfig = OfflineModelConfig(
+                whisper = OfflineWhisperModelConfig(encoder = f("small-encoder.int8.onnx"), decoder = f("small-decoder.int8.onnx"),
+                    language = "", task = "translate"),
+                tokens = f("small-tokens.txt"), numThreads = 4),
+            decodingMethod = "greedy_search"))
+        // Whisper reads up to 30 s at a time: phrases end at 0.6 s of quiet, at most 25 s.
+        vadConfig = VadModelConfig(sileroVadModelConfig = SileroVadModelConfig(model = f("silero_vad.onnx"), threshold = 0.5f,
+            minSilenceDuration = 0.6f, minSpeechDuration = 0.3f, windowSize = 512, maxSpeechDuration = 25f), sampleRate = 16000)
+    }
+
+    @Synchronized
+    override fun text(samples: FloatArray): String {
+        val s = recognizer.createStream()
+        try {
+            s.acceptWaveform(samples, 16000)
+            recognizer.decode(s)
+            val r = recognizer.getResult(s)
+            lang = r.lang.filter { it.isLetter() }.lowercase()
+            return r.text.trim()
+        } finally {
+            s.release()
+        }
+    }
+
+    @Synchronized
+    override fun release() = recognizer.release()
+}
+
 
 // Where a listener hears: the glasses' microphone (the right arm, over Bluetooth) or the phone's own. start():
 // null when it hears, else why not; read(): samples at 16 kHz (0: none yet, < 0: it stopped).
@@ -239,7 +328,7 @@ private class Floats {
 // a phrase or stop()). onSpeaking: speech started (true) or a phrase ended (false). flushOnStop: stopped mid-phrase,
 // what was said of it so far is read too (Car mode: Next pressed while still talking).
 class VoiceListener(
-    private val engine: VoiceEngine,
+    private val engine: Transcriber,
     private val realtime: Boolean,
     val once: Boolean,
     private val onPartial: (String) -> Unit,

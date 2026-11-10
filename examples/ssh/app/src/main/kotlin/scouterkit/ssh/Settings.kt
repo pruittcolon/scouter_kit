@@ -136,7 +136,8 @@ class Settings(context: Context) {
         // Heads-up (Alt+0) on the screen too: the head's angle decides, held on while a panel is open.
         if (phoneForce) 0 else 1, angle,
         if (Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS || Session.overlay == Panels.NOTE ||
-            Session.overlay == Panels.INTRO) 1 else 0)
+            Session.overlay == Panels.INTRO || Session.overlay == Panels.HUB || Session.overlay == Panels.CAPTIONS ||
+            Session.overlay == Panels.HOME || Session.overlay == Panels.PEOPLE) 1 else 0)
 
     // Once: the fast path (black and white) for everyone, as 0.4 made it the default.
     fun migrate() {
@@ -377,6 +378,11 @@ class Settings(context: Context) {
     var carSpeaker: Int by Number("car_speaker", 3)
     // Car mode listens on "phone" (its own microphone: the glasses' battery spared) or "glasses".
     var carMic: String by Text("car_mic", "phone")
+    // Smart home (Home.kt): Home Assistant's address (http://homeassistant.local:8123), a long-lived access token,
+    // and the entities to show (light.kitchen, climate.living_room...).
+    var haUrl: String by Text("ha_url", "")
+    var haToken: String by Text("ha_token", "")
+    var haEntities: String by Text("ha_entities", "")
 
     // The pointer turns tmux's mouse on (so clicks reach tmux: tabs, panes, scrolling).
     var tmuxMouse: Boolean

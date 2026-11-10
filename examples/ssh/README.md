@@ -468,6 +468,20 @@ with the app in the back.
 
 ## TV remote, low battery, preview
 
+- **Alt+E** live captions: what is said around you, on the glasses as it is said (Parakeet on the phone, the words
+  so far while they are said), from the phone's microphone (it hears the room; the glasses' if Android keeps the
+  phone's from Vox). **Alt+I** the same as a translation into English from any of Whisper's ~99 languages (OpenAI's
+  Whisper small, int8, its own translate task, on the phone; a phrase at a time, `[es]` before it; downloaded once on
+  the Voice tab, about 375 MB, pinned by SHA-256; `TranslateModel`, `TranslateEngine`). The same key or Esc ends
+  them; each session's words are kept in Vox's files (`files/captions`). They hold the display on (`Panels.CAPTIONS`).
+- **Alt+O** smart home (`Home.kt`, `Panels.HOME`): the paired Vizio, Roku TVs (ECP on port 8060, found by SSDP;
+  on the TV, Control by mobile apps) and Home Assistant's entities (its address, a long-lived token and the entities
+  in Settings, Smart home): the arrows or 1 ... 9 pick, Enter or Space on / off, + / - volume, temperature or
+  brightness, M mute, H a TV's home, R asks again. Lights and thermostats on Alexa or Google reach Vox through Home
+  Assistant (its Matter, Alexa or Google integrations).
+- **Alt+J** calls and texts (`People.kt`, `Panels.PEOPLE`): the phone's starred contacts; 1 ... 9 pick, C then
+  Enter calls, T types a text and Enter sends it (the phone's SMS), V says it (Parakeet) to send with Enter. Needs
+  Contacts, Phone and SMS allowed (Settings, Calls and texts).
 - **Alt+G** opens the hub on the glasses (`Hub.kt`, `Panels.HUB`), over whatever shows: the time and weather, then
   one letter each: **T** a timer (type 5, 90s, 1:30 or 1h30, Enter), **P** pause or go on, **S** a stopwatch, **A** an
   alarm in the phone's clock app (7:30, 6:45p, 19:00; it rings there), **R** a reminder ("20 call mom", "7:30p

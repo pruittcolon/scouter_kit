@@ -55,6 +55,10 @@ object Session {
     @Volatile var tvTyping = false // in TV mode (Alt+Y), T: the keyboard types into the TV's text field
     @Volatile var hub = false // the hub is open (Alt+G)
     @Volatile var hubTyping = false // the hub takes typing (a timer's length, an alarm, a reminder, a note)
+    @Volatile var captions = "" // live captions on: "captions" (Alt+E) or "translate" (Alt+I); "" off
+    @Volatile var home = false // the smart home panel is open (Alt+O)
+    @Volatile var people = false // the calls and texts panel is open (Alt+J)
+    @Volatile var peopleTyping = false // it takes typing (a text)
     @Volatile var car = "" // Car mode: "" off, else its state (idle, listening, thinking, speaking)
     @Volatile var carName = "" // the car connected (its Bluetooth name), or ""
     @Volatile var pointer = false // the pointer is on (its keys move and click it)
@@ -1513,6 +1517,16 @@ class ScouterService : Service() {
             what == "tvstop" -> tvTab(stop = true)
             what.startsWith("tv:") -> tvKey(what.removePrefix("tv:"))
             what == "hub" -> hubOpen()
+            what == "captions" || what == "translate" -> captions(what)
+            what == "capesc" -> if (Session.captions.isNotEmpty()) captionsStop("")
+            what == "home" -> homeOpen()
+            what.startsWith("hkey:") -> homeKey(what.removePrefix("hkey:"))
+            what == "people" -> peopleOpen()
+            what.startsWith("pkey:") -> peopleKey(what.removePrefix("pkey:"))
+            what.startsWith("pchar:") -> peopleChar(what.removePrefix("pchar:").toIntOrNull() ?: 0)
+            what == "pdel" -> peopleDel()
+            what == "penter" -> peopleEnter()
+            what == "pesc" -> peopleEsc()
             what.startsWith("hubkey:") -> hubKey(what.removePrefix("hubkey:"))
             what.startsWith("hubchar:") -> hubChar(what.removePrefix("hubchar:").toIntOrNull() ?: 0)
             what == "hubdel" -> hubDel()
@@ -1559,9 +1573,12 @@ class ScouterService : Service() {
 
     // What a hotkey did, for a moment at the bottom (an open panel shows the change itself).
     private fun note(text: String, ms: Long = 1600) {
-        if (Session.overlay == Panels.HUB) {
-            hubSaid = text
-            return hubDraw()
+        // A panel that takes the keys says it on its own line instead.
+        when (Session.overlay) {
+            Panels.HUB -> { hubSaid = text; return hubDraw() }
+            Panels.HOME -> { homeSaid = text; return homeDraw() }
+            Panels.PEOPLE -> { peopleSaid = text; return peopleDraw() }
+            Panels.CAPTIONS -> { capState = text; return captionsDraw() }
         }
         if (Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS) return panelDraw()
         if (glassesWith == null || Session.blank || Session.tunes) return
@@ -1577,7 +1594,15 @@ class ScouterService : Service() {
         altHelp = false
         if (Session.overlay.isEmpty()) return
         // What stays while its mode is on comes back: the TV remote (Alt+Y), voice mode's strip.
-        val back = if (Session.hub) Panels.HUB else if (Session.tvKeys) Panels.TV else if (Session.voiceMode) Panels.VOICE else ""
+        val back = when {
+            Session.hub -> Panels.HUB
+            Session.home -> Panels.HOME
+            Session.people -> Panels.PEOPLE
+            Session.captions.isNotEmpty() -> Panels.CAPTIONS
+            Session.tvKeys -> Panels.TV
+            Session.voiceMode -> Panels.VOICE
+            else -> ""
+        }
         if (back.isNotEmpty() && Session.overlay != back) {
             work.removeCallbacks(noteEnd)
             Session.overlay = back
@@ -1643,6 +1668,9 @@ class ScouterService : Service() {
             Panels.INTRO -> return // drawn by introFrame
             Panels.TV -> return tvDraw()
             Panels.HUB -> return hubDraw()
+            Panels.CAPTIONS -> return captionsDraw()
+            Panels.HOME -> return homeDraw()
+            Panels.PEOPLE -> return peopleDraw()
             else -> null // the help: laid out for each
         }
         if (onScreen) {
@@ -1673,7 +1701,8 @@ class ScouterService : Service() {
     // show while looking up, as the terminal does.
     private fun forceApply() {
         val brief = Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS || Session.overlay == Panels.NOTE ||
-            Session.overlay == Panels.INTRO || Session.overlay == Panels.HUB
+            Session.overlay == Panels.INTRO || Session.overlay == Panels.HUB || Session.overlay == Panels.CAPTIONS ||
+            Session.overlay == Panels.HOME || Session.overlay == Panels.PEOPLE
         val held = Session.overlay.isNotEmpty() || Session.keyer == "keys" || Session.keyer == KEYBOARD
         Native.force(forced || brief || (settings.phoneForce && held))
     }
@@ -1933,6 +1962,451 @@ class ScouterService : Service() {
         if (name == "PLAY_PAUSE") Vizio.playPause(settings, done) else Vizio.key(settings, name, done)
     }
 
+    // ------------------------------------------------ full panels: one way to draw them
+
+    // A full panel (Panels.frameLines / frameArt) for `kind` while it is the one shown: rows(width in characters,
+    // rows that fit) builds what it holds.
+    private fun framePanel(kind: String, title: String, close: String, foot: String, rows: (Int, Int) -> List<Pair<String, Int>>) {
+        if (glassesWith == null || Session.overlay != kind) return
+        if (settings.show == Settings.SCREEN) {
+            val st = Native.screenStats()
+            if (st[5] <= 0 || st[6] <= 0) return
+            val art = Panels.frameArt(st[5], st[6], title, close, rows(((st[5] - 24) / 7.4f).toInt(), ((st[6] - 90) / 18)), foot)
+            Native.overlay(null, null, false)
+            Native.screenOverlay(art.pixels, art.w, art.h, art.x, art.y)
+            Session.overlayGen++
+            screen?.poke()
+            remote?.poke()
+        } else {
+            val g = region()
+            val cols = if (g[2] > 0) g[0] / g[2] else settings.cols
+            val n = if (g[3] > 0) g[1] / g[3] else settings.rows
+            val c = Panels.frameLines(cols, n, title, close, rows(maxOf(20, cols - 4), maxOf(3, n - 2)), foot)
+            Native.screenOverlay(null, 0, 0, 0, 0)
+            Native.overlay(c.lines.toTypedArray(), c.marks.toIntArray(), true)
+        }
+    }
+
+    // Opening one of the panels that take the keys (the hub, smart home, calls) closes the others.
+    private fun panelsAway(keep: String) {
+        if (keep != Panels.HUB && Session.hub) hubClose()
+        if (keep != Panels.HOME && Session.home) homeClose()
+        if (keep != Panels.PEOPLE && Session.people) peopleClose()
+    }
+
+    private fun panelUp(kind: String) {
+        if (Session.blank) display(true, kind)
+        if (Session.tunes) tunesSet(false)
+        if (Session.pointer) pointerOff()
+        work.removeCallbacks(noteEnd)
+        Session.overlay = kind
+        forceApply()
+    }
+
+    // ------------------------------------------------ live captions and translation (Alt+E, Alt+I)
+
+    // What is said around you, on the glasses as it is said: captions (Parakeet, English, the words so far while
+    // they are said) or a translation into English (Whisper small, any of its languages, a phrase at a time). The
+    // phone's microphone (it hears the room; the glasses' if Android keeps the phone's from Vox), on a panel over
+    // whatever shows (Panels.CAPTIONS, held in view). The same key or Esc ends it; each session's words are kept in
+    // files/captions.
+    @Volatile private var translateEngine: TranslateEngine? = null
+    private var capListener: VoiceListener? = null
+    private val capLines = ArrayList<String>()
+    private var capPartial = ""
+    private var capState = ""
+    private var capFile: java.io.File? = null
+    private var capRun = 0
+
+    private fun captions(mode: String) {
+        if (Session.captions == mode) return captionsStop("")
+        val translate = mode == "translate"
+        val why = when {
+            !VoiceModel.available -> "voice is not in this build"
+            !translate && !VoiceModel.ready(this) -> "captions: download the speech model first (Vox, Voice tab)"
+            translate && !TranslateModel.ready(this) -> "translation: download its model first (Vox, Voice tab)"
+            carListener != null -> "Car mode has the microphone"
+            glassesWith == null -> "the glasses are not connected"
+            else -> null
+        }
+        if (why != null) return note(why, 3000)
+        if (Session.captions.isNotEmpty()) captionsStop("", quiet = true)
+        if (Session.voiceMode) voiceModeSet(false)
+        listener?.stop() // always listening gives the microphone up (voiceAlways waits while captions run)
+        panelsAway("")
+        Session.captions = mode
+        val run = ++capRun
+        capLines.clear()
+        capPartial = ""
+        capState = "loading the model…"
+        capFile = runCatching {
+            java.io.File(filesDir, "captions").apply { mkdirs() }.resolve(
+                java.text.SimpleDateFormat("yyyy-MM-dd_HHmm", java.util.Locale.US).format(java.util.Date()) + "-$mode.txt")
+        }.getOrNull()
+        Log.i(TAG, "captions: $mode")
+        panelUp(Panels.CAPTIONS)
+        captionsDraw()
+        Thread {
+            val engine: Transcriber? = runCatching {
+                if (translate) translateEngine ?: TranslateEngine(this).also { translateEngine = it }
+                else voiceEngine ?: VoiceEngine(this).also { voiceEngine = it }
+            }.getOrNull()
+            work.post {
+                if (run != capRun || Session.captions != mode) return@post
+                if (engine == null) return@post captionsStop("the model did not load")
+                captionsListen(engine, phone = true)
+            }
+        }.start()
+        Session.changed()
+    }
+
+    private fun captionsListen(engine: Transcriber, phone: Boolean) {
+        val run = capRun
+        val translate = Session.captions == "translate"
+        lateinit var l: VoiceListener
+        l = VoiceListener(engine, realtime = !translate && settings.voiceRealtime, once = false,
+            onPartial = { t -> work.post { if (capListener === l) { capPartial = t; captionsDraw() } } },
+            onPhrase = { t -> work.post { if (capListener === l) captionsHeard(t, engine) } },
+            onEnd = { why ->
+                work.post {
+                    if (capListener !== l) return@post
+                    capListener = null
+                    if (run != capRun || Session.captions.isEmpty()) return@post
+                    if (why.isNotEmpty() && phone) { // the phone's microphone could not be had: the glasses'
+                        Log.i(TAG, "captions: the phone's microphone: $why; the glasses' instead")
+                        captionsListen(engine, phone = false)
+                    } else captionsStop(why)
+                }
+            },
+            onSpeaking = { s ->
+                work.post {
+                    if (capListener !== l) return@post
+                    capState = if (s) "hearing…" else if (translate) "translating…" else "listening"
+                    captionsDraw()
+                }
+            },
+            mic = if (phone) PhoneMic(this) else GlassesMic)
+        capListener = l
+        capState = "listening (the ${if (phone) "phone's" else "glasses'"} microphone)"
+        l.start()
+        captionsDraw()
+    }
+
+    private fun captionsHeard(text: String, engine: Transcriber) {
+        val translate = Session.captions == "translate"
+        // Whisper says these to silence and noise.
+        val bare = text.lowercase().filter { it.isLetter() || it == ' ' }.trim()
+        if (translate && (bare.isEmpty() || bare in WHISPER_NOISE)) {
+            capState = "listening"
+            capPartial = ""
+            return captionsDraw()
+        }
+        val lang = (engine as? TranslateEngine)?.lang.orEmpty()
+        val line = if (translate && lang.isNotEmpty() && lang != "en") "[$lang] $text" else text
+        capLines += line
+        while (capLines.size > 200) capLines.removeAt(0)
+        capPartial = ""
+        capState = "listening"
+        runCatching {
+            capFile?.appendText(java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date()) + "  $line\n")
+        }
+        captionsDraw()
+    }
+
+    private fun captionsStop(why: String, quiet: Boolean = false) {
+        capRun++
+        capListener?.stop()
+        capListener = null
+        val was = Session.captions
+        Session.captions = ""
+        Log.i(TAG, "captions: off" + if (why.isNotEmpty()) " ($why)" else "")
+        if (Session.overlay == Panels.CAPTIONS) panelClose()
+        if (!quiet && was.isNotEmpty()) note(if (why.isEmpty()) "${if (was == "translate") "Translation" else "Captions"} off: kept in Vox's files"
+            else "Captions stopped: $why", 2500)
+        work.postDelayed({ voiceAlways() }, 1500)
+        Session.changed()
+    }
+
+    private fun captionsDraw() {
+        val translate = Session.captions == "translate"
+        framePanel(Panels.CAPTIONS, if (translate) "VOX//TRANSLATE" else "VOX//CAPTIONS",
+            if (translate) "Alt+I or Esc ends" else "Alt+E or Esc ends",
+            if (translate) "any language into English · Whisper on the phone" else "what is said around you · Parakeet on the phone") { width, max ->
+            val rows = mutableListOf<Pair<String, Int>>()
+            rows += ("▌▌ " + (if (translate) "TRANSLATING TO ENGLISH" else "LIVE CAPTIONS") + " ▐░▒▓ " + capState) to 1
+            rows += "" to 0
+            val partial = if (capPartial.isEmpty()) emptyList() else Panels.wrap("$capPartial…", width)
+            val room = maxOf(1, max - rows.size - partial.size)
+            val said = capLines.takeLast(40).flatMap { Panels.wrap(it, width) }.takeLast(room)
+            if (said.isEmpty() && partial.isEmpty()) rows += "  (nothing heard yet)" to 2
+            for (l in said) rows += l to 0
+            for (l in partial) rows += l to 2
+            rows
+        }
+    }
+
+    // ------------------------------------------------ smart home (Alt+O; Home.kt)
+
+    // The TVs and Home Assistant's entities, one a row with its state: the arrows (or 1 ... 9) pick one; Enter or
+    // Space turns it on or off, + / - its volume (a TV, a player), temperature (a thermostat) or brightness (a
+    // light), M mutes, H a TV's home, R asks every state again, Esc closes.
+    private var homeDevices: List<Home.Device> = emptyList()
+    private var homeAt = 0
+    private var homeSaid = ""
+    private val homeStates = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val homeNames = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    private fun homeOpen() {
+        if (glassesWith == null) return
+        if (Session.overlay == Panels.HOME) return homeClose()
+        panelsAway(Panels.HOME)
+        Session.home = true
+        homeDevices = Home.devices(this)
+        homeAt = homeAt.coerceIn(0, maxOf(0, homeDevices.size - 1))
+        homeSaid = if (homeDevices.isEmpty()) "" else "asking…"
+        panelUp(Panels.HOME)
+        homeDraw()
+        homeRefresh(null)
+        // No Roku known yet: looked for once (SSDP, 3 s), then the panel again with what answered.
+        if (Home.rokus(this).isEmpty()) Thread {
+            val found = Home.findRokus(this)
+            if (found.isNotEmpty()) work.post {
+                if (!Session.home) return@post
+                homeDevices = Home.devices(this)
+                homeRefresh(null)
+                homeDraw()
+            }
+        }.start()
+        Session.changed()
+    }
+
+    private fun homeClose() {
+        Session.home = false
+        if (Session.overlay == Panels.HOME) panelClose()
+        Session.changed()
+    }
+
+    // Each device's state asked again (one, or every one), the panel drawn as answers come.
+    private fun homeRefresh(only: Home.Device?) {
+        for (d in homeDevices) {
+            if (only != null && d !== only) continue
+            when (d.kind) {
+                "vizio" -> Vizio.status(settings) { s -> homeStates[d.id] = s ?: "no answer"; work.post { homeSaid = ""; homeDraw() } }
+                "roku" -> Thread {
+                    val mode = Home.rokuInfo(d.id)["power-mode"]
+                    homeStates[d.id] = when (mode) { null -> "no answer"; "PowerOn" -> "on"; else -> "standby" }
+                    work.post { homeSaid = ""; homeDraw() }
+                }.start()
+                "ha" -> Thread {
+                    val (name, state) = Home.haState(settings, d.id)
+                    homeNames[d.id] = name
+                    homeStates[d.id] = state
+                    work.post { homeSaid = ""; homeDraw() }
+                }.start()
+            }
+        }
+    }
+
+    private fun homeKey(k: String) {
+        if (!Session.home) return
+        when (k) {
+            "up" -> homeAt = (homeAt - 1).coerceAtLeast(0)
+            "down" -> homeAt = (homeAt + 1).coerceAtMost(maxOf(0, homeDevices.size - 1))
+            "esc" -> return homeClose()
+            "refresh" -> { homeSaid = "asking…"; homeRefresh(null) }
+            "toggle", "plus", "minus", "mute", "home" -> homeAct(k)
+            else -> k.toIntOrNull()?.let { n -> if (n in 1..homeDevices.size) homeAt = n - 1 }
+        }
+        homeDraw()
+    }
+
+    private fun homeAct(what: String) {
+        val d = homeDevices.getOrNull(homeAt) ?: return
+        val name = homeNames[d.id] ?: d.name
+        val said = when (what) { "toggle" -> "on / off"; "plus" -> "up"; "minus" -> "down"; "mute" -> "mute"; else -> "home" }
+        val done: (String) -> Unit = { why ->
+            work.post {
+                homeSaid = if (why.isEmpty()) "$name: $said" else "$name: $why"
+                homeDraw()
+                work.postDelayed({ if (Session.home) homeRefresh(d) }, 1500)
+            }
+        }
+        homeSaid = "$name: $said…"
+        when (d.kind) {
+            "vizio" -> Vizio.key(settings, when (what) {
+                "toggle" -> "POWER"; "plus" -> "VOL_UP"; "minus" -> "VOL_DOWN"; "mute" -> "MUTE"; else -> "HOME"
+            }, done)
+            "roku" -> Thread {
+                done(Home.rokuKey(d.id, when (what) {
+                    "toggle" -> "Power"; "plus" -> "VolumeUp"; "minus" -> "VolumeDown"; "mute" -> "VolumeMute"; else -> "Home"
+                }))
+            }.start()
+            "ha" -> Thread {
+                done(when (what) {
+                    "toggle" -> Home.haToggle(settings, d.id)
+                    "plus" -> Home.haStep(settings, d.id, true)
+                    "minus" -> Home.haStep(settings, d.id, false)
+                    else -> "not for this one"
+                })
+            }.start()
+        }
+    }
+
+    private fun homeDraw() {
+        framePanel(Panels.HOME, "VOX//HOME", "Esc closes", "↑↓ pick · Enter on/off · + - up/down · M mute · H home · R again") { width, max ->
+            val rows = mutableListOf<Pair<String, Int>>()
+            rows += ("▌▌ SMART HOME ▐░▒▓ " + homeSaid) to 1
+            rows += "" to 0
+            if (homeDevices.isEmpty()) {
+                for (l in Panels.wrap("Nothing to work yet. Pair the Vizio (the TV tab), find a Roku or add Home Assistant " +
+                    "(Vox, Settings, Smart home).", width)) rows += l to 0
+            }
+            for ((i, d) in homeDevices.withIndex()) {
+                val kind = when (d.kind) { "vizio" -> "Vizio TV"; "roku" -> "Roku TV"; else -> d.id.substringBefore('.') }
+                val name = (homeNames[d.id] ?: d.name).take(24)
+                val line = " ${i + 1}  ${name.padEnd(24)} ${kind.padEnd(10)} ${homeStates[d.id] ?: "…"}"
+                rows += (if (i == homeAt) line.replaceFirst(" ${i + 1} ", "■${i + 1} ") else line) to (if (i == homeAt) 3 else 0)
+            }
+            rows.take(max)
+        }
+    }
+
+    // ------------------------------------------------ calls and texts (Alt+J; People.kt)
+
+    // The starred contacts: 1 ... 9 (or the arrows) pick one; C (or Enter) asks to call, Enter calls; T types a
+    // text, Enter sends it; V says it (Parakeet), Enter sends it; Esc goes back, then closes.
+    private var peopleList: List<People.Person> = emptyList()
+    private var peopleAt = 0
+    private var peopleMode = "" // "", "call" (asked), "text" (typing), "say" (listening)
+    private var peopleText = ""
+    private var peopleSaid = ""
+
+    private fun peopleOpen() {
+        if (glassesWith == null) return
+        if (Session.overlay == Panels.PEOPLE) return peopleClose()
+        panelsAway(Panels.PEOPLE)
+        Session.people = true
+        peopleList = People.favorites(this)
+        peopleAt = peopleAt.coerceIn(0, maxOf(0, peopleList.size - 1))
+        peopleMode = ""
+        peopleText = ""
+        peopleSaid = ""
+        Session.peopleTyping = false
+        panelUp(Panels.PEOPLE)
+        peopleDraw()
+        Session.changed()
+    }
+
+    private fun peopleClose() {
+        Session.people = false
+        Session.peopleTyping = false
+        peopleMode = ""
+        if (Session.overlay == Panels.PEOPLE) panelClose()
+        Session.changed()
+    }
+
+    private fun peopleKey(k: String) {
+        if (!Session.people) return
+        val p = peopleList.getOrNull(peopleAt)
+        when (k) {
+            "up" -> peopleAt = (peopleAt - 1).coerceAtLeast(0)
+            "down" -> peopleAt = (peopleAt + 1).coerceAtMost(maxOf(0, peopleList.size - 1))
+            "c" -> if (p != null) peopleMode = "call"
+            "t" -> if (p != null) {
+                peopleMode = "text"
+                peopleText = ""
+                Session.peopleTyping = true
+            }
+            "v" -> if (p != null) {
+                if (capListener != null) peopleSaid = "captions have the microphone"
+                else {
+                    peopleMode = "say"
+                    peopleText = ""
+                    listen(true)
+                }
+            }
+            else -> k.toIntOrNull()?.let { n -> if (n in 1..peopleList.size) { peopleAt = n - 1; peopleMode = "" } }
+        }
+        peopleDraw()
+    }
+
+    private fun peopleChar(code: Int) {
+        if (peopleMode != "text" || code < 32) return
+        peopleText = (peopleText + String(Character.toChars(code))).take(480)
+        peopleDraw()
+    }
+
+    private fun peopleDel() {
+        if (peopleMode != "text") return
+        peopleText = peopleText.dropLast(1)
+        peopleDraw()
+    }
+
+    private fun peopleEnter() {
+        val p = peopleList.getOrNull(peopleAt) ?: return
+        when (peopleMode) {
+            "", "call" -> if (peopleMode.isEmpty()) peopleMode = "call" else {
+                peopleSaid = People.call(this, p.number).ifEmpty { "calling ${p.name}" }
+                peopleMode = ""
+                Log.i(TAG, "people: a call")
+            }
+            "text" -> if (peopleText.isBlank()) peopleSaid = "type the text first" else {
+                peopleSaid = People.text(this, p.number, peopleText.trim()).ifEmpty { "text sent to ${p.name}" }
+                Log.i(TAG, "people: a text")
+                peopleMode = ""
+                peopleText = ""
+                Session.peopleTyping = false
+            }
+        }
+        peopleDraw()
+    }
+
+    private fun peopleEsc() {
+        if (peopleMode.isEmpty()) return peopleClose()
+        if (peopleMode == "say") stopListening()
+        peopleMode = ""
+        peopleText = ""
+        Session.peopleTyping = false
+        peopleDraw()
+    }
+
+    // Said for a text (V): it becomes the text, to send with Enter (or fix by typing).
+    private fun peopleHeard(text: String) {
+        peopleText = text.trim()
+        peopleMode = "text"
+        Session.peopleTyping = true
+        peopleDraw()
+    }
+
+    private fun peopleDraw() {
+        framePanel(Panels.PEOPLE, "VOX//CALLS", "Esc closes", "1-9 pick · C call · T type a text · V say a text · Enter yes") { width, max ->
+            val rows = mutableListOf<Pair<String, Int>>()
+            rows += ("▌▌ CALLS AND TEXTS ▐░▒▓ " + peopleSaid) to 1
+            rows += "" to 0
+            if (!People.allowed(this)) for (l in Panels.wrap("Allow Contacts, Phone and SMS for Vox: Vox, Settings, Calls and texts.", width))
+                rows += l to 1
+            else if (peopleList.isEmpty()) for (l in Panels.wrap("No starred contacts: star the people you call in the phone's " +
+                "Contacts app, then Alt+J again.", width)) rows += l to 0
+            for ((i, p) in peopleList.withIndex()) {
+                val line = " ${i + 1}  ${p.name.take(26).padEnd(26)} ${p.number}"
+                rows += (if (i == peopleAt) line.replaceFirst(" ${i + 1} ", "■${i + 1} ") else line) to (if (i == peopleAt) 3 else 0)
+            }
+            val p = peopleList.getOrNull(peopleAt)
+            if (p != null && peopleMode.isNotEmpty()) {
+                rows += "" to 0
+                when (peopleMode) {
+                    "call" -> rows += " ■ Call ${p.name}? Enter calls, Esc no" to 3
+                    "say" -> rows += " ■ Say the text to ${p.name}… (Esc: no)" to 3
+                    else -> {
+                        rows += " ■ Text to ${p.name}: Enter sends, Esc no" to 3
+                        for (l in Panels.wrap("› $peopleText█", width - 2)) rows += "  $l" to 1
+                    }
+                }
+            }
+            rows.take(max)
+        }
+    }
+
     // ------------------------------------------------ the hub (Alt+G; Hub.kt)
 
     // The everyday tools on the glasses (Panels.HUB, over whatever shows): the time, the timer (Timer), the
@@ -1945,6 +2419,7 @@ class ScouterService : Service() {
     private fun hubOpen() {
         if (glassesWith == null) return
         if (Session.overlay == Panels.HUB) return hubClose()
+        panelsAway(Panels.HUB)
         if (Session.blank) display(true, "hub")
         if (Session.tunes) tunesSet(false)
         if (Session.pointer) pointerOff()
@@ -2997,6 +3472,7 @@ class ScouterService : Service() {
     // stops it) or always (Settings.voiceAlways: phrases that start with "Vox").
     private fun listen(once: Boolean) {
         if (carListener != null) return // Car mode has the microphone
+        if (capListener != null) return voiceSay("$MIC live captions have the microphone")
         if (once && Session.voiceMode) return voiceModeSet(false) // the listen gesture (or key) ends voice mode
         if (listener != null || voiceLoading) {
             if (once) stopListening()
@@ -3169,6 +3645,7 @@ class ScouterService : Service() {
     // Always listening: on while the glasses are up and the setting is on (not again within 30 s of a failure).
     private fun voiceAlways() {
         if (!settings.voiceAlways || listener != null || carListener != null || voiceLoading || ended || Session.glasses != "ready") return
+        if (Session.captions.isNotEmpty()) return // live captions have the microphone
         if (!VoiceModel.available || !VoiceModel.ready(this)) return
         if (SystemClock.elapsedRealtime() - voiceFailedAt < 30000) return
         listen(false)
@@ -3367,6 +3844,7 @@ class ScouterService : Service() {
             val sep = if (Session.replyDraft.isEmpty() || Session.replyDraft.endsWith(" ")) "" else " "
             return reply("c:$sep${text.trim()}")
         }
+        if (Session.people && peopleMode == "say") return peopleHeard(text)
         if (Session.voiceMode) return voiceModePhrase(text)
         var said = text
         if (!once && !Session.dictating) said = VoiceCommands.afterWake(text) ?: run {
@@ -3756,6 +4234,9 @@ class ScouterService : Service() {
         const val LOW_BRIGHTNESS = 4 // a tenth of 42
         const val TV_IDLE_MS = 5 * 60_000L
         const val ALERTS = "alerts" // the notification channel of timers and reminders
+        // What Whisper says to silence and noise (dropped from translations).
+        private val WHISPER_NOISE = setOf("you", "thank you", "thanks for watching", "thank you for watching", "bye",
+            "thank you very much", "please subscribe", "subtitles by the amaraorg community", "music")
         const val ALERT_ID = 4000
         const val SLIDE_IDLE_MS = 90L // a two-finger swipe ends when its wheels are still this long
         const val SLIDE_SPEED_MS = 80f // its speed at the end: over its last moves this long

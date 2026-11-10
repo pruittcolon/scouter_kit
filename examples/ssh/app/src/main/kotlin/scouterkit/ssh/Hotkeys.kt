@@ -119,6 +119,60 @@ object Hotkeys {
             ScouterService.send(context, ScouterService.ACTION_REPLY, "key" to what)
             return true
         }
+        val bare = !e.isAltPressed && !e.isCtrlPressed && !e.isMetaPressed
+        fun act(what: String) = ScouterService.send(context, ScouterService.ACTION_PANEL, "do" to what)
+        // Smart home open (Alt+O): the arrows or 1 ... 9 pick, Enter / Space on or off, + / - up and down, M mute,
+        // H home, R ask again, Esc closes.
+        if (Session.home && bare) {
+            if (e.action != KeyEvent.ACTION_DOWN) return true
+            val k = when (e.keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP -> "up"
+                KeyEvent.KEYCODE_DPAD_DOWN -> "down"
+                KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_SPACE -> "toggle"
+                KeyEvent.KEYCODE_EQUALS, KeyEvent.KEYCODE_PLUS, KeyEvent.KEYCODE_NUMPAD_ADD -> "plus"
+                KeyEvent.KEYCODE_MINUS, KeyEvent.KEYCODE_NUMPAD_SUBTRACT -> "minus"
+                KeyEvent.KEYCODE_M -> "mute"
+                KeyEvent.KEYCODE_H -> "home"
+                KeyEvent.KEYCODE_R -> "refresh"
+                KeyEvent.KEYCODE_ESCAPE -> "esc"
+                in KeyEvent.KEYCODE_1..KeyEvent.KEYCODE_9 -> (e.keyCode - KeyEvent.KEYCODE_0).toString()
+                else -> null
+            }
+            val again = k == "plus" || k == "minus" || k == "up" || k == "down"
+            if (k != null && (e.repeatCount == 0 || again)) act("hkey:$k")
+            return true
+        }
+        // Calls and texts open (Alt+J): 1 ... 9 or the arrows pick, C call, T type a text (then it takes typing),
+        // V say it, Enter yes, Esc back.
+        if (Session.people && bare) {
+            if (e.action != KeyEvent.ACTION_DOWN) return true
+            if (Session.peopleTyping) {
+                when (e.keyCode) {
+                    KeyEvent.KEYCODE_ESCAPE -> act("pesc")
+                    KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> act("penter")
+                    KeyEvent.KEYCODE_DEL -> act("pdel")
+                    else -> e.getUnicodeChar(e.metaState).takeIf { it >= 32 }?.let { act("pchar:$it") }
+                }
+                return true
+            }
+            if (e.repeatCount > 0) return true
+            when (e.keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP -> act("pkey:up")
+                KeyEvent.KEYCODE_DPAD_DOWN -> act("pkey:down")
+                KeyEvent.KEYCODE_C -> act("pkey:c")
+                KeyEvent.KEYCODE_T -> { Session.peopleTyping = true; act("pkey:t") }
+                KeyEvent.KEYCODE_V -> act("pkey:v")
+                KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> act("penter")
+                KeyEvent.KEYCODE_ESCAPE -> act("pesc")
+                in KeyEvent.KEYCODE_1..KeyEvent.KEYCODE_9 -> act("pkey:" + (e.keyCode - KeyEvent.KEYCODE_0))
+            }
+            return true
+        }
+        // Live captions on their panel: Esc ends them (the other keys go on as ever).
+        if (Session.captions.isNotEmpty() && Session.overlay == Panels.CAPTIONS && bare && e.keyCode == KeyEvent.KEYCODE_ESCAPE) {
+            if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0) act("capesc")
+            return true
+        }
         // The hub open (Alt+G): its letters (Shift: take back), and the typing one of them asks for (Enter keeps it,
         // Esc goes back); Alt shortcuts go on as ever.
         if (Session.hub && !e.isAltPressed && !e.isCtrlPressed && !e.isMetaPressed) {
@@ -282,6 +336,10 @@ object Hotkeys {
             KeyEvent.KEYCODE_Y -> "tv"
             KeyEvent.KEYCODE_F -> "tvtab"
             KeyEvent.KEYCODE_G -> "hub"
+            KeyEvent.KEYCODE_E -> "captions"
+            KeyEvent.KEYCODE_I -> "translate"
+            KeyEvent.KEYCODE_O -> "home"
+            KeyEvent.KEYCODE_J -> "people"
             KeyEvent.KEYCODE_D -> "demo"
             KeyEvent.KEYCODE_COMMA -> "media:prev"
             KeyEvent.KEYCODE_PERIOD -> "media:next"
