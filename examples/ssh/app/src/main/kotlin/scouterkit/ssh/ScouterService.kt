@@ -60,6 +60,7 @@ object Session {
     @Volatile var people = false // the calls and texts panel is open (Alt+J)
     @Volatile var peopleTyping = false // it takes typing (a text)
     @Volatile var editor = false // the text editor is open (Alt+N): it takes the keys
+    @Volatile var listenPanel = false // Listen mode's panel is open (hub L, or Alt+E while Listen is on)
     @Volatile var car = "" // Car mode: "" off, else its state (idle, listening, thinking, speaking)
     @Volatile var carName = "" // the car connected (its Bluetooth name), or ""
     @Volatile var pointer = false // the pointer is on (its keys move and click it)
@@ -278,6 +279,7 @@ class ScouterService : Service() {
             }
         }
         work.postDelayed({ LogBook.sendPending(this, vault) }, 20000)
+        work.postDelayed({ ListenService.ensure(this) }, 3000) // Listen mode, if it is on (Android may want Vox opened)
         Native.onChanged = { work.post { poll() } }
         Native.onGesture = { a, g -> work.post { gesture(a, g) } }
         VoxKeys.onMouse = { x, y -> mouse(x, y) }
@@ -463,6 +465,7 @@ class ScouterService : Service() {
         work.removeCallbacks(tabPoll)
         work.removeCallbacks(editorTick)
         runCatching { editor?.save() }
+        Listen.unwatch(listenWatch)
         Thread { Bootstrap.dropShared() }.start()
         runCatching { dim?.release() } // pocket mode's screen lock
         dim = null
@@ -603,7 +606,7 @@ class ScouterService : Service() {
     private fun end() {
         ended = true
         stopListening()
-        voiceEngine?.let { e -> Thread { runCatching { e.release() } }.start() }
+        if (voiceEngine != null) Thread { runCatching { Parakeet.done("glasses") } }.start()
         voiceEngine = null
         work.removeCallbacks(watchdog)
         work.removeCallbacks(letGo)
@@ -1095,6 +1098,7 @@ class ScouterService : Service() {
     private fun trackpad(kind: Int, dx: Float, dy: Float) {
         if (Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS) return panelTrackpad(kind, dy)
         if (Session.overlay == Panels.EDITOR) return editorTrackpad(kind, dy)
+        if (Session.overlay == Panels.LISTEN) return listenTrackpad(kind, dy)
         if (onLaptop()) return laptopTrackpad(kind, dx, dy)
         if (onPhone()) return phoneTrackpad(kind, dx, dy)
         if (pressed || sliding) { // the phone's screen went from the glasses with a finger still on it
@@ -1522,7 +1526,10 @@ class ScouterService : Service() {
             what.startsWith("tv:") -> tvKey(what.removePrefix("tv:"))
             what == "hub" -> hubOpen()
             what == "editor" -> editorOpen()
+            what == "listen" -> listenOpen()
+            what.startsWith("lkey:") -> listenKey(what.removePrefix("lkey:"))
             what.startsWith("edkey:") -> editorKey(what.removePrefix("edkey:"))
+            what == "captions" && Listen.on -> listenOpen()
             what == "captions" || what == "translate" -> captions(what)
             what == "capesc" -> if (Session.captions.isNotEmpty()) captionsStop("")
             what == "home" -> homeOpen()
@@ -1585,6 +1592,7 @@ class ScouterService : Service() {
             Panels.HOME -> { homeSaid = text; return homeDraw() }
             Panels.PEOPLE -> { peopleSaid = text; return peopleDraw() }
             Panels.EDITOR -> { editor?.said = text; return editorDraw() }
+            Panels.LISTEN -> { listenSaid = text; return listenDraw() }
             Panels.CAPTIONS -> { capState = text; return captionsDraw() }
         }
         if (Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS) return panelDraw()
@@ -1606,6 +1614,7 @@ class ScouterService : Service() {
             Session.home -> Panels.HOME
             Session.people -> Panels.PEOPLE
             Session.editor -> Panels.EDITOR
+            Session.listenPanel -> Panels.LISTEN
             Session.captions.isNotEmpty() -> Panels.CAPTIONS
             Session.tvKeys -> Panels.TV
             Session.voiceMode -> Panels.VOICE
@@ -1680,6 +1689,7 @@ class ScouterService : Service() {
             Panels.HOME -> return homeDraw()
             Panels.PEOPLE -> return peopleDraw()
             Panels.EDITOR -> return editorDraw()
+            Panels.LISTEN -> return listenDraw()
             else -> null // the help: laid out for each
         }
         if (onScreen) {
@@ -1711,7 +1721,8 @@ class ScouterService : Service() {
     private fun forceApply() {
         val brief = Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS || Session.overlay == Panels.NOTE ||
             Session.overlay == Panels.INTRO || Session.overlay == Panels.HUB || Session.overlay == Panels.CAPTIONS ||
-            Session.overlay == Panels.HOME || Session.overlay == Panels.PEOPLE || Session.overlay == Panels.EDITOR
+            Session.overlay == Panels.HOME || Session.overlay == Panels.PEOPLE || Session.overlay == Panels.EDITOR ||
+            Session.overlay == Panels.LISTEN
         val held = Session.overlay.isNotEmpty() || Session.keyer == "keys" || Session.keyer == KEYBOARD
         Native.force(forced || brief || (settings.phoneForce && held))
     }
@@ -2003,6 +2014,7 @@ class ScouterService : Service() {
         if (keep != Panels.HOME && Session.home) homeClose()
         if (keep != Panels.PEOPLE && Session.people) peopleClose()
         if (keep != Panels.EDITOR && Session.editor) editorClose()
+        if (keep != Panels.LISTEN && Session.listenPanel) listenClose()
     }
 
     private fun panelUp(kind: String) {
@@ -2060,7 +2072,7 @@ class ScouterService : Service() {
         Thread {
             val engine: Transcriber? = runCatching {
                 if (translate) translateEngine ?: TranslateEngine(this).also { translateEngine = it }
-                else voiceEngine ?: VoiceEngine(this).also { voiceEngine = it }
+                else voiceEngine ?: Parakeet.use(this, "glasses").also { voiceEngine = it }
             }.getOrNull()
             work.post {
                 if (run != capRun || Session.captions != mode) return@post
@@ -2096,7 +2108,7 @@ class ScouterService : Service() {
                     captionsDraw()
                 }
             },
-            mic = if (phone) PhoneMic(this) else GlassesMic)
+            mic = if (phone) HubMic(this, "captions") else GlassesMic)
         capListener = l
         capState = "listening (the ${if (phone) "phone's" else "glasses'"} microphone)"
         l.start()
@@ -2498,6 +2510,119 @@ class ScouterService : Service() {
         framePanel(Panels.EDITOR, "VOX//EDITOR", "Alt+N closes", foot) { width, max -> ed.rows(width, max) }
     }
 
+    // ------------------------------------------------ Listen mode on the glasses (hub L, Alt+E while it is on; Listen.kt)
+
+    // What was heard, newest at the bottom, the phrase being said under it. O turns Listen mode on or off, P pauses
+    // it 15 min, the arrows go back through the lines, Esc closes. While it is open Listen reads phrases at once.
+    private var listenBack = 0 // lines scrolled back
+    private var listenSaid = ""
+    private var listenDrawn = 0L
+    private val listenWatch: () -> Unit = { work.post { if (Session.overlay == Panels.LISTEN) listenSoon() } }
+    private val listenLater = Runnable { listenDraw() }
+    private val listenTick = object : Runnable {
+        override fun run() {
+            if (!Session.listenPanel) return
+            Listen.looking(60_000)
+            work.postDelayed(this, 15_000)
+        }
+    }
+
+    private fun listenOpen() {
+        if (glassesWith == null) return
+        if (Session.overlay == Panels.LISTEN) return listenClose()
+        panelsAway(Panels.LISTEN)
+        Session.listenPanel = true
+        listenBack = 0
+        listenSaid = ""
+        panelUp(Panels.LISTEN)
+        Listen.watch(listenWatch)
+        Listen.looking(60_000)
+        listenDraw()
+        work.removeCallbacks(listenTick)
+        work.postDelayed(listenTick, 15_000)
+        Session.changed()
+    }
+
+    private fun listenClose() {
+        Session.listenPanel = false
+        Listen.unwatch(listenWatch)
+        work.removeCallbacks(listenTick)
+        work.removeCallbacks(listenLater)
+        if (Session.overlay == Panels.LISTEN) panelClose()
+        Session.changed()
+    }
+
+    // Drawn again at most every 400 ms (the words come fast while someone talks).
+    private fun listenSoon() {
+        val wait = 400 - (SystemClock.elapsedRealtime() - listenDrawn)
+        work.removeCallbacks(listenLater)
+        if (wait <= 0) listenDraw() else work.postDelayed(listenLater, wait)
+    }
+
+    private fun listenKey(k: String) {
+        if (!Session.listenPanel) return
+        when (k) {
+            "o" -> if (Listen.on || ListenService.running) {
+                ListenService.stop(this)
+                listenSaid = "listen mode off"
+            } else {
+                ListenService.start(this)
+                listenSaid = "starting (if it does not, open Vox once: Android's rule)"
+            }
+            "p" -> if (Listen.paused) {
+                Listen.resume()
+                listenSaid = "listening again"
+            } else {
+                Listen.pause(15 * 60_000L)
+                listenSaid = "paused for 15 min"
+            }
+            "up" -> listenBack += 1
+            "down" -> listenBack = maxOf(0, listenBack - 1)
+            "pgup" -> listenBack += 8
+            "pgdn" -> listenBack = maxOf(0, listenBack - 8)
+            "esc" -> return listenClose()
+        }
+        listenDraw()
+    }
+
+    private fun listenTrackpad(kind: Int, dy: Float) {
+        if (kind != VoxKeys.Trackpad.WHEEL || dy == 0f) return
+        listenBack = maxOf(0, listenBack + if (dy > 0) 2 else -2)
+        listenDraw()
+    }
+
+    private fun listenDraw() {
+        listenDrawn = SystemClock.elapsedRealtime()
+        val on = Listen.on
+        val head = when {
+            !on -> "off: O turns it on"
+            Listen.paused -> "paused (P listens again)"
+            else -> Listen.state
+        }
+        framePanel(Panels.LISTEN, "VOX//LISTEN", "Esc closes", "O on/off · P pause 15 min · ↑↓ earlier · the phone: Voice tab, Listen") { width, max ->
+            val rows = mutableListOf<Pair<String, Int>>()
+            rows += ("▌▌ LISTEN ▐░▒▓ ${Listen.today} lines today · $head" + if (listenSaid.isNotEmpty()) " · $listenSaid" else "") to 1
+            val fmt = java.text.SimpleDateFormat("h:mm", java.util.Locale.US)
+            val body = mutableListOf<Pair<String, Int>>()
+            for (h in Listen.recent(40)) {
+                val first = fmt.format(java.util.Date(h.start)) + " " + (if (h.who.isNotEmpty()) "${h.who} › " else "› ")
+                val wrapped = Panels.wrap(h.text, maxOf(10, width - first.length))
+                for ((i, l) in wrapped.withIndex()) body += ((if (i == 0) first else " ".repeat(first.length)) + l) to (if (h.quiet) 2 else 0)
+            }
+            if (on && (Listen.speaking || Listen.partial.isNotEmpty())) {
+                for ((i, l) in Panels.wrap(Listen.partial.ifEmpty { "…" }, maxOf(10, width - 8)).withIndex())
+                    body += ((if (i == 0) "  now › " else "        ") + l) to 1
+            }
+            if (body.isEmpty()) body += (if (on) "Nothing heard yet: talk near the phone."
+                else "Listen mode writes down what is said around the phone, all day.") to 2
+            val room = maxOf(1, max - rows.size)
+            listenBack = listenBack.coerceIn(0, maxOf(0, body.size - room))
+            val end = body.size - listenBack
+            rows += body.subList(maxOf(0, end - room), end)
+            rows
+        }
+    }
+
     // ------------------------------------------------ the hub (Alt+G; Hub.kt)
 
     // The everyday tools on the glasses (Panels.HUB, over whatever shows): the time, the timer (Timer), the
@@ -2576,6 +2701,7 @@ class ScouterService : Service() {
         val notes = Hub.notes(this)
         item("N", "Note", if (notes.isEmpty()) "none yet" else "${notes.size} kept   (Shift+N drops the newest)", "note")
         item("E", "Editor", "text files on the glasses (Alt+N)", null)
+        item("L", "Listen", if (Listen.on) "${Listen.today} lines today · ${Listen.state}" else "off (L opens it, O turns it on)", null)
         if (notes.isNotEmpty()) {
             r += "" to 0
             r += "▌▌ NOTES ▐░▒▓" to 1
@@ -2641,6 +2767,7 @@ class ScouterService : Service() {
             "n" -> hubAsk("note")
             "N" -> hubSaid = Hub.dropNote(this)?.let { "note dropped: $it" } ?: "no note to drop"
             "e" -> return editorOpen()
+            "l" -> return listenOpen()
         }
         dash()
         hubDraw()
@@ -3578,7 +3705,7 @@ class ScouterService : Service() {
         if (Session.voiceMode) voiceStrip(if (voiceEngine == null) "loading the speech model…" else "listening")
         else voiceSay(if (voiceEngine == null) "$MIC loading the speech model…" else listeningText(once), hold = true)
         Thread {
-            val engine = voiceEngine ?: runCatching { VoiceEngine(this) }.getOrElse { e ->
+            val engine = voiceEngine ?: runCatching { Parakeet.use(this, "glasses") }.getOrElse { e ->
                 work.post {
                     voiceLoading = false
                     voiceFailedAt = SystemClock.elapsedRealtime()
@@ -3761,7 +3888,7 @@ class ScouterService : Service() {
             if (voiceEngine != null || voiceLoading || !VoiceModel.available || !VoiceModel.ready(this@ScouterService)) return
             voiceLoading = true
             Thread {
-                val e = runCatching { VoiceEngine(this@ScouterService) }.getOrNull()
+                val e = runCatching { Parakeet.use(this@ScouterService, "glasses") }.getOrNull()
                 work.post {
                     if (voiceEngine == null) voiceEngine = e
                     voiceLoading = false
@@ -3805,7 +3932,7 @@ class ScouterService : Service() {
         }
         voiceLoading = true
         Thread {
-            val engine = voiceEngine ?: runCatching { VoiceEngine(this) }.getOrElse { e ->
+            val engine = voiceEngine ?: runCatching { Parakeet.use(this, "glasses") }.getOrElse { e ->
                 work.post {
                     voiceLoading = false
                     onEnd("The speech model did not load: ${e.message}")
@@ -3828,7 +3955,7 @@ class ScouterService : Service() {
                         }
                     },
                     onSpeaking = onSpeaking, flushOnStop = true, onLive = onLive,
-                    mic = if (phone) PhoneMic(this@ScouterService) else GlassesMic)
+                    mic = if (phone) HubMic(this@ScouterService, "car") else GlassesMic)
                 carListener = l
                 Session.listening = true
                 Session.changed()
@@ -3996,6 +4123,14 @@ class ScouterService : Service() {
             VoiceCommands.TAB -> tabs(m.arg)
             VoiceCommands.POINTER -> pointer(m.arg)
             VoiceCommands.MEDIA -> if (!Media.control(m.arg)) voiceSay("Nothing is playing (Vox needs notification access)")
+            VoiceCommands.LISTEN -> {
+                when (m.arg) {
+                    "off" -> ListenService.stop(this)
+                    "pause" -> Listen.pause(15 * 60_000L)
+                    else -> ListenService.start(this)
+                }
+                voiceSay("$MIC listen mode ${m.arg}")
+            }
             VoiceCommands.TUNES -> tunesSet(if (m.arg == "off") false else if (m.arg == "on") true else !Session.tunes)
             VoiceCommands.TIMER -> {
                 when (m.arg) {

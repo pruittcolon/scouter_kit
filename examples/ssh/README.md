@@ -489,6 +489,20 @@ with the app in the back.
   next reminder or the newest note). It shows the next alarm, the reminders, the newest notes and the next two
   calendar events. A timer's end or a reminder shows on the glasses for 8 s (the display on for it), buzzes the
   phone and leaves a notification. Notes and reminders stay in Vox's private settings; Esc closes the hub.
+- **Listen mode** (Voice tab, Listen mode; `Listen.kt`, `ListenService`, `MicHub.kt`, `ListenDb.kt`, `Hearing.kt`):
+  the phone's microphone all day in its own microphone service, every phrase written down with its time in
+  `listen.db` (conversations after 5 min of quiet, FTS4 search) and, as a file a day, `Transcript <date>.md` in the
+  docs folder. One shared phone microphone (`MicHub`) feeds Listen, captions and Car mode together; one shared
+  Parakeet (`Parakeet`). Phrases wait on disk (`ListenQueue`, 300 MB cap, crash-safe) and are read at once while
+  someone looks (the glasses' panel, the phone's page, charging: Live) or in batches every 2 min (Eco). Soft voices:
+  the detector hears a boosted copy (the chosen boost plus an automatic one from the room's quiet level, soft-
+  limited) while Parakeet reads the audio as recorded; a second, keener detector keeps quiet phrases the first
+  missed when they hold two real words. Sensitivity, boost, end pause and the microphone source are settings; the
+  quiet-voice check has someone read ten sentences (near / far), scores heard and words right, and replays the
+  recording at other settings to suggest ones that pass. Thermal status severe pauses reading (the audio waits). On
+  the glasses: hub **L** or **Alt+E** while it is on opens VOX//LISTEN (O on / off, P pause 15 min, arrows earlier
+  lines). Android starts a microphone service only while Vox shows: after a reboot or an update a notification asks
+  for one tap.
 - **Alt+N** (or **E** on the hub) opens the text editor on the glasses (`Editor.kt`, `Panels.EDITOR`): the .txt and
   .md files in Vox's folder `Android/data/<app id>/files/docs` (copy files there from a computer or with `adb push`),
   newest first; the arrows pick, Enter opens, N makes a new one. A file's lines wrap at the panel's width, a ▌ is the

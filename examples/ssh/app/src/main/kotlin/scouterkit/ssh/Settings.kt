@@ -478,6 +478,22 @@ class Settings(context: Context) {
         }
     }
 
+    // Listen mode (Listen.kt, ListenService): the phone's microphone all day, written down.
+    var listenOn: Boolean by Flag("listen_on", false)
+    var listenSensitivity: Int by Number("listen_sens", 6) // 1 ... 10: the detector's threshold 0.70 ... 0.25
+    var listenBoost: Int by Number("listen_boost", 6) // dB the detector hears added
+    var listenAutoLevel: Boolean by Flag("listen_auto", true) // plus a boost from the room's quiet level
+    var listenSecondChance: Boolean by Flag("listen_second", true) // a keener detector for quiet phrases
+    var listenPauseMs: Int by Number("listen_pause", 600) // a phrase ends after this much quiet
+    var listenSource: String by Text("listen_source", "voice") // voice, raw, camcorder, mic (MicHub)
+    var listenSpeed: String by Text("listen_speed", "auto") // auto, live, eco
+    var listenFiles: Boolean by Flag("listen_files", true) // the day's file in the docs folder
+
+    private inner class Flag(val key: String, val default: Boolean) {
+        operator fun getValue(owner: Any, p: Any): Boolean = prefs.getBoolean(key, default)
+        operator fun setValue(owner: Any, p: Any, v: Boolean) = prefs.edit().putBoolean(key, v).apply()
+    }
+
     private inner class Text(val key: String, val default: String) {
         operator fun getValue(owner: Any, p: Any): String = prefs.getString(key, default) ?: default
         operator fun setValue(owner: Any, p: Any, v: String) = prefs.edit().putString(key, v).apply()

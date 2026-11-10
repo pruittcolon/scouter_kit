@@ -22,6 +22,7 @@ object Panels {
     const val HOME = "home" // smart home: the TVs, Home Assistant's lights, switches, thermostats (Alt+O)
     const val PEOPLE = "people" // calls and texts to the starred contacts (Alt+J)
     const val EDITOR = "editor" // the text editor: .txt files in Vox's docs folder (Alt+N)
+    const val LISTEN = "listen" // Listen mode: what was heard today (hub L, Alt+E while it is on)
 
     // The hotkeys by group: the keys, what they do. The help on the glasses and the app's Hotkeys page.
     val GROUPS: List<Pair<String, List<Pair<String, String>>>> = listOf(
@@ -66,7 +67,7 @@ object Panels {
         ),
         "Hub and AI" to listOf(
             "Alt+G" to "hub: timer, alarm, notes",
-            "Alt+E" to "live captions",
+            "Alt+E" to "captions (Listen: its lines)",
             "Alt+I" to "translate to English",
             "Alt+O" to "smart home",
             "Alt+J" to "calls and texts",
@@ -394,7 +395,7 @@ object Panels {
             lines += "┃ " + t.take(w - 4).padEnd(w - 4) + " ┃"
             marks += m
         }
-        val foot = "┗━ ▓▒░ T timer · P pause · S watch · A alarm · R remind · N note · E editor "
+        val foot = "┗━ ▓▒░ T timer · P pause · S watch · A alarm · R remind · N note · E editor · L listen "
         val end = "░▒▓ ━┛"
         lines += (foot + "━".repeat(maxOf(0, w - foot.length - end.length)) + end).take(w); marks += 2
         return Content(lines.take(maxOf(3, rows)), marks.take(maxOf(3, rows)), true)
@@ -428,7 +429,7 @@ object Panels {
         }
         c.drawLine(2f, h - 26f, 22f, h - 26f, line); c.drawLine(2f, h - 26f, 2f, h - 4f, line)
         c.drawLine(w - 2f, h - 26f, w - 22f, h - 26f, line); c.drawLine(w - 2f, h - 26f, w - 2f, h - 4f, line)
-        c.drawText("T timer · P pause · S stopwatch · A alarm · R remind · N note · E editor · Shift: undo", 30f, h - 10f, paint(12f))
+        c.drawText("T timer · P pause · S watch · A alarm · R remind · N note · E editor · L listen · Shift: undo", 30f, h - 10f, paint(12f))
         return Art(pixels(b), w, h, 0, 0)
     }
 

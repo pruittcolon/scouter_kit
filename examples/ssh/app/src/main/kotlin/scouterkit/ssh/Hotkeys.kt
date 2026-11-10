@@ -129,6 +129,22 @@ object Hotkeys {
             act("edkey:${e.keyCode}:${e.metaState}:$ch")
             return true
         }
+        // Listen mode's panel open: O (or Space) on / off, P pause, the arrows and Page Up / Down earlier lines, Esc.
+        if (Session.listenPanel && bare) {
+            if (e.action != KeyEvent.ACTION_DOWN) return true
+            val k = when (e.keyCode) {
+                KeyEvent.KEYCODE_O, KeyEvent.KEYCODE_SPACE -> "o"
+                KeyEvent.KEYCODE_P -> "p"
+                KeyEvent.KEYCODE_DPAD_UP -> "up"
+                KeyEvent.KEYCODE_DPAD_DOWN -> "down"
+                KeyEvent.KEYCODE_PAGE_UP -> "pgup"
+                KeyEvent.KEYCODE_PAGE_DOWN -> "pgdn"
+                KeyEvent.KEYCODE_ESCAPE -> "esc"
+                else -> null
+            }
+            if (k != null && (e.repeatCount == 0 || k in listOf("up", "down", "pgup", "pgdn"))) act("lkey:$k")
+            return true
+        }
         // Smart home open (Alt+O): the arrows or 1 ... 9 pick, Enter / Space on or off, + / - up and down, M mute,
         // H home, R ask again, Esc closes.
         if (Session.home && bare) {
@@ -204,6 +220,7 @@ object Hotkeys {
                 KeyEvent.KEYCODE_R -> "r"
                 KeyEvent.KEYCODE_N -> "n"
                 KeyEvent.KEYCODE_E -> "e"
+                KeyEvent.KEYCODE_L -> "l"
                 KeyEvent.KEYCODE_ESCAPE -> return true.also { hub("hubesc") }
                 else -> return true
             }

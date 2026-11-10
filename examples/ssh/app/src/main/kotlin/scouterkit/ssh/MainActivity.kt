@@ -85,6 +85,14 @@ class MainActivity : Activity() {
     private lateinit var commandsBox: LinearLayout
     private lateinit var heardText: TextView
     private var translateModel: TextView? = null // the translation model's state (Voice tab)
+    private var listenLine: TextView? = null // Listen mode's state (Voice tab)
+
+    private fun listenSummary() = when {
+        Listen.on && Listen.paused -> "Paused · ${Listen.today} lines today"
+        Listen.on -> "On · ${Listen.today} lines today · ${Listen.state}"
+        Settings(this).listenOn -> "On (starting)"
+        else -> "Off"
+    }
     private var translateButton: TextView? = null
     // While the speech model downloads: its progress on the Voice tab.
     private val modelTicker = object : Runnable {
@@ -837,6 +845,15 @@ class MainActivity : Activity() {
         })
         page.addView(now)
 
+        // Listen mode: the phone's microphone all day, written down (ListenActivity).
+        val lm = card("Listen mode", "Writes down what is said around the phone, all day, with the time: searchable, " +
+            "in a file a day, live on the glasses (hub L, or Alt+E while it is on). Tuned for soft voices; check them there.")
+        listenLine = text(listenSummary(), 14f, Ui.TEXT, Ui.BOLD).also { lm.addView(it) }
+        lm.addView(button("Open Listen mode", 0) {
+            startActivity(android.content.Intent(this, ListenActivity::class.java))
+        }, lp().apply { topMargin = dp(8) })
+        page.addView(lm)
+
         // Voice mode: everything said is typed into the terminal on the glasses (Claude's prompt) until it is off.
         val talk = card("Voice mode", "Talk to the terminal: what you say is typed into it (Claude's prompt), a " +
             "strip at the bottom of the glasses shows it is on. Say \"send\" for Enter, \"scratch that\" to take " +
@@ -1281,6 +1298,10 @@ class MainActivity : Activity() {
         if (ScouterService.running && checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED)
             ScouterService.send(this, ScouterService.ACTION_VOICE, "mode" to "mic_fg")
+        // Listen mode on: its microphone service starts now if it could not before (Android allows it while Vox shows).
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED)
+            ListenService.ensure(this)
+        listenLine?.text = listenSummary()
         Preview.listener = previewListener
         gridKey = ""
         buildSources()

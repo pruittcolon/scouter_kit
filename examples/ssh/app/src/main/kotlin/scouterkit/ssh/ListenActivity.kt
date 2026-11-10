@@ -1,0 +1,358 @@
+package scouterkit.ssh
+
+import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.pm.PackageManager
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.View
+import android.view.ViewGroup
+import android.view.inputmethod.EditorInfo
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+// Listen mode on the phone: on / off and how it is doing, how it hears (a live level meter, the hearing settings,
+// the quiet-voice check), and what it heard (today's lines, and a search through every day).
+class ListenActivity : Activity(), HearingCheck.Ui {
+    companion object {
+        const val EXTRA_RESUME = "resume"
+    }
+
+    private val main = Handler(Looper.getMainLooper())
+    private lateinit var settings: Settings
+    private lateinit var state: TextView
+    private lateinit var stats: TextView
+    private lateinit var onOff: TextView
+    private lateinit var pause: TextView
+    private lateinit var meter: LevelMeter
+    private lateinit var meterText: TextView
+    private lateinit var sentence: TextView
+    private lateinit var checkState: TextView
+    private lateinit var checkList: LinearLayout
+    private lateinit var checkUse: TextView
+    private lateinit var checkStart: TextView
+    private lateinit var lines: LinearLayout
+    private lateinit var linesTitle: TextView
+    private lateinit var search: EditText
+    private var check: HearingCheck? = null
+    private var far = false
+    private var suggestion: HearingCheck.Suggestion? = null
+    private var searching = ""
+    private var lastLines = 0L
+
+    private val tick = object : Runnable {
+        override fun run() {
+            showLevel()
+            main.postDelayed(this, 150)
+        }
+    }
+    private val slow = object : Runnable {
+        override fun run() {
+            showState()
+            Listen.looking(30_000)
+            main.postDelayed(this, 1000)
+        }
+    }
+    private val watcher: () -> Unit = {
+        main.post {
+            val now = System.currentTimeMillis()
+            if (searching.isEmpty() && now - lastLines > 1500) {
+                lastLines = now
+                showLines()
+            }
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        settings = Settings(this)
+        val page = page()
+        page.addView(header("Listen", "Who said what, all day, on this phone", "Done") { finish() })
+
+        // On / off and how it is doing.
+        val now = card()
+        state = text("", 18f, Ui.TEXT, Ui.BOLD)
+        now.addView(state)
+        stats = text("", 13f, Ui.MUTED).apply { setPadding(0, dp(4), 0, dp(8)) }
+        now.addView(stats)
+        onOff = button("", 0) { toggle() }
+        now.addView(onOff, lp())
+        pause = chip("Pause 15 min", false) {
+            if (Listen.paused) Listen.resume() else Listen.pause(15 * 60_000L)
+            showState()
+        }
+        now.addView(chipRow(pause))
+        now.addView(text("Speed", 13f, Ui.FAINT).apply { setPadding(0, dp(8), 0, 0) })
+        now.addView(segmented(listOf("auto" to "Auto", "live" to "Live", "eco" to "Eco"), settings.listenSpeed) {
+            settings.listenSpeed = it
+        })
+        now.addView(text("Auto: at once while you look (the glasses' Listen panel, this page) or while charging; " +
+            "otherwise in batches every 2 minutes so the phone rests (Eco). Nothing is lost either way.", 12.5f, Ui.FAINT))
+        page.addView(now)
+
+        // What it hears now.
+        val lv = card("What Vox hears", "The bar is what the speech detector hears (with the boost); the mark is " +
+            "the room's quiet level. Have the quiet voice talk: the bar should jump well past the mark.")
+        meter = LevelMeter(this)
+        lv.addView(meter, lp(h = dp(28)))
+        meterText = text("", 12.5f, Ui.MUTED).apply { setPadding(0, dp(6), 0, 0) }
+        lv.addView(meterText)
+        page.addView(lv)
+
+        // How it hears.
+        val how = page.section("Hearing", "listen_hearing", "mic", open = true,
+            hint = "For soft voices: raise the sensitivity or the boost, keep the second chance on, then run the check below.")
+        how.addView(slider("Sensitivity", 1, 10, settings.listenSensitivity,
+            { "$it · threshold ${"%.2f".format(Locale.US, Listen.threshold(it))}" }) { settings.listenSensitivity = it })
+        how.addView(slider("Boost for the detector", 0, 24, settings.listenBoost, { "+$it dB" }) { settings.listenBoost = it })
+        how.addToggle(toggle("Automatic level", "Lifts a quiet room so soft speech still counts (up to +18 dB more)",
+            settings.listenAutoLevel) { settings.listenAutoLevel = it })
+        how.addToggle(toggle("Second chance for quiet speech", "A keener detector keeps quiet phrases the first one " +
+            "missed, when they hold real words (marked quiet)", settings.listenSecondChance) { settings.listenSecondChance = it })
+        how.addView(slider("End of a phrase after", 300, 1500, settings.listenPauseMs, { "$it ms of quiet" }) { settings.listenPauseMs = it })
+        how.addView(text("Microphone", 13f, Ui.FAINT).apply { setPadding(0, dp(6), 0, 0) })
+        val sources = mutableListOf("voice" to "Voice", "camcorder" to "Camcorder", "mic" to "Standard")
+        if (MicHub.hasRaw(this)) sources.add(1, "raw" to "Raw")
+        how.addView(segmented(sources, settings.listenSource) {
+            settings.listenSource = it
+            MicHub.reopen()
+        })
+        how.addView(text("Voice: tuned for speech, no automatic gain. Raw: nothing done to it. Camcorder: often " +
+            "several microphones. Standard: the phone's own processing. The check tells which hears best.", 12.5f, Ui.FAINT))
+        how.addToggle(toggle("Day files", "Each day's transcript as a file in Vox's docs folder (Alt+N on the glasses)",
+            settings.listenFiles) { settings.listenFiles = it })
+
+        // The quiet-voice check.
+        val ck = card("Quiet-voice check", "The softest voice reads 10 short sentences at their usual volume. " +
+            "Near: about 1 m from the phone. Far: across the room. It passes at 10/10 near, 9/10 far, 90% of " +
+            "the words right; if not, it tries other settings on the same recording.")
+        ck.addView(segmented(listOf("near" to "Near (1 m)", "far" to "Far (3 m)"), "near") { far = it == "far" })
+        sentence = text("", 22f, Ui.TEXT, Ui.BOLD).apply { setPadding(0, dp(10), 0, dp(6)) }
+        ck.addView(sentence)
+        checkState = text("", 13f, Ui.MUTED)
+        ck.addView(checkState)
+        checkList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        ck.addView(checkList)
+        checkStart = chip("Start the check", true) { startCheck() }
+        val skip = chip("Next sentence", false) { check?.skip() }
+        val stop = chip("Stop", false) {
+            check?.cancel()
+            check = null
+        }
+        ck.addView(chipRow(checkStart, skip, stop))
+        checkUse = chip("Use these settings", true) {
+            suggestion?.let {
+                settings.listenSensitivity = it.sensitivity
+                settings.listenBoost = it.boost
+                checkState.text = "Set: sensitivity ${it.sensitivity}, boost +${it.boost} dB. Run the check again to confirm."
+                recreate()
+            }
+        }.apply { visibility = View.GONE }
+        ck.addView(checkUse)
+        page.addView(ck)
+
+        // What it heard.
+        val heard = card()
+        linesTitle = text("TODAY", 11.5f, Ui.MUTED, Ui.BOLD).apply { letterSpacing = 0.14f }
+        heard.addView(linesTitle)
+        search = field("Search", "", "words, from any day").apply {
+            imeOptions = EditorInfo.IME_ACTION_SEARCH
+            setOnEditorActionListener { _, _, _ -> runSearch(); true }
+        }
+        heard.addView(search, lp().apply { topMargin = dp(8); bottomMargin = dp(8) })
+        heard.addView(chipRow(chip("Search", true) { runSearch() }, chip("Today", false) {
+            searching = ""
+            search.setText("")
+            showLines()
+        }))
+        lines = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        heard.addView(lines)
+        heard.addView(text("Every day is also a file, \"Transcript <date>.md\", in Vox's docs folder: Alt+N on the " +
+            "glasses opens it.", 12.5f, Ui.FAINT).apply { setPadding(0, dp(10), 0, 0) })
+        page.addView(heard)
+        if (intent?.getBooleanExtra(EXTRA_RESUME, false) == true) settings.listenOn = true
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (settings.listenOn) {
+            if (micAllowed()) ListenService.ensure(this) else askMic()
+        }
+        Listen.watch(watcher)
+        Listen.looking(30_000)
+        main.post(tick)
+        main.post(slow)
+        showLines()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        Listen.unwatch(watcher)
+        main.removeCallbacks(tick)
+        main.removeCallbacks(slow)
+    }
+
+    override fun onDestroy() {
+        check?.cancel()
+        super.onDestroy()
+    }
+
+    private fun micAllowed() = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    private fun askMic() = requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS), 41)
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (micAllowed() && settings.listenOn) ListenService.start(this)
+        showState()
+    }
+
+    private fun toggle() {
+        if (Listen.on || ListenService.running) ListenService.stop(this)
+        else {
+            settings.listenOn = true
+            if (!micAllowed()) askMic() else ListenService.start(this)
+        }
+        main.postDelayed({ showState() }, 300)
+    }
+
+    private fun showState() {
+        val on = Listen.on
+        state.text = when {
+            !VoiceModel.ready(this) -> "Download the speech model first (Voice tab)"
+            on && Listen.paused -> "Paused until " + SimpleDateFormat("h:mm a", Locale.US).format(Date(Listen.pausedUntil))
+            on -> Listen.state.replaceFirstChar { it.uppercase() }
+            settings.listenOn -> "Starting…"
+            else -> "Off"
+        }
+        state.setTextColor(if (on && !Listen.paused) Ui.ACCENT else Ui.TEXT)
+        val wait = Listen.waiting
+        stats.text = "${Listen.today} lines today" +
+            (if (wait >= 1) " · ${wait.toInt()} s of speech waiting" else "") +
+            (if (MicHub.silenced) " · another app has the microphone" else "") +
+            (MicHub.problem?.let { " · $it" } ?: "")
+        onOff.text = if (on || settings.listenOn) "Stop listening" else "Start listening"
+        pause.text = if (Listen.paused) "Listen again" else "Pause 15 min"
+    }
+
+    private fun showLevel() {
+        val heardDb = Listen.level + Listen.gainDb
+        meter.set(heardDb, Listen.floor + Listen.gainDb, Listen.speaking, Listen.on)
+        meterText.text = if (!Listen.on) "Listen mode is off: the meter moves while it listens."
+            else "Room ${Listen.floor.toInt()} dB · now ${Listen.level.toInt()} dB · boost +${Listen.gainDb.toInt()} dB" +
+                if (Listen.speaking) " · speech" else ""
+    }
+
+    // Today's lines (newest at the bottom), or the search's.
+    private fun showLines() {
+        val q = searching
+        Thread {
+            val db = ListenDb.get(this)
+            val names = db.names()
+            val list = if (q.isEmpty()) db.between(ListenDb.dayStart(System.currentTimeMillis()), Long.MAX_VALUE).takeLast(60)
+                else db.search(q, 80)
+            main.post {
+                linesTitle.text = if (q.isEmpty()) "TODAY · ${list.size} LATEST" else "\"$q\" · ${list.size} FOUND"
+                lines.removeAllViews()
+                if (list.isEmpty()) lines.addView(text(if (q.isEmpty()) "Nothing heard yet today." else "Nothing found.", 13f, Ui.FAINT))
+                val fmt = SimpleDateFormat(if (q.isEmpty()) "h:mm a" else "MMM d, h:mm a", Locale.US)
+                for (l in list) {
+                    val who = names[l.person.ifEmpty { l.voice }]?.let { "$it: " } ?: ""
+                    val row = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(0, dp(6), 0, dp(6))
+                    }
+                    row.addView(text(fmt.format(Date(l.start)) + if (l.quiet) " · quiet" else "", 11.5f, Ui.FAINT))
+                    row.addView(text(who + l.text, 14.5f, if (l.quiet) Ui.MUTED else Ui.TEXT))
+                    lines.addView(row, lp())
+                }
+            }
+        }.start()
+    }
+
+    private fun runSearch() {
+        searching = search.text.toString().trim()
+        showLines()
+    }
+
+    // ------------------------------------------------ the check
+
+    private fun startCheck() {
+        if (check != null) return
+        if (!micAllowed()) return askMic()
+        if (!VoiceModel.ready(this)) {
+            checkState.text = "Download the speech model first (Voice tab)."
+            return
+        }
+        checkList.removeAllViews()
+        checkUse.visibility = View.GONE
+        suggestion = null
+        check = HearingCheck(this, this).also { it.start(far) }
+    }
+
+    override fun prompt(i: Int, total: Int, sentence: String) = main.post {
+        this.sentence.text = "${i + 1}/$total   “$sentence”"
+    }.let { }
+
+    override fun heard(i: Int, ok: Boolean, got: String, accuracy: Int, quiet: Boolean) = main.post {
+        val mark = if (ok) "✓" else "✗"
+        val line = "$mark ${i + 1}. " + (if (ok) "$accuracy% · $got" else "not heard") + if (quiet) " (second chance)" else ""
+        checkList.addView(text(line, 13f, if (ok && accuracy >= 90) Ui.GOOD else if (ok) Ui.WARN else Ui.BAD))
+    }.let { }
+
+    override fun status(s: String) = main.post { checkState.text = s }.let { }
+
+    override fun done(r: HearingCheck.Result) = main.post {
+        check = null
+        sentence.text = if (r.passed) "Passed" else "Not yet"
+        sentence.setTextColor(if (r.passed) Ui.GOOD else Ui.WARN)
+        checkState.text = "${if (r.far) "Far" else "Near"}: heard ${r.heard}/${r.total}, words ${r.accuracy}% right. ${r.note}"
+        suggestion = r.suggestion?.takeIf { it.heard > r.heard }
+        checkUse.visibility = if (suggestion != null) View.VISIBLE else View.GONE
+    }.let { }
+}
+
+// The level meter: what the detector hears (dB, -80 ... -10), the room's quiet level as a mark, lit while speech is heard.
+class LevelMeter(context: Context) : View(context) {
+    private var level = -100f
+    private var floor = -100f
+    private var speech = false
+    private var on = false
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    fun set(level: Float, floor: Float, speech: Boolean, on: Boolean) {
+        this.level = level
+        this.floor = floor
+        this.speech = speech
+        this.on = on
+        invalidate()
+    }
+
+    private fun x(db: Float) = ((db + 80f) / 70f).coerceIn(0f, 1f) * width
+
+    override fun onDraw(c: Canvas) {
+        val h = height.toFloat()
+        val r = h / 2
+        p.color = Ui.RAISED
+        c.drawRoundRect(0f, 0f, width.toFloat(), h, r, r, p)
+        if (!on) return
+        p.color = if (speech) Ui.ACCENT else Ui.ACCENT2
+        c.drawRoundRect(0f, 0f, maxOf(h, x(level)), h, r, r, p)
+        p.color = Ui.WARN
+        val fx = x(floor)
+        c.drawRect(fx - 2f, 0f, fx + 2f, h, p)
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+        if (layoutParams?.height == ViewGroup.LayoutParams.WRAP_CONTENT) setMeasuredDimension(measuredWidth, context.dp(28))
+    }
+}

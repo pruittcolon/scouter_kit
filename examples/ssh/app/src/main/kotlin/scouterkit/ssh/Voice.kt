@@ -152,8 +152,67 @@ class VoiceEngine(context: Context) : Transcriber {
         }
     }
 
+    // The text and its words with their start times (seconds into the phrase), from the tokens (a word starts at a
+    // token beginning with a space or "▁").
+    @Synchronized
+    fun timed(samples: FloatArray): Pair<String, List<Pair<String, Float>>> {
+        val s = recognizer.createStream()
+        try {
+            s.acceptWaveform(samples, 16000)
+            recognizer.decode(s)
+            val r = recognizer.getResult(s)
+            val words = ArrayList<Pair<String, Float>>()
+            if (r.tokens.size == r.timestamps.size) {
+                val w = StringBuilder()
+                var at = 0f
+                fun close() {
+                    val t = w.toString().trim()
+                    if (t.isNotEmpty()) words += t to at
+                    w.setLength(0)
+                }
+                for (i in r.tokens.indices) {
+                    val t = r.tokens[i]
+                    if (t.startsWith(" ") || t.startsWith("▁")) close()
+                    if (w.isEmpty()) at = r.timestamps[i]
+                    w.append(t.replace('▁', ' '))
+                }
+                close()
+            }
+            return r.text.trim() to words
+        } finally {
+            s.release()
+        }
+    }
+
     @Synchronized
     override fun release() = recognizer.release()
+}
+
+// The one Parakeet in the app, shared by whoever uses it (the glasses' voice and captions, Listen mode, the hearing
+// check): loaded on the first use, released when the last user is done.
+object Parakeet {
+    private var engine: VoiceEngine? = null
+    private val users = HashSet<String>()
+
+    @Synchronized
+    fun use(c: Context, who: String): VoiceEngine {
+        engine?.let { users += who; return it }
+        return VoiceEngine(c.applicationContext).also {
+            engine = it
+            users += who
+        }
+    }
+
+    @Synchronized
+    fun done(who: String) {
+        users -= who
+        if (users.isEmpty()) {
+            engine?.release()
+            engine = null
+        }
+    }
+
+    val loaded get() = engine != null
 }
 
 // Something that reads a phrase (16 kHz mono) to text: Parakeet (VoiceEngine) or Whisper translating (TranslateEngine).
@@ -461,6 +520,7 @@ object VoiceCommands {
     const val MEDIA = "media" // arg: toggle, next, prev (what plays on the phone)
     const val TIMER = "timer" // arg: SECONDS (set and start), toggle, reset
     const val TUNES = "tunes" // arg: on, off, toggle
+    const val LISTEN = "listen_mode" // Listen mode: arg on, off, pause
 
     // For the custom commands' editor: what a command can do (SOURCE is picked from the sources).
     val CHOICES = linkedMapOf(NEXT to "Next source", PREV to "Previous source", UP to "Terminal (this machine)",
@@ -498,6 +558,7 @@ object VoiceCommands {
         POINTER -> CHOICES["pointer:$arg"] ?: "pointer $arg"
         MEDIA -> CHOICES["media:$arg"] ?: "media $arg"
         TUNES -> CHOICES["tunes:$arg"] ?: "tunes $arg"
+        LISTEN -> "listen mode $arg"
         TIMER -> CHOICES["timer:$arg"] ?: arg.toLongOrNull()?.let { "timer ${Timer.text(it * 1000)}" } ?: "timer $arg"
         RUN -> "run \"$arg\""
         KEY -> arg
@@ -572,6 +633,9 @@ object VoiceCommands {
             amount(r.groupValues[1])?.let { n -> return m(TIMER, (n * when (r.groupValues[2].first()) { 's' -> 1; 'h' -> 3600; else -> 60 }).toString()) }
         }
         if (t in listOf("tunes", "tunes mode", "synthwave", "synth wave", "vibe mode", "start tunes")) return m(TUNES, "on")
+        if (t in listOf("listen mode", "listen mode on", "start listen mode", "start recording", "keep a transcript")) return m(LISTEN, "on")
+        if (t in listOf("listen mode off", "stop listen mode", "stop recording", "stop the transcript")) return m(LISTEN, "off")
+        if (t in listOf("pause listen mode", "pause recording", "pause the transcript")) return m(LISTEN, "pause")
         if (t in listOf("stop tunes", "tunes off", "stop the tunes", "exit tunes")) return m(TUNES, "off")
         if (t in listOf("pause the timer", "pause timer", "resume the timer", "resume timer", "start the timer")) return m(TIMER, "toggle")
         if (t in listOf("stop the timer", "stop timer", "cancel the timer", "cancel timer", "reset the timer", "reset timer")) return m(TIMER, "reset")

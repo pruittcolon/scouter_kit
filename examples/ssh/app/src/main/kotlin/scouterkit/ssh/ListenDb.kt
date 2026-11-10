@@ -1,0 +1,206 @@
+package scouterkit.ssh
+
+import android.content.ContentValues
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+
+// Listen mode's memory (listen.db, the app's private files): conversations (a new one after 5 min without speech),
+// their lines (text, word times, who, how), the people Vox knows by voice and the voices it has not been told about.
+// lines_fts: the lines' words for searching (FTS4, English stemming).
+class ListenDb private constructor(context: Context) : SQLiteOpenHelper(context, "listen.db", null, 1) {
+    class Line(
+        val id: Long, val conv: Long, val start: Long, val end: Long, val text: String,
+        val person: String, val voice: String, val quiet: Boolean, val emotion: String, val sound: String,
+    )
+
+    class Conversation(val id: Long, val started: Long, val ended: Long, val title: String, val meeting: Boolean)
+
+    override fun onCreate(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE conversations(id INTEGER PRIMARY KEY, started INTEGER NOT NULL, ended INTEGER NOT NULL, " +
+            "title TEXT NOT NULL DEFAULT '', meeting INTEGER NOT NULL DEFAULT 0)")
+        db.execSQL("CREATE TABLE lines(id INTEGER PRIMARY KEY, conv INTEGER NOT NULL, start INTEGER NOT NULL, " +
+            "end INTEGER NOT NULL, text TEXT NOT NULL, words TEXT NOT NULL DEFAULT '', person TEXT NOT NULL DEFAULT '', " +
+            "voice TEXT NOT NULL DEFAULT '', quiet INTEGER NOT NULL DEFAULT 0, stage INTEGER NOT NULL DEFAULT 0, " +
+            "emotion TEXT NOT NULL DEFAULT '', sound TEXT NOT NULL DEFAULT '', print BLOB)")
+        db.execSQL("CREATE INDEX lines_start ON lines(start)")
+        db.execSQL("CREATE INDEX lines_conv ON lines(conv)")
+        db.execSQL("CREATE VIRTUAL TABLE lines_fts USING fts4(text, tokenize=porter)")
+        db.execSQL("CREATE TABLE people(id TEXT PRIMARY KEY, name TEXT NOT NULL, soft INTEGER NOT NULL DEFAULT 0, " +
+            "centroid BLOB, patterns BLOB, created INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE samples(id INTEGER PRIMARY KEY, person TEXT NOT NULL, print BLOB NOT NULL, " +
+            "source TEXT NOT NULL, created INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE negatives(id INTEGER PRIMARY KEY, person TEXT NOT NULL, print BLOB NOT NULL, created INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE voices(id TEXT PRIMARY KEY, label TEXT NOT NULL, centroid BLOB NOT NULL, " +
+            "count INTEGER NOT NULL, updated INTEGER NOT NULL)")
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+
+    override fun onConfigure(db: SQLiteDatabase) {
+        db.enableWriteAheadLogging()
+    }
+
+    // ------------------------------------------------ lines
+
+    // A heard line, in the conversation going on (or a new one after GAP_MS of quiet).
+    @Synchronized
+    fun add(start: Long, end: Long, text: String, words: String, quiet: Boolean): Line {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            var conv = -1L
+            db.rawQuery("SELECT id, ended FROM conversations ORDER BY ended DESC LIMIT 1", null).use { c ->
+                if (c.moveToFirst() && start - c.getLong(1) < GAP_MS && start >= c.getLong(1) - GAP_MS) conv = c.getLong(0)
+            }
+            if (conv < 0) conv = db.insert("conversations", null, ContentValues().apply {
+                put("started", start)
+                put("ended", end)
+            })
+            else db.execSQL("UPDATE conversations SET ended = MAX(ended, ?) WHERE id = ?", arrayOf<Any>(end, conv))
+            val id = db.insert("lines", null, ContentValues().apply {
+                put("conv", conv)
+                put("start", start)
+                put("end", end)
+                put("text", text)
+                put("words", words)
+                put("quiet", if (quiet) 1 else 0)
+            })
+            db.insert("lines_fts", null, ContentValues().apply {
+                put("docid", id)
+                put("text", text)
+            })
+            db.setTransactionSuccessful()
+            return Line(id, conv, start, end, text, "", "", quiet, "", "")
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun lines(where: String, args: Array<String>, order: String, limit: Int): List<Line> {
+        val out = ArrayList<Line>()
+        readableDatabase.rawQuery("SELECT id, conv, start, end, text, person, voice, quiet, emotion, sound FROM lines " +
+            "$where ORDER BY $order LIMIT $limit", args).use { c ->
+            while (c.moveToNext()) out += Line(c.getLong(0), c.getLong(1), c.getLong(2), c.getLong(3), c.getString(4),
+                c.getString(5), c.getString(6), c.getInt(7) != 0, c.getString(8), c.getString(9))
+        }
+        return out
+    }
+
+    // The newest n lines, oldest first.
+    fun recent(n: Int): List<Line> = lines("", emptyArray(), "start DESC", n).reversed()
+
+    // Lines between two times (wall clock), oldest first.
+    fun between(from: Long, to: Long): List<Line> = lines("WHERE start >= ? AND start < ?", arrayOf(from.toString(), to.toString()),
+        "start", 100_000)
+
+    fun count(from: Long, to: Long = Long.MAX_VALUE): Int =
+        readableDatabase.rawQuery("SELECT COUNT(*) FROM lines WHERE start >= ? AND start < ?", arrayOf(from.toString(), to.toString()))
+            .use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+
+    fun conversations(from: Long, to: Long): List<Conversation> {
+        val out = ArrayList<Conversation>()
+        readableDatabase.rawQuery("SELECT id, started, ended, title, meeting FROM conversations WHERE ended >= ? AND started < ? " +
+            "ORDER BY started", arrayOf(from.toString(), to.toString())).use { c ->
+            while (c.moveToNext()) out += Conversation(c.getLong(0), c.getLong(1), c.getLong(2), c.getString(3), c.getInt(4) != 0)
+        }
+        return out
+    }
+
+    // Lines holding the words (each word, or a word starting so for the last one), newest first.
+    fun search(query: String, limit: Int = 100): List<Line> {
+        val words = query.lowercase(Locale.US).split(Regex("[^\\p{L}\\p{N}']+")).map { it.replace("'", "") }.filter { it.isNotEmpty() }
+        if (words.isEmpty()) return emptyList()
+        val match = words.mapIndexed { i, w -> if (i == words.size - 1) "$w*" else w }.joinToString(" ")
+        val ids = ArrayList<Long>()
+        runCatching {
+            readableDatabase.rawQuery("SELECT docid FROM lines_fts WHERE lines_fts MATCH ? ORDER BY docid DESC LIMIT $limit",
+                arrayOf(match)).use { c -> while (c.moveToNext()) ids += c.getLong(0) }
+        }
+        if (ids.isEmpty()) return emptyList()
+        return lines("WHERE id IN (${ids.joinToString(",")})", emptyArray(), "start DESC", limit)
+    }
+
+    // The people's names by id ("" none).
+    fun names(): Map<String, String> {
+        val out = HashMap<String, String>()
+        readableDatabase.rawQuery("SELECT id, name FROM people", null).use { c -> while (c.moveToNext()) out[c.getString(0)] = c.getString(1) }
+        readableDatabase.rawQuery("SELECT id, label FROM voices", null).use { c -> while (c.moveToNext()) out[c.getString(0)] = c.getString(1) }
+        return out
+    }
+
+    companion object {
+        const val GAP_MS = 5 * 60_000L
+
+        @Volatile private var one: ListenDb? = null
+        fun get(c: Context): ListenDb = one ?: synchronized(this) { one ?: ListenDb(c.applicationContext).also { one = it } }
+
+        fun dayStart(t: Long): Long = Calendar.getInstance().apply {
+            timeInMillis = t
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+
+        fun nextDay(dayStart: Long): Long = Calendar.getInstance().apply {
+            timeInMillis = dayStart
+            add(Calendar.DAY_OF_MONTH, 1)
+        }.timeInMillis
+    }
+}
+
+// The day's transcript as a plain file in Vox's docs folder (the glasses' editor, Alt+N, and anything that reads
+// files): "Transcript 2026-11-10.md", conversation by conversation, a line each. Written again when lines change;
+// the database stays what counts (edits to the file are not read back).
+object Transcripts {
+    fun dir(c: Context) = File(c.getExternalFilesDir(null) ?: c.filesDir, "docs")
+
+    fun file(c: Context, dayStart: Long) =
+        File(dir(c), "Transcript " + SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(dayStart)) + ".md")
+
+    fun write(c: Context, dayStart: Long) {
+        val db = ListenDb.get(c)
+        val end = ListenDb.nextDay(dayStart)
+        val lines = db.between(dayStart, end)
+        if (lines.isEmpty()) return
+        val names = db.names()
+        val time = SimpleDateFormat("h:mm:ss a", Locale.US)
+        val short = SimpleDateFormat("h:mm a", Locale.US)
+        val sb = StringBuilder()
+        sb.append("# Transcript ").append(SimpleDateFormat("EEEE, MMMM d, yyyy", Locale.US).format(Date(dayStart))).append("\n\n")
+        sb.append("Written by Vox Listen mode. ${lines.size} lines. Edits here are not read back.\n")
+        var conv = -1L
+        for (l in lines) {
+            if (l.conv != conv) {
+                conv = l.conv
+                val span = lines.filter { it.conv == conv }
+                sb.append("\n## ").append(short.format(Date(span.first().start))).append(" - ")
+                    .append(short.format(Date(span.last().end))).append(" (").append(span.size).append(" lines)\n\n")
+            }
+            val who = names[l.person.ifEmpty { l.voice }] ?: ""
+            sb.append(time.format(Date(l.start))).append("  ")
+            if (who.isNotEmpty()) sb.append(who).append(": ")
+            sb.append(l.text)
+            if (l.quiet) sb.append(" (quiet)")
+            if (l.emotion.isNotEmpty() && l.emotion != "neutral") sb.append(" [").append(l.emotion).append("]")
+            if (l.sound.isNotEmpty()) sb.append(" [").append(l.sound).append("]")
+            sb.append("\n")
+        }
+        val f = file(c, dayStart)
+        runCatching {
+            f.parentFile?.mkdirs()
+            val tmp = File(f.parentFile, ".${f.name}.saving")
+            tmp.writeText(sb.toString())
+            if (!tmp.renameTo(f)) {
+                f.writeText(sb.toString())
+                tmp.delete()
+            }
+        }
+    }
+}
