@@ -121,6 +121,31 @@ object Hotkeys {
         }
         // The TV remote on (Alt+Y): the keyboard is the TV's remote (Vizio.LAYOUT); Alt shortcuts go on as ever.
         if (Session.tvKeys && !e.isAltPressed && !e.isCtrlPressed && !e.isMetaPressed) {
+            val down = e.action == KeyEvent.ACTION_DOWN
+            fun tv(what: String) = ScouterService.send(context, ScouterService.ACTION_PANEL, "do" to what)
+            // Typing into the TV's text field (T): characters as typed, Backspace, Enter is OK, the arrows move;
+            // Esc or Tab ends it.
+            if (Session.tvTyping) {
+                if (!down) return true
+                when (e.keyCode) {
+                    KeyEvent.KEYCODE_ESCAPE, KeyEvent.KEYCODE_TAB -> if (e.repeatCount == 0) tv("tvtype:off")
+                    KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> if (e.repeatCount == 0) tv("tv:OK")
+                    KeyEvent.KEYCODE_DEL -> tv("tvchar:8")
+                    KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT ->
+                        Vizio.forKey(e.keyCode)?.let { tv("tv:$it") }
+                    else -> e.getUnicodeChar(e.metaState).takeIf { it in 32..126 }?.let { tv("tvchar:$it") }
+                }
+                return true
+            }
+            // T (or Tab) types; 1 ... 9, 0 open the popular apps (Vizio.APPS).
+            if (e.keyCode == KeyEvent.KEYCODE_T || e.keyCode == KeyEvent.KEYCODE_TAB) {
+                if (down && e.repeatCount == 0) tv("tvtype:on")
+                return true
+            }
+            if (e.keyCode in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9) {
+                if (down && e.repeatCount == 0) tv("tvapp:" + ((e.keyCode - KeyEvent.KEYCODE_0 + 9) % 10))
+                return true
+            }
             val k = Vizio.forKey(e.keyCode) ?: return true
             val again = k.startsWith("VOL") || k.startsWith("CH") || k in listOf("UP", "DOWN", "LEFT", "RIGHT")
             if (e.action == KeyEvent.ACTION_DOWN && (e.repeatCount == 0 || again))

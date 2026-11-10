@@ -278,6 +278,19 @@ object Panels {
             body += "" to 0
             body += keys
         }
+        // The apps of the keys 1 ... 9, 0, as many to a line as fit.
+        body += "" to 0
+        body += "▌▌ APPS ▐░▒▓ " to 1
+        var appLine = ""
+        for ((i, app) in Vizio.APPS.withIndex()) {
+            val item = "${(i + 1) % 10} ${app.name}"
+            if (appLine.isNotEmpty() && appLine.length + 3 + item.length > w - 6) {
+                body += " $appLine" to 0
+                appLine = ""
+            }
+            appLine += (if (appLine.isEmpty()) "" else "   ") + item
+        }
+        if (appLine.isNotEmpty()) body += " $appLine" to 0
         val stat = "▌▌ TV ▐░▒▓ " + status
         lines += ("┃ " + stat.take(w - 4).padEnd(w - 4) + " ┃"); marks += 1
         lines += "┃" + " ".repeat(w - 2) + "┃"; marks += 0
@@ -324,7 +337,7 @@ object Panels {
         key(cx, cy + s * 1.1f, "↓", "DOWN")
         // The other keys as a list, the one pressed last on a lit bar.
         val x0 = cx + s * 1.9f
-        val rowH = minOf(22f, (h - 90f) / (Vizio.LAYOUT.size + 1))
+        val rowH = minOf(22f, (h - 150f) / (Vizio.LAYOUT.size + 1))
         var y = 92f
         val k = paint(14f, true)
         val t = paint(14f)
@@ -340,6 +353,11 @@ object Panels {
             }
             y += rowH
         }
+        // The apps of the keys 1 ... 9, 0, two lines over the footer.
+        val apps = Vizio.APPS.mapIndexed { i, app -> "${(i + 1) % 10} ${app.name}" }
+        val ap = paint(13f, true)
+        c.drawText(apps.take(5).joinToString("   "), 14f, h - 52f, ap)
+        c.drawText(apps.drop(5).joinToString("   "), 14f, h - 34f, ap)
         c.drawLine(2f, h - 26f, 22f, h - 26f, line); c.drawLine(2f, h - 26f, 2f, h - 4f, line)
         c.drawLine(w - 2f, h - 26f, w - 22f, h - 26f, line); c.drawLine(w - 2f, h - 26f, w - 2f, h - 4f, line)
         c.drawText("every key goes to the TV  //  Vox's Alt keys still work", 30f, h - 10f, paint(12f))

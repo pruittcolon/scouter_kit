@@ -465,7 +465,10 @@ with the app in the back.
 - **Alt+Y** turns the keyboard into a Vizio SmartCast TV's remote (the TV is not one of the screens you switch
   between), and the glasses show the remote meanwhile (`Panels.TV`: the arrows and OK as a pad, the other keys as a
   list, how the TV is; the key pressed lights up): arrows, Enter = OK, Backspace/Esc = Back, H = Home, +/- = volume, M = mute, Space = play/pause,
-  I = input, Page Up/Down = channel, P = power. Alt+Y again, or five minutes without a TV key, gives the keyboard
+  I = input, Page Up/Down = channel, P = power, 1 ... 9 and 0 = Netflix, YouTube, Prime Video, Disney+, Hulu, HBO Max,
+  Paramount+, Peacock, Tubi, Plex (`Vizio.APPS`, launch payloads from Vizio's published app list), T = typing into
+  the TV's text field (each character a codeset 0 key with its ASCII code, as Vizio's own app types; Backspace is
+  8; Esc or Tab ends it). The TV tab has the same apps as buttons and a text box. Alt+Y again, or five minutes without a TV key, gives the keyboard
   back; the glasses say which. The app's **TV** tab (also Settings, TV remote; `TvPage.kt`) has every button, Firefox
   on the TV and the pairing. Pair once there (Find and pair the TV: it looks over the whole
   Wi-Fi network, then type the PIN the TV shows). The TV's address and token stay in Vox's private settings on the

@@ -43,6 +43,8 @@ object Vizio {
         Triple("I", "INPUT", "input"),
         Triple("Page Up / Down", "CH", "channel"),
         Triple("P", "POWER", "power"),
+        Triple("1 ... 9, 0", "APP", "an app (below)"),
+        Triple("T", "TYPE", "type text (Esc: done)"),
     )
 
     private val pool = Executors.newSingleThreadExecutor { r -> Thread(r, "vizio").apply { isDaemon = true } }
@@ -89,23 +91,61 @@ object Vizio {
 
     // A key to the TV (off the main thread). done: the words for what happened ("" when it went through).
     fun key(settings: Settings, name: String, done: ((String) -> Unit)? = null) {
-        val k = KEYS[name]
-        if (k == null || !paired(settings)) {
-            done?.invoke(if (!paired(settings)) "Pair the TV first (Settings, TV remote)" else "No such key")
-            return
+        val k = KEYS[name] ?: return done?.invoke("No such key") ?: Unit
+        keys(settings, listOf(k), done)
+    }
+
+    // Text into the field the TV shows (a search box), as Vizio's own app types it: each character a key of codeset
+    // 0 with its ASCII code (7-bit ASCII only: others are left out); 8 is Backspace there.
+    fun type(settings: Settings, text: String, done: ((String) -> Unit)? = null) {
+        val codes = text.filter { it.code in 8..126 }.map { 0 to it.code }
+        if (codes.isEmpty()) return done?.invoke("") ?: Unit
+        val parts = codes.chunked(50)
+        for ((i, part) in parts.withIndex()) keys(settings, part, if (i == parts.size - 1) done else null)
+    }
+
+    // Keys (codeset, code) in one KEYLIST, in order; a TV that moved is looked for once.
+    private fun keys(settings: Settings, codes: List<Pair<Int, Int>>, done: ((String) -> Unit)?) {
+        if (!paired(settings)) return done?.invoke("Pair the TV first (the TV tab)") ?: Unit
+        val list = JSONArray()
+        for ((set, code) in codes) list.put(JSONObject().put("CODESET", set).put("CODE", code).put("ACTION", "KEYPRESS"))
+        send(settings, "/key_command/", JSONObject().put("KEYLIST", list), done)
+    }
+
+    // The popular apps (Vizio's published app list: its launch payloads), in the order of the keys 1 ... 9, 0 in TV
+    // mode. alt: the payload some chipsets take instead (tried when the first is refused).
+    class App(val name: String, val ns: Int, val id: String, val alt: Pair<Int, String>? = null)
+    val APPS = listOf(
+        App("Netflix", 3, "1"), App("YouTube", 5, "1"), App("Prime Video", 2, "4", 3 to "3"), App("Disney+", 2, "75"),
+        App("Hulu", 2, "3"), App("HBO Max", 2, "128"), App("Paramount+", 2, "37"), App("Peacock", 2, "88"),
+        App("Tubi", 2, "61"), App("Plex", 2, "9"),
+    )
+
+    fun launch(settings: Settings, app: App, done: ((String) -> Unit)? = null) {
+        fun body(ns: Int, id: String) = JSONObject().put("VALUE", JSONObject().put("NAME_SPACE", ns).put("APP_ID", id)
+            .put("MESSAGE", JSONObject.NULL))
+        val alt = app.alt
+        val first: ((String) -> Unit)? = if (alt == null) done else { why: String ->
+            if (why.isEmpty() || why.startsWith("The TV did not answer")) done?.invoke(why)
+            else send(settings, "/app/launch", body(alt.first, alt.second), done)
+            Unit
         }
+        send(settings, "/app/launch", body(app.ns, app.id), first)
+    }
+
+    // A PUT to the paired TV; done: "" when it went through, else why. A TV that moved is looked for once.
+    private fun send(settings: Settings, path: String, body: JSONObject, done: ((String) -> Unit)?) {
+        if (!paired(settings)) return done?.invoke("Pair the TV first (the TV tab)") ?: Unit
         val host = settings.tvHost
         val token = settings.tvToken
-        val body = JSONObject().put("KEYLIST", JSONArray().put(JSONObject()
-            .put("CODESET", k.first).put("CODE", k.second).put("ACTION", "KEYPRESS")))
         pool.execute {
             val why = runCatching {
-                val d = call(host, "PUT", "/key_command/", body, token)
+                val d = call(host, "PUT", path, body, token, 8000)
                 if (ok(d)) "" else d.optJSONObject("STATUS")?.optString("DETAIL").orEmpty().ifEmpty { "The TV said no" }
             }.getOrElse { e ->
                 val moved = if (e is java.io.IOException) relocate(settings, token) else null
                 if (moved == null) "The TV did not answer (is it on, on this Wi-Fi?)"
-                else runCatching { if (ok(call(moved, "PUT", "/key_command/", body, token))) "" else "The TV said no" }
+                else runCatching { if (ok(call(moved, "PUT", path, body, token, 8000))) "" else "The TV said no" }
                     .getOrDefault("The TV did not answer")
             }
             done?.invoke(why)

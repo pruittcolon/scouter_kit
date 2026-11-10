@@ -17,6 +17,7 @@ class TvPage(private val a: Activity, page: LinearLayout, done: (() -> Unit)? = 
     private val host: EditText
     private val pin: EditText
     private val remote: LinearLayout
+    private lateinit var words: EditText
 
     init {
         with(a) {
@@ -37,6 +38,25 @@ class TvPage(private val a: Activity, page: LinearLayout, done: (() -> Unit)? = 
             remote.addView(row(key("Ch −", "CH_DOWN"), button("Play / pause") { Vizio.playPause(settings) { say(it) } }, key("Ch +", "CH_UP")))
             remote.addView(row(button("Remote on the glasses (Alt+Y)", 0) { glasses() }))
             page.addView(remote)
+
+            // The popular apps, opened on the TV (in TV mode the keys 1 ... 9, 0 do it too).
+            val apps = card("Apps", "Opens the app on the TV. In TV mode (Alt+Y) the keys 1 to 9 and 0, in this order.")
+            for (three in Vizio.APPS.chunked(3)) apps.addView(row(*three.map { app ->
+                button(app.name) { Vizio.launch(settings, app) { why -> say(if (why.isEmpty()) "${app.name} on the TV" else "${app.name}: $why") } }
+            }.toTypedArray(), *Array(3 - three.size) { View(this) }))
+            page.addView(apps)
+
+            // Text into the TV's search box (open one first): sent as typed by Vizio's own app.
+            val type = card("Type on the TV", "Open a search box on the TV first. In TV mode (Alt+Y), T types from the " +
+                "keyboard instead (Esc: done). Letters, digits and plain punctuation only.")
+            words = field("Text", "", "what to type on the TV")
+            type.addView(words)
+            type.addView(row(
+                button("Type it", 0) { typeOnTv(enter = false) },
+                button("Type + Enter") { typeOnTv(enter = true) },
+                button("⌫") { Vizio.type(settings, "\b") { say(it) } },
+            ))
+            page.addView(type)
 
             // The phone's own mirror to the TV (its Linux's `phone` command), as a tab of the phone's terminal.
             val firefox = card("Firefox on the TV", "Firefox by itself on the TV, worked from the phone (the phone " +
@@ -85,6 +105,18 @@ class TvPage(private val a: Activity, page: LinearLayout, done: (() -> Unit)? = 
     }
 
     private fun send(name: String) = Vizio.key(settings, name) { say(it) }
+
+    private fun typeOnTv(enter: Boolean) {
+        val t = words.text.toString()
+        if (t.isEmpty()) return run { status.text = "Type something first" }
+        status.text = "Typing on the TV…"
+        Vizio.type(settings, t) { why ->
+            if (why.isNotEmpty()) return@type say(why)
+            if (enter) Vizio.key(settings, "OK") { say(if (it.isEmpty()) "Typed and entered" else it) }
+            else say("Typed")
+            a.runOnUiThread { words.setText("") }
+        }
+    }
 
     private fun glasses() {
         if (!ScouterService.running) return run { status.text = "Start Vox first (Glasses tab)" }

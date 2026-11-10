@@ -52,6 +52,7 @@ object Session {
     @Volatile var listening = false
     @Volatile var dictating = false // what is said is typed into the terminal
     @Volatile var voiceMode = false // voice mode (Alt+V): talking to the terminal, a strip at the bottom says so
+    @Volatile var tvTyping = false // in TV mode (Alt+Y), T: the keyboard types into the TV's text field
     @Volatile var car = "" // Car mode: "" off, else its state (idle, listening, thinking, speaking)
     @Volatile var carName = "" // the car connected (its Bluetooth name), or ""
     @Volatile var pointer = false // the pointer is on (its keys move and click it)
@@ -1490,6 +1491,9 @@ class ScouterService : Service() {
             what == "tvtab" -> tvTab()
             what == "tvstop" -> tvTab(stop = true)
             what.startsWith("tv:") -> tvKey(what.removePrefix("tv:"))
+            what == "tvtype:on" || what == "tvtype:off" -> tvTyping(what == "tvtype:on")
+            what.startsWith("tvchar:") -> tvChar(what.removePrefix("tvchar:").toIntOrNull() ?: 0)
+            what.startsWith("tvapp:") -> Vizio.APPS.getOrNull(what.removePrefix("tvapp:").toIntOrNull() ?: -1)?.let { tvApp(it) }
             what.startsWith("bright:") -> bright(what.removePrefix("bright:").toIntOrNull() ?: 0)
             what.startsWith("media:") -> {
                 val ok = Media.control(what.removePrefix("media:"))
@@ -1802,10 +1806,46 @@ class ScouterService : Service() {
     }
 
     private fun tvHide(why: String) {
+        Session.tvTyping = false
         work.removeCallbacks(tvUnlit)
         tvLit = ""
         if (Session.overlay == Panels.TV) panelClose()
         note(why)
+    }
+
+    // T in TV mode: the keyboard types into the TV's text field (a search box open on it), Esc or Tab ends it.
+    private var tvTyped = "" // what was typed this time (shown on the glasses' remote)
+    private fun tvTyping(on: Boolean) {
+        Session.tvTyping = on && Session.tvKeys
+        tvTyped = ""
+        tvStatus = if (Session.tvTyping) "TYPING: open a search box on the TV, then type (Esc: done)" else "typing done"
+        if (Session.overlay == Panels.TV) tvDraw()
+        Session.changed()
+    }
+
+    private fun tvChar(code: Int) {
+        if (code !in 8..126) return
+        work.removeCallbacks(tvIdle)
+        work.postDelayed(tvIdle, TV_IDLE_MS)
+        tvTyped = if (code == 8) tvTyped.dropLast(1) else tvTyped + code.toChar()
+        tvStatus = "TYPING: " + tvTyped.takeLast(40) + "█"
+        if (Session.overlay == Panels.TV) tvDraw()
+        Vizio.type(settings, code.toChar().toString()) { why ->
+            if (why.isNotEmpty()) work.post { tvStatus = why; if (Session.overlay == Panels.TV) tvDraw() }
+        }
+    }
+
+    private fun tvApp(app: Vizio.App) {
+        work.removeCallbacks(tvIdle)
+        work.postDelayed(tvIdle, TV_IDLE_MS)
+        tvStatus = "opening ${app.name}…"
+        if (Session.overlay == Panels.TV) tvDraw()
+        Vizio.launch(settings, app) { why ->
+            work.post {
+                tvStatus = if (why.isEmpty()) "${app.name} on the TV" else "${app.name}: $why"
+                if (Session.overlay == Panels.TV) tvDraw() else note(tvStatus)
+            }
+        }
     }
 
     private fun tvDraw() {
