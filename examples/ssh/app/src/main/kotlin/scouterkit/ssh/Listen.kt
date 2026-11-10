@@ -57,6 +57,8 @@ object Listen {
         private set
     @Volatile var waiting = 0.0 // seconds of speech waiting to be read
         private set
+    @Volatile var speed = "" // "live" or "eco" now (the worker's last look)
+        private set
     private val lookUntil = java.util.concurrent.atomic.AtomicLong(0) // elapsedRealtime: someone looks (Live)
 
     private val recentLines = ArrayDeque<Heard>()
@@ -454,6 +456,7 @@ object Listen {
                 if (!(on && run == gen)) break
                 val nowE = SystemClock.elapsedRealtime()
                 waiting = ListenQueue.seconds(c)
+                speed = if (live(c, settings)) "live" else "eco"
                 runCatching { Meetings.tick(c) }
                 // Someone looks: the model ready for the words as they are said.
                 if (engine == null && nowE < lookUntil.get() && !hot(c)) {
