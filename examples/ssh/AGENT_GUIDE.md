@@ -140,6 +140,8 @@ the port), Pair, type the PIN the TV shows. The address and token stay on the ph
 scans again and keeps the TV that accepts the token (at most once a minute). Five idle minutes end the mode. The TV is deliberately **not** one of the screens you switch
 between; it is only reachable through the Alt+Y hotkey (and the buttons in Settings). Keys: arrows, Enter = OK,
 Backspace/Esc = Back, H Home, +/- volume, M mute, Space play/pause, I input, Page Up/Down channel, P power.
+Power on a TV that is off in Eco mode (no answer on 7345): Wake-on-LAN to the MACs learned while it was on
+(`Vizio.learn`, `Settings.tvMac`), then POWER_ON (never the toggle) until it answers, at most 25 s.
 
 **Car mode.** When the phone connects to a car (Bluetooth profile), the media keys become a voice interface to
 Claude: Next starts listening, Next again sends; Play/Pause cancels or quiets; Previous repeats the answer, or

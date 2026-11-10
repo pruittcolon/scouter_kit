@@ -191,6 +191,8 @@ class Settings(context: Context) {
     // The Vizio TV's remote (Alt+Y): its address and the token its pairing gave, kept on this phone only.
     var tvHost: String by Text("tv_host", "")
     var tvToken: String by Text("tv_token", "")
+    // The paired TV's MAC addresses (Wi-Fi, Ethernet; comma-separated), learned while it answers: for Wake-on-LAN.
+    var tvMac: String by Text("tv_mac", "")
     // Low battery (Alt+B): the glasses at a tenth of the brightness; the level to go back to.
     var lowBattery: Boolean
         get() = prefs.getBoolean("low_battery", false)

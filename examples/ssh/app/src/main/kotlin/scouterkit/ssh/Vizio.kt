@@ -92,7 +92,81 @@ object Vizio {
     // A key to the TV (off the main thread). done: the words for what happened ("" when it went through).
     fun key(settings: Settings, name: String, done: ((String) -> Unit)? = null) {
         val k = KEYS[name] ?: return done?.invoke("No such key") ?: Unit
+        if (name == "POWER" || name == "POWER_ON") return power(settings, k, done)
         keys(settings, listOf(k), done)
+    }
+
+    // Power. A TV in standby answers and takes the key. A TV that is off in Eco mode has its network asleep
+    // (nothing answers on 7345) but wakes on Wake-on-LAN, as Vizio's own app wakes it: the magic packet to the MAC
+    // addresses learned while it was on, then POWER_ON (not the toggle: that would turn it off again) until the TV
+    // answers, at most WAKE_MS. Its own thread: the key pool stays free meanwhile.
+    private const val WAKE_MS = 25_000L
+    private val MAC = Regex("[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}")
+
+    private fun power(settings: Settings, k: Pair<Int, Int>, done: ((String) -> Unit)?) {
+        if (!paired(settings)) return done?.invoke("Pair the TV first (the TV tab)") ?: Unit
+        Thread({ val why = wake(settings, k); done?.invoke(why) }, "vizio-power").start()
+    }
+
+    private fun press(host: String, token: String, k: Pair<Int, Int>, timeout: Int) = runCatching {
+        val key = JSONObject().put("CODESET", k.first).put("CODE", k.second).put("ACTION", "KEYPRESS")
+        ok(call(host, "PUT", "/key_command/", JSONObject().put("KEYLIST", JSONArray().put(key)), token, timeout))
+    }.getOrDefault(false)
+
+    private fun wake(settings: Settings, k: Pair<Int, Int>): String {
+        val host = settings.tvHost
+        val token = settings.tvToken
+        if (press(host, token, k, 2500)) { learn(settings, host, token); return "" }
+        val macs = settings.tvMac.split(',').filter { MAC.matches(it.trim()) }
+        if (macs.isEmpty()) return "The TV is asleep and Vox can't wake it yet: turn it on once, then open the TV tab"
+        val on = KEYS.getValue("POWER_ON")
+        val end = System.currentTimeMillis() + WAKE_MS
+        while (System.currentTimeMillis() < end) {
+            wol(macs, host)
+            if (press(host, token, on, 1500)) return ""
+            Thread.sleep(1000)
+        }
+        val moved = relocate(settings, token)
+        if (moved != null && press(moved, token, on, 2500)) return ""
+        return "The TV did not wake (Wake-on-LAN for 25 s): is it on this Wi-Fi?"
+    }
+
+    // Wake-on-LAN: the magic packet (6 bytes 0xFF, then the MAC 16 times) to the Wi-Fi's broadcast address, the
+    // all-ones broadcast and the TV's own address, ports 9 and 7.
+    private fun wol(macs: List<String>, host: String) {
+        val targets = mutableListOf("255.255.255.255", host)
+        val (ip, prefix) = wifi()
+        if (ip.isNotEmpty() && prefix in 8..30) {
+            val me = ip.split('.').fold(0L) { a, p -> (a shl 8) or p.toLong() }
+            val b = me or ((1L shl (32 - prefix)) - 1)
+            targets += "${b shr 24 and 255}.${b shr 16 and 255}.${b shr 8 and 255}.${b and 255}"
+        }
+        runCatching {
+            java.net.DatagramSocket().use { s ->
+                s.broadcast = true
+                for (mac in macs) {
+                    val m = mac.trim().split(':', '-').map { it.toInt(16).toByte() }
+                    val p = ByteArray(102) { if (it < 6) 0xFF.toByte() else m[(it - 6) % 6] }
+                    for (t in targets) for (port in intArrayOf(9, 7)) runCatching {
+                        s.send(java.net.DatagramPacket(p, p.size, java.net.InetAddress.getByName(t), port))
+                    }
+                }
+            }
+        }
+    }
+
+    // The TV's MAC addresses (Wi-Fi and Ethernet), asked once while it answers and kept for waking it.
+    private fun learn(settings: Settings, host: String, token: String) {
+        if (settings.tvMac.isNotEmpty()) return
+        runCatching {
+            val items = call(host, "GET", "/menu_native/dynamic/tv_settings/network/network_information", null, token)
+                .optJSONArray("ITEMS") ?: return
+            val macs = (0 until items.length()).mapNotNull { items.optJSONObject(it) }
+                .filter { it.optString("CNAME") == "wlan_mac" || it.optString("CNAME") == "rj45_mac" }
+                .map { it.optString("VALUE").trim() }
+                .filter { MAC.matches(it) && it.any { c -> c != '0' && c != ':' && c != '-' } }
+            if (macs.isNotEmpty()) settings.tvMac = macs.joinToString(",")
+        }
     }
 
     // Text into the field the TV shows (a search box), as Vizio's own app types it: each character a key of codeset
@@ -167,6 +241,7 @@ object Vizio {
                 val d = call(host, "GET", "/state/device/power_mode", null, token)
                 val items = d.optJSONArray("ITEMS")
                 val on = items?.optJSONObject(0)?.optInt("VALUE", 0) == 1
+                learn(settings, host, token)
                 if (on) "on" else "off (standby)"
             }.getOrNull())
         }
@@ -221,6 +296,8 @@ object Vizio {
                 else {
                     settings.tvHost = host
                     settings.tvToken = token
+                    settings.tvMac = ""
+                    learn(settings, host, token)
                     pairId = ""
                     ""
                 }

@@ -91,7 +91,8 @@ class TvPage(private val a: Activity, page: LinearLayout, done: (() -> Unit)? = 
     fun refresh() {
         if (!Vizio.paired(settings)) return show()
         Vizio.status(settings) { s -> a.runOnUiThread {
-            status.text = if (s == null) "Paired with ${settings.tvHost}: not answering (off at the wall, or another Wi-Fi?)"
+            status.text = if (s == null && settings.tvMac.isNotEmpty()) "${settings.tvHost}: the TV is asleep (Power wakes it)"
+            else if (s == null) "Paired with ${settings.tvHost}: not answering (off at the wall, or another Wi-Fi?)"
             else "${settings.tvHost}: the TV is $s"
         } }
     }
@@ -104,7 +105,10 @@ class TvPage(private val a: Activity, page: LinearLayout, done: (() -> Unit)? = 
         status.text = if (paired) "Paired with ${settings.tvHost}" else "Not paired yet: pair it below"
     }
 
-    private fun send(name: String) = Vizio.key(settings, name) { say(it) }
+    private fun send(name: String) {
+        if (name == "POWER") status.text = "Power… (an asleep TV takes up to 25 s to wake)"
+        Vizio.key(settings, name) { why -> if (name == "POWER" && why.isEmpty()) refresh() else say(why) }
+    }
 
     private fun typeOnTv(enter: Boolean) {
         val t = words.text.toString()

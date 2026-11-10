@@ -1950,6 +1950,7 @@ class ScouterService : Service() {
         work.removeCallbacks(tvIdle)
         if (Session.tvKeys) work.postDelayed(tvIdle, TV_IDLE_MS)
         tvLit = name
+        if (name == "POWER") tvStatus = "power… (waking takes up to 25 s)"
         work.removeCallbacks(tvUnlit)
         work.postDelayed(tvUnlit, 450)
         if (Session.overlay == Panels.TV) tvDraw()

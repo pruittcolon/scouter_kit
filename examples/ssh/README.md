@@ -501,6 +501,8 @@ with the app in the back.
   on the TV and the pairing. Pair once there (Find and pair the TV: it looks over the whole
   Wi-Fi network, then type the PIN the TV shows). The TV's address and token stay in Vox's private settings on the
   phone. If the router gives the TV a new address, the next key finds it again by itself.
+  Power wakes a TV that is off in Eco mode (its network asleep, nothing answering): Wake-on-LAN to the TV's MAC
+  addresses, learned while it answers (`Settings.tvMac`), then POWER_ON until it answers, at most 25 s.
 - **Alt+F** (or *Firefox on the TV* on the TV page) runs the phone's own `phone` command, if its Linux has one (a
   mirror of one app to the TV), in a tab named tv of the phone's terminal (127.0.0.1), or a tmux session tv when
   that is not running; closing the tab or *Stop it* (`phone stop`) ends it.
