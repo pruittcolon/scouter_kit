@@ -17,6 +17,7 @@ object Panels {
     const val INTRO = "intro" // the preview mode's title card (Intro)
     const val VOICE = "voice" // voice mode's strip at the bottom (ScouterService.voiceModeSet)
     const val TV = "tv" // the TV remote while the keyboard is the TV's (Alt+Y)
+    const val HUB = "hub" // the hub: timer, stopwatch, alarm, reminders, notes (Alt+G)
 
     // The hotkeys by group: the keys, what they do. The help on the glasses and the app's Hotkeys page.
     val GROUPS: List<Pair<String, List<Pair<String, String>>>> = listOf(
@@ -41,6 +42,7 @@ object Panels {
             "Alt+Space" to "voice command",
             "Alt+V" to "voice mode: talk to it",
             "Alt+Y" to "TV remote on / off",
+            "Alt+G" to "hub: timer, alarm, notes",
         ),
         "Terminal" to listOf(
             "Alt+T" to "new tab",
@@ -361,6 +363,59 @@ object Panels {
         c.drawLine(2f, h - 26f, 22f, h - 26f, line); c.drawLine(2f, h - 26f, 2f, h - 4f, line)
         c.drawLine(w - 2f, h - 26f, w - 22f, h - 26f, line); c.drawLine(w - 2f, h - 26f, w - 2f, h - 4f, line)
         c.drawText("every key goes to the TV  //  Vox's Alt keys still work", 30f, h - 10f, paint(12f))
+        return Art(pixels(b), w, h, 0, 0)
+    }
+
+    // ------------------------------------------------ the hub on the glasses (Alt+G)
+
+    // The hub's rows (ScouterService.hubRows): text and a mark (0 plain, 1 bold, 2 faint, 3 lit: the one being typed
+    // into). As the terminal's lines inside the frame, or (hubArt) drawn for a screen's frames.
+    fun hubLines(cols: Int, rows: Int, items: List<Pair<String, Int>>): Content {
+        val lines = mutableListOf<String>()
+        val marks = mutableListOf<Int>()
+        val w = cols.coerceAtLeast(40)
+        val left = "┏━[ VOX//HUB ]░▒▓█"
+        val right = "█▓▒░[ Esc closes ]━┓"
+        lines += (left + "━".repeat(maxOf(0, w - left.length - right.length)) + right).take(w); marks += 1
+        for ((t, m) in items) {
+            lines += "┃ " + t.take(w - 4).padEnd(w - 4) + " ┃"
+            marks += m
+        }
+        val foot = "┗━ ▓▒░ T timer · P pause · S watch · A alarm · R remind · N note "
+        val end = "░▒▓ ━┛"
+        lines += (foot + "━".repeat(maxOf(0, w - foot.length - end.length)) + end).take(w); marks += 2
+        return Content(lines.take(maxOf(3, rows)), marks.take(maxOf(3, rows)), true)
+    }
+
+    fun hubArt(w: Int, h: Int, items: List<Pair<String, Int>>): Art {
+        val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(b)
+        c.drawColor(Color.BLACK)
+        val bar = paint(0f).apply { style = Paint.Style.FILL }
+        val line = paint(0f).apply { style = Paint.Style.STROKE; strokeWidth = 2f }
+        c.drawPath(android.graphics.Path().apply {
+            moveTo(0f, 0f); lineTo(w - 36f, 0f); lineTo(w.toFloat(), 30f); lineTo(0f, 30f); close()
+        }, bar)
+        c.drawText("VOX//HUB", 14f, 22f, paint(19f, true).apply { color = Color.BLACK })
+        c.drawText("Esc closes", w - 40f, 21f, paint(13f).apply { color = Color.BLACK; textAlign = Paint.Align.RIGHT })
+        for (i in 0 until 4) c.drawRect(0f, 34f + i * 3f, w * (1f - i * 0.22f), 35f + i * 3f, bar)
+        val rowH = minOf(20f, (h - 90f) / maxOf(1, items.size))
+        var y = 64f
+        for ((t, m) in items) {
+            val text = t.replace(Regex("[▌▐░▒▓]"), "").trim()
+            when (m) {
+                3 -> {
+                    c.drawRect(8f, y - 14f, w - 8f, y + 5f, bar)
+                    c.drawText(text, 14f, y, paint(14f, true).apply { color = Color.BLACK })
+                }
+                1 -> c.drawText(text, 10f, y, paint(14f, true))
+                else -> c.drawText(text, 10f, y, paint(13.5f))
+            }
+            y += rowH
+        }
+        c.drawLine(2f, h - 26f, 22f, h - 26f, line); c.drawLine(2f, h - 26f, 2f, h - 4f, line)
+        c.drawLine(w - 2f, h - 26f, w - 22f, h - 26f, line); c.drawLine(w - 2f, h - 26f, w - 2f, h - 4f, line)
+        c.drawText("T timer · P pause · S stopwatch · A alarm · R remind · N note · Shift: undo", 30f, h - 10f, paint(12f))
         return Art(pixels(b), w, h, 0, 0)
     }
 

@@ -53,6 +53,8 @@ object Session {
     @Volatile var dictating = false // what is said is typed into the terminal
     @Volatile var voiceMode = false // voice mode (Alt+V): talking to the terminal, a strip at the bottom says so
     @Volatile var tvTyping = false // in TV mode (Alt+Y), T: the keyboard types into the TV's text field
+    @Volatile var hub = false // the hub is open (Alt+G)
+    @Volatile var hubTyping = false // the hub takes typing (a timer's length, an alarm, a reminder, a note)
     @Volatile var car = "" // Car mode: "" off, else its state (idle, listening, thinking, speaking)
     @Volatile var carName = "" // the car connected (its Bluetooth name), or ""
     @Volatile var pointer = false // the pointer is on (its keys move and click it)
@@ -1510,6 +1512,12 @@ class ScouterService : Service() {
             what == "tvtab" -> tvTab()
             what == "tvstop" -> tvTab(stop = true)
             what.startsWith("tv:") -> tvKey(what.removePrefix("tv:"))
+            what == "hub" -> hubOpen()
+            what.startsWith("hubkey:") -> hubKey(what.removePrefix("hubkey:"))
+            what.startsWith("hubchar:") -> hubChar(what.removePrefix("hubchar:").toIntOrNull() ?: 0)
+            what == "hubdel" -> hubDel()
+            what == "hubenter" -> hubEnter()
+            what == "hubesc" -> hubEsc()
             what == "tvtype:on" || what == "tvtype:off" -> tvTyping(what == "tvtype:on")
             what.startsWith("tvchar:") -> tvChar(what.removePrefix("tvchar:").toIntOrNull() ?: 0)
             what.startsWith("tvapp:") -> Vizio.APPS.getOrNull(what.removePrefix("tvapp:").toIntOrNull() ?: -1)?.let { tvApp(it) }
@@ -1550,7 +1558,11 @@ class ScouterService : Service() {
     }
 
     // What a hotkey did, for a moment at the bottom (an open panel shows the change itself).
-    private fun note(text: String) {
+    private fun note(text: String, ms: Long = 1600) {
+        if (Session.overlay == Panels.HUB) {
+            hubSaid = text
+            return hubDraw()
+        }
         if (Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS) return panelDraw()
         if (glassesWith == null || Session.blank || Session.tunes) return
         noteText = text
@@ -1558,14 +1570,14 @@ class ScouterService : Service() {
         forceApply()
         panelDraw()
         work.removeCallbacks(noteEnd)
-        work.postDelayed(noteEnd, 1600)
+        work.postDelayed(noteEnd, ms)
     }
 
     private fun panelClose() {
         altHelp = false
         if (Session.overlay.isEmpty()) return
         // What stays while its mode is on comes back: the TV remote (Alt+Y), voice mode's strip.
-        val back = if (Session.tvKeys) Panels.TV else if (Session.voiceMode) Panels.VOICE else ""
+        val back = if (Session.hub) Panels.HUB else if (Session.tvKeys) Panels.TV else if (Session.voiceMode) Panels.VOICE else ""
         if (back.isNotEmpty() && Session.overlay != back) {
             work.removeCallbacks(noteEnd)
             Session.overlay = back
@@ -1630,6 +1642,7 @@ class ScouterService : Service() {
             Panels.VOICE -> Panels.voice(voiceStripText)
             Panels.INTRO -> return // drawn by introFrame
             Panels.TV -> return tvDraw()
+            Panels.HUB -> return hubDraw()
             else -> null // the help: laid out for each
         }
         if (onScreen) {
@@ -1660,7 +1673,7 @@ class ScouterService : Service() {
     // show while looking up, as the terminal does.
     private fun forceApply() {
         val brief = Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS || Session.overlay == Panels.NOTE ||
-            Session.overlay == Panels.INTRO
+            Session.overlay == Panels.INTRO || Session.overlay == Panels.HUB
         val held = Session.overlay.isNotEmpty() || Session.keyer == "keys" || Session.keyer == KEYBOARD
         Native.force(forced || brief || (settings.phoneForce && held))
     }
@@ -1918,6 +1931,244 @@ class ScouterService : Service() {
             }
         }
         if (name == "PLAY_PAUSE") Vizio.playPause(settings, done) else Vizio.key(settings, name, done)
+    }
+
+    // ------------------------------------------------ the hub (Alt+G; Hub.kt)
+
+    // The everyday tools on the glasses (Panels.HUB, over whatever shows): the time, the timer (Timer), the
+    // stopwatch, the next alarm (the phone's clock), reminders, the newest notes, the next events. One letter each;
+    // the ones that ask (timer, alarm, reminder, note) take what is typed until Enter (Esc: back).
+    private var hubInput = "" // being typed for: "timer", "alarm", "reminder", "note"; "" none
+    private var hubText = ""
+    private var hubSaid = "" // what the last key did, at the bottom
+
+    private fun hubOpen() {
+        if (glassesWith == null) return
+        if (Session.overlay == Panels.HUB) return hubClose()
+        if (Session.blank) display(true, "hub")
+        if (Session.tunes) tunesSet(false)
+        if (Session.pointer) pointerOff()
+        Session.hub = true
+        hubInput = ""
+        hubText = ""
+        hubSaid = ""
+        Session.hubTyping = false
+        work.removeCallbacks(noteEnd)
+        Session.overlay = Panels.HUB
+        forceApply()
+        hubDraw()
+        work.removeCallbacks(hubTick)
+        work.postDelayed(hubTick, 1000)
+        Session.changed()
+    }
+
+    private fun hubClose() {
+        Session.hub = false
+        Session.hubTyping = false
+        hubInput = ""
+        work.removeCallbacks(hubTick)
+        if (Session.overlay == Panels.HUB) panelClose()
+        Session.changed()
+    }
+
+    // The clock, the timer and the stopwatch move while it is open.
+    private val hubTick = object : Runnable {
+        override fun run() {
+            if (Session.overlay != Panels.HUB) return
+            hubDraw()
+            work.postDelayed(this, if (Hub.stopwatchRunning) 500L else 1000L)
+        }
+    }
+
+    private fun hubRows(): List<Pair<String, Int>> {
+        val r = mutableListOf<Pair<String, Int>>()
+        val now = System.currentTimeMillis()
+        val wx = Weather.now?.let { "   ${it.temp}°${it.unit.uppercase()}  ${it.place}" } ?: ""
+        r += ("▌▌ " + java.text.SimpleDateFormat("h:mm a  ·  EEE, MMM d", java.util.Locale.US).format(java.util.Date(now)) +
+            " ▐░▒▓$wx") to 1
+        r += "" to 0
+        fun item(key: String, name: String, state: String, asks: String?) {
+            if (asks != null && hubInput == asks) { // the one being typed for: its question, then the line typed
+                r += (" ■ $key  ${name.padEnd(10)} ${hubPrompt(asks)}") to 3
+                r += ("          › " + hubText.takeLast(52) + "█") to 1
+            } else r += (" › $key  ${name.padEnd(10)} $state") to 0
+        }
+        item("T", "Timer", when {
+            Timer.running -> "${Timer.text()} left   (P pause, Shift+T stop)"
+            Timer.remaining() > 0 -> "${Timer.text()} paused   (P go on)"
+            else -> "off"
+        }, "timer")
+        item("S", "Stopwatch", when {
+            Hub.stopwatchRunning -> "${Hub.stopwatchText()} running   (S stop)"
+            Hub.stopwatch() > 0 -> "${Hub.stopwatchText()} stopped   (S go on, Shift+S zero)"
+            else -> "off"
+        }, null)
+        val next = runCatching { getSystemService(android.app.AlarmManager::class.java).nextAlarmClock?.triggerTime }.getOrNull()
+        item("A", "Alarm", if (next != null) "next: " + Hub.whenText(next, now) else "none set", "alarm")
+        val rem = Hub.reminders(this)
+        item("R", "Reminder", if (rem.isEmpty()) "none" else "${rem.size}: next ${Hub.whenText(rem[0].at, now)} ${rem[0].text}", "reminder")
+        val notes = Hub.notes(this)
+        item("N", "Note", if (notes.isEmpty()) "none yet" else "${notes.size} kept   (Shift+N drops the newest)", "note")
+        if (notes.isNotEmpty()) {
+            r += "" to 0
+            r += "▌▌ NOTES ▐░▒▓" to 1
+            for (n in notes.take(4)) r += "  · $n" to 0
+        }
+        val events = if (Agenda.allowed(this)) runCatching { Agenda.next(this).take(2) }.getOrDefault(emptyList()) else emptyList()
+        if (events.isNotEmpty()) {
+            r += "" to 0
+            r += "▌▌ NEXT ▐░▒▓" to 1
+            for (e in events) r += ("  · " + (if (e.allDay) "today" else Hub.whenText(e.begin, now)) + "  " + e.title) to 0
+        }
+        if (hubSaid.isNotEmpty()) {
+            r += "" to 0
+            r += " › $hubSaid" to 1
+        }
+        return r
+    }
+
+    private fun hubPrompt(what: String) = when (what) {
+        "timer" -> "how long? (5, 90s, 1:30, 1h30)"
+        "alarm" -> "what time? (7:30, 6:45p, 19:00)"
+        "reminder" -> "when, what? (20 call mom, 7:30p dinner)"
+        else -> "type it, Enter keeps it"
+    }
+
+    private fun hubDraw() {
+        if (glassesWith == null || Session.overlay != Panels.HUB) return
+        val items = hubRows()
+        if (settings.show == Settings.SCREEN) {
+            val st = Native.screenStats()
+            if (st[5] <= 0 || st[6] <= 0) return
+            val art = Panels.hubArt(st[5], st[6], items)
+            Native.overlay(null, null, false)
+            Native.screenOverlay(art.pixels, art.w, art.h, art.x, art.y)
+            Session.overlayGen++
+            screen?.poke()
+            remote?.poke()
+        } else {
+            val g = region()
+            val cols = if (g[2] > 0) g[0] / g[2] else settings.cols
+            val rows = if (g[3] > 0) g[1] / g[3] else settings.rows
+            val c = Panels.hubLines(cols, rows, items)
+            Native.screenOverlay(null, 0, 0, 0, 0)
+            Native.overlay(c.lines.toTypedArray(), c.marks.toIntArray(), true)
+        }
+    }
+
+    // A letter on the hub: lower case does it, upper case (Shift) takes it back.
+    private fun hubKey(k: String) {
+        if (!Session.hub) return
+        when (k) {
+            "t" -> hubAsk("timer")
+            "T" -> { Timer.reset(); hubSaid = "timer stopped" }
+            "p" -> hubSaid = if (Timer.running || Timer.remaining() > 0) {
+                Timer.toggle()
+                if (Timer.running) "timer going on" else "timer paused"
+            } else "no timer: T sets one"
+            "s" -> { Hub.stopwatchToggle(); hubSaid = if (Hub.stopwatchRunning) "stopwatch going" else "stopwatch stopped" }
+            "S" -> { Hub.stopwatchReset(); hubSaid = "stopwatch zeroed" }
+            "a" -> hubAsk("alarm")
+            "r" -> hubAsk("reminder")
+            "R" -> hubSaid = Hub.dropReminder(this)?.let { "reminder dropped: ${it.text}" } ?: "no reminder to drop"
+            "n" -> hubAsk("note")
+            "N" -> hubSaid = Hub.dropNote(this)?.let { "note dropped: $it" } ?: "no note to drop"
+        }
+        dash()
+        hubDraw()
+        work.removeCallbacks(hubTick)
+        work.postDelayed(hubTick, 500)
+    }
+
+    private fun hubAsk(what: String) {
+        hubInput = what
+        hubText = ""
+        Session.hubTyping = true
+    }
+
+    private fun hubChar(code: Int) {
+        if (hubInput.isEmpty() || code < 32) return
+        hubText = (hubText + String(Character.toChars(code))).take(120)
+        hubDraw()
+    }
+
+    private fun hubDel() {
+        if (hubInput.isEmpty()) return
+        hubText = hubText.dropLast(1)
+        hubDraw()
+    }
+
+    private fun hubEsc() {
+        if (hubInput.isEmpty()) return hubClose()
+        hubInput = ""
+        hubText = ""
+        Session.hubTyping = false
+        hubDraw()
+    }
+
+    // Enter: what was typed done; a time it cannot read keeps the line to fix.
+    private fun hubEnter() {
+        val t = hubText.trim()
+        hubSaid = when (hubInput) {
+            "timer" -> when (val d = Hub.duration(t)) {
+                null -> return hubWrong("timer: like 5, 90s, 1:30 or 1h30")
+                0L -> { Timer.reset(); "timer off" }
+                else -> { Timer.set(d); "timer set: ${Timer.text(d)}" }
+            }
+            "alarm" -> Hub.alarm(t)?.let { (h, m) -> setAlarm(h, m) } ?: return hubWrong("alarm: like 7:30, 6:45p or 19:00")
+            "reminder" -> Hub.reminder(t)?.let { (at, words) ->
+                Hub.addReminder(this, at, words)
+                "reminder at ${Hub.whenText(at)}: $words"
+            } ?: return hubWrong("reminder: like 20 call mom or 7:30p dinner")
+            "note" -> if (t.isEmpty()) return hubWrong("note: type something first") else { Hub.addNote(this, t); "note kept" }
+            else -> return
+        }
+        Log.i(TAG, "hub: $hubInput done")
+        hubInput = ""
+        hubText = ""
+        Session.hubTyping = false
+        dash()
+        hubDraw()
+    }
+
+    private fun hubWrong(why: String) {
+        hubSaid = why
+        hubDraw()
+    }
+
+    // An alarm in the phone's clock app (it rings there, as one set by hand).
+    private fun setAlarm(hour: Int, minute: Int): String = runCatching {
+        startActivity(Intent(android.provider.AlarmClock.ACTION_SET_ALARM)
+            .putExtra(android.provider.AlarmClock.EXTRA_HOUR, hour)
+            .putExtra(android.provider.AlarmClock.EXTRA_MINUTES, minute)
+            .putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, "Vox")
+            .putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        Log.i(TAG, "hub: alarm asked for ${Hub.clockText(hour, minute)}")
+        "alarm set for ${Hub.clockText(hour, minute)} (the phone's clock)"
+    }.getOrElse { "alarm: the clock app did not take it (${it.message})" }
+
+    // A timer's end or a reminder: on the glasses for 8 s (the display on for it), the phone buzzes, and a
+    // notification stays on the phone.
+    private var alertId = 0
+    private fun alert(title: String, text: String) {
+        Log.i(TAG, "alert: $title")
+        if (Session.blank) display(true, "alert")
+        note(if (text.isEmpty()) title else "$title: $text", 8000)
+        runCatching {
+            val v = getSystemService(android.os.VibratorManager::class.java).defaultVibrator
+            v.vibrate(android.os.VibrationEffect.createWaveform(longArrayOf(0, 350, 150, 350, 150, 350), -1))
+        }
+        runCatching {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(NotificationChannel(ALERTS, "Timers and reminders", NotificationManager.IMPORTANCE_HIGH))
+            manager.notify(ALERT_ID + (alertId++ % 20), android.app.Notification.Builder(this, ALERTS)
+                .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setAutoCancel(true)
+                .build())
+        }
     }
 
     // Alt+= / -: brighter or dimmer, a seventh of the range a press.
@@ -3245,9 +3496,10 @@ class ScouterService : Service() {
         override fun run() {
             work.postDelayed(this, 1000)
             if (Timer.ended()) {
-                voiceSay("\u23F0 Time's up")
+                alert("Time's up", "the timer ended")
                 dash()
             }
+            for (r in Hub.due(this@ScouterService)) alert("Reminder", r.text)
             if (settings.dashRows == 0 || !Session.shown || settings.show != Settings.TERMINAL) return
             val types = Dashboard.layout(settings).widgets.map { it.type }
             if ((Media.now?.playing == true && Dashboard.MEDIA in types) || (Timer.running && Dashboard.TIMER in types)) dash()
@@ -3503,6 +3755,8 @@ class ScouterService : Service() {
         const val ACTION_STOP_SHARING = "scouterkit.ssh.STOP_SHARING" // screen sharing ends
         const val LOW_BRIGHTNESS = 4 // a tenth of 42
         const val TV_IDLE_MS = 5 * 60_000L
+        const val ALERTS = "alerts" // the notification channel of timers and reminders
+        const val ALERT_ID = 4000
         const val SLIDE_IDLE_MS = 90L // a two-finger swipe ends when its wheels are still this long
         const val SLIDE_SPEED_MS = 80f // its speed at the end: over its last moves this long
         const val CAR_GONE_MS = 20_000L

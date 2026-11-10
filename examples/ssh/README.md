@@ -468,6 +468,14 @@ with the app in the back.
 
 ## TV remote, low battery, preview
 
+- **Alt+G** opens the hub on the glasses (`Hub.kt`, `Panels.HUB`), over whatever shows: the time and weather, then
+  one letter each: **T** a timer (type 5, 90s, 1:30 or 1h30, Enter), **P** pause or go on, **S** a stopwatch, **A** an
+  alarm in the phone's clock app (7:30, 6:45p, 19:00; it rings there), **R** a reminder ("20 call mom", "7:30p
+  dinner"), **N** a note; Shift with the letter takes it back (stops the timer, zeroes the stopwatch, drops the
+  next reminder or the newest note). It shows the next alarm, the reminders, the newest notes and the next two
+  calendar events. A timer's end or a reminder shows on the glasses for 8 s (the display on for it), buzzes the
+  phone and leaves a notification. Notes and reminders stay in Vox's private settings; Esc closes the hub.
+
 - **Alt+Y** turns the keyboard into a Vizio SmartCast TV's remote (the TV is not one of the screens you switch
   between), and the glasses show the remote meanwhile (`Panels.TV`: the arrows and OK as a pad, the other keys as a
   list, how the TV is; the key pressed lights up): arrows, Enter = OK, Backspace/Esc = Back, H = Home, +/- = volume, M = mute, Space = play/pause,

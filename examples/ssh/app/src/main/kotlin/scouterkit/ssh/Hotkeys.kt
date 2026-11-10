@@ -119,6 +119,36 @@ object Hotkeys {
             ScouterService.send(context, ScouterService.ACTION_REPLY, "key" to what)
             return true
         }
+        // The hub open (Alt+G): its letters (Shift: take back), and the typing one of them asks for (Enter keeps it,
+        // Esc goes back); Alt shortcuts go on as ever.
+        if (Session.hub && !e.isAltPressed && !e.isCtrlPressed && !e.isMetaPressed) {
+            if (e.action != KeyEvent.ACTION_DOWN) return true
+            fun hub(what: String) = ScouterService.send(context, ScouterService.ACTION_PANEL, "do" to what)
+            if (Session.hubTyping) {
+                when (e.keyCode) {
+                    KeyEvent.KEYCODE_ESCAPE -> hub("hubesc")
+                    KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> hub("hubenter")
+                    KeyEvent.KEYCODE_DEL -> hub("hubdel")
+                    else -> e.getUnicodeChar(e.metaState).takeIf { it >= 32 }?.let { hub("hubchar:$it") }
+                }
+                return true
+            }
+            if (e.repeatCount > 0) return true
+            val letter = when (e.keyCode) {
+                KeyEvent.KEYCODE_T -> "t"
+                KeyEvent.KEYCODE_P -> "p"
+                KeyEvent.KEYCODE_S -> "s"
+                KeyEvent.KEYCODE_A -> "a"
+                KeyEvent.KEYCODE_R -> "r"
+                KeyEvent.KEYCODE_N -> "n"
+                KeyEvent.KEYCODE_ESCAPE -> return true.also { hub("hubesc") }
+                else -> return true
+            }
+            // The ones that ask take typing at once (the next key may come before the hub has answered).
+            if (!e.isShiftPressed && letter in listOf("t", "a", "r", "n")) Session.hubTyping = true
+            hub("hubkey:" + if (e.isShiftPressed) letter.uppercase() else letter)
+            return true
+        }
         // The TV remote on (Alt+Y): the keyboard is the TV's remote (Vizio.LAYOUT); Alt shortcuts go on as ever.
         if (Session.tvKeys && !e.isAltPressed && !e.isCtrlPressed && !e.isMetaPressed) {
             val down = e.action == KeyEvent.ACTION_DOWN
@@ -251,6 +281,7 @@ object Hotkeys {
             KeyEvent.KEYCODE_B -> "lowbat"
             KeyEvent.KEYCODE_Y -> "tv"
             KeyEvent.KEYCODE_F -> "tvtab"
+            KeyEvent.KEYCODE_G -> "hub"
             KeyEvent.KEYCODE_D -> "demo"
             KeyEvent.KEYCODE_COMMA -> "media:prev"
             KeyEvent.KEYCODE_PERIOD -> "media:next"
