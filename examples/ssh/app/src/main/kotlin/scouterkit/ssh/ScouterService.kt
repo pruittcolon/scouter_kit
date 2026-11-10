@@ -2564,8 +2564,27 @@ class ScouterService : Service() {
     // The newest line of a voice not named yet (among those shown): its voice group and label.
     private fun listenVoice(): Listen.Heard? = Listen.recent(40).dropLast(listenBack).lastOrNull { it.voice.isNotEmpty() }
 
-    private var listenName: StringBuilder? = null // the name being typed (N)
+    private var listenName: StringBuilder? = null // what is being typed: a name (N) or a question (A, D)
     private var listenNaming: Listen.Heard? = null
+    private var listenFor = "" // "name", "ask", "deep"
+    private var listenQuestion = ""
+    private var listenAnswer = "" // the answer to the last question, as it comes ("" none)
+
+    // A question about the transcript (Search.ask, on the phone's LFM2.5): the answer grows on the panel.
+    private fun listenAsk(q: String, deep: Boolean) {
+        listenQuestion = q
+        listenAnswer = "thinking…"
+        listenDraw()
+        Thread {
+            val got = runCatching {
+                Search.ask(this, q, deep) { t -> work.post { listenAnswer = t.ifEmpty { "thinking…" }; listenSoon() } }
+            }.getOrElse { "it stopped: ${it.message}" }
+            work.post {
+                listenAnswer = got ?: "no language model yet: Vox, Voice tab, Listen mode, AI models"
+                listenDraw()
+            }
+        }.start()
+    }
 
     private fun listenChar(code: Int) {
         val n = listenName ?: return
@@ -2593,9 +2612,11 @@ class ScouterService : Service() {
         listenName?.let { name ->
             when (k) {
                 "enter" -> {
-                    val h = listenNaming
                     val n = name.toString().trim()
-                    if (h != null && n.isNotEmpty()) listenAssign(h, n, n.equals("me", true) || n.equals("you", true))
+                    if (listenFor == "name") {
+                        val h = listenNaming
+                        if (h != null && n.isNotEmpty()) listenAssign(h, n, n.equals("me", true) || n.equals("you", true))
+                    } else if (n.isNotEmpty()) listenAsk(n, listenFor == "deep")
                     listenName = null
                     Session.listenTyping = false
                 }
@@ -2613,9 +2634,15 @@ class ScouterService : Service() {
                 val h = listenVoice() ?: run { listenSaid = "no unnamed voice in view"; null }
                 if (h != null) {
                     listenNaming = h
+                    listenFor = "name"
                     listenName = StringBuilder()
                     Session.listenTyping = true
-                }
+                } else Session.listenTyping = false
+            }
+            "a", "d" -> {
+                listenFor = if (k == "d") "deep" else "ask"
+                listenName = StringBuilder()
+                Session.listenTyping = true
             }
             "m" -> listenVoice()?.let { listenAssign(it, "You", true) } ?: run { listenSaid = "no unnamed voice in view" }
             "o" -> if (Listen.on || ListenService.running) {
@@ -2636,7 +2663,7 @@ class ScouterService : Service() {
             "down" -> listenBack = maxOf(0, listenBack - 1)
             "pgup" -> listenBack += 8
             "pgdn" -> listenBack = maxOf(0, listenBack - 8)
-            "esc" -> return listenClose()
+            "esc" -> if (listenAnswer.isNotEmpty()) listenAnswer = "" else return listenClose()
         }
         listenDraw()
     }
@@ -2655,12 +2682,18 @@ class ScouterService : Service() {
             Listen.paused -> "paused (P listens again)"
             else -> Listen.state
         }
-        framePanel(Panels.LISTEN, "VOX//LISTEN", "Esc closes", "O on/off · P pause · ↑↓ earlier · N name a voice · M that's me") { width, max ->
+        framePanel(Panels.LISTEN, "VOX//LISTEN", "Esc closes", "O on/off · P pause · N name · M me · A ask · D ask deep") { width, max ->
             val rows = mutableListOf<Pair<String, Int>>()
             rows += ("▌▌ LISTEN ▐░▒▓ ${Listen.today} lines today · $head" + if (listenSaid.isNotEmpty()) " · $listenSaid" else "") to 1
             listenName?.let { n ->
-                rows += " ■ Who is ${listenNaming?.who?.ifEmpty { "this voice" }}? Type the name (or me), Enter, Esc no" to 3
+                rows += (if (listenFor == "name") " ■ Who is ${listenNaming?.who?.ifEmpty { "this voice" }}? Type the name (or me), Enter, Esc no"
+                    else " ■ Ask ${if (listenFor == "deep") "(deep)" else ""} about what was said: type, Enter, Esc no") to 3
                 rows += "   › $n█" to 1
+            }
+            if (listenAnswer.isNotEmpty() && listenName == null) {
+                rows += " ■ $listenQuestion" to 3
+                for (l in Panels.wrap(listenAnswer, maxOf(10, width - 2)).takeLast(maxOf(1, max - rows.size - 3))) rows += " $l" to 0
+                rows += "" to 0
             }
             val fmt = java.text.SimpleDateFormat("h:mm", java.util.Locale.US)
             val body = mutableListOf<Pair<String, Int>>()

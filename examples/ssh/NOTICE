@@ -14,6 +14,11 @@ It includes:
   (https://onnxruntime.ai) linked into it: MIT (licenses/onnxruntime.txt). Voice commands only. The speech
   models are not in the app: it downloads NVIDIA's Parakeet TDT 0.6B v2 (CC-BY-4.0, as converted for
   sherpa-onnx) and Silero VAD (MIT) when asked, checked by SHA-256.
+- llama.cpp v0.9.0 with ggml (https://github.com/ggml-org/llama.cpp, fetched by native/third_party/fetch_llama.sh):
+  MIT (licenses/llama.cpp.txt), in libvox_llm.so (Listen mode's search and answers). The models are not in the
+  app: it downloads Liquid AI's LFM2.5 GGUF files (LFM Open License v1.0) and Google's EmbeddingGemma 300M (Gemma
+  Terms of Use) when asked, at pinned revisions, checked by SHA-256. The voiceprint models (WeSpeaker, Apache-2.0,
+  as converted for sherpa-onnx) likewise.
 - liblc3 1.1.3 (https://github.com/google/liblc3): Apache-2.0 (licenses/liblc3.txt, scouter_kit/third_party/liblc3),
   for the glasses' microphone.
 - ScouterKit's C++ library (scouter_kit/src): MIT (scouter_kit/LICENSE), with

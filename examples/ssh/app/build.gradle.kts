@@ -12,6 +12,9 @@ val thirdParty: String = providers.gradleProperty("thirdPartyDir")
 // app builds and says voice is not in this build).
 val sherpa: String = providers.gradleProperty("sherpaDir")
     .getOrElse(rootProject.file("native/third_party/sherpa").path)
+// native/third_party/fetch_llama.sh's llama.cpp (the on-phone language models; without it the app says so).
+val llama: String = providers.gradleProperty("llamaDir")
+    .getOrElse(rootProject.file("native/third_party/llama/llama.cpp").path)
 
 // Release signing: only from keystore.properties next to settings.gradle.kts (git-ignored; storeFile,
 // storePassword, keyAlias, keyPassword; storeFile absolute or relative to that file). Without it the release
@@ -29,8 +32,8 @@ android {
         applicationId = "io.github.pruittcolon.scouter" // this fork's ID; the code stays in package scouterkit.ssh (JNI names)
         minSdk = 31
         targetSdk = 34
-        versionCode = 66
-        versionName = "0.64"
+        versionCode = 67
+        versionName = "0.65"
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild {
             // 16 KB pages: newer Android builds may use them; the library loads either way.
@@ -44,7 +47,7 @@ android {
     productFlavors {
         create("glasses") {
             dimension = "arms"
-            externalNativeBuild { cmake { arguments += "-DARMS=glasses" } }
+            externalNativeBuild { cmake { arguments += listOf("-DARMS=glasses", "-DVOX_LLM=ON", "-DLLAMA_DIR=$llama") } }
         }
         create("emulated") {
             dimension = "arms"

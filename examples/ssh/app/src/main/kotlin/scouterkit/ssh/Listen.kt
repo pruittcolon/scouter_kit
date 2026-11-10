@@ -433,6 +433,7 @@ object Listen {
         var lastWork = SystemClock.elapsedRealtime()
         var lastPartial = 0L
         var lastFiles = 0L
+        var lastFill = 0L
         val days = HashSet<Long>()
         try {
             while (on && run == gen) {
@@ -464,6 +465,12 @@ object Listen {
                     days.clear()
                 }
                 if (!due(c, settings)) {
+                    // Quiet moments: meaning vectors for lines without one (every 10 s while charging, else every minute).
+                    if (nowE - lastFill > (if (charging(c)) 10_000L else 60_000L) && !hot(c) && !speaking) {
+                        lastFill = nowE
+                        runCatching { Search.fill(c, if (charging(c)) 60 else 20) }
+                            .onFailure { Log.w(ScouterService.TAG, "listen: vectors: ${it.message}") }
+                    }
                     // Nothing for 10 min: the model leaves memory (it loads again in a few seconds).
                     if (engine != null && nowE - lastWork > 10 * 60_000L && ListenQueue.count(c) == 0) {
                         Parakeet.done("listen")

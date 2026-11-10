@@ -12,3 +12,4 @@
 /keystore.properties
 *.jks
 *.keystore
+/native/third_party/llama/

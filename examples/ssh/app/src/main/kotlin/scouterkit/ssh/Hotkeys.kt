@@ -143,6 +143,8 @@ object Hotkeys {
             }
             val k = when (e.keyCode) {
                 KeyEvent.KEYCODE_N -> { Session.listenTyping = true; "n" }
+                KeyEvent.KEYCODE_A -> { Session.listenTyping = true; "a" }
+                KeyEvent.KEYCODE_D -> { Session.listenTyping = true; "d" }
                 KeyEvent.KEYCODE_M -> "m"
                 KeyEvent.KEYCODE_O, KeyEvent.KEYCODE_SPACE -> "o"
                 KeyEvent.KEYCODE_P -> "p"

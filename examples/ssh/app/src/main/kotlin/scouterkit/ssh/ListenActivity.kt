@@ -48,6 +48,8 @@ class ListenActivity : Activity(), HearingCheck.Ui {
     private lateinit var linesTitle: TextView
     private lateinit var search: EditText
     private lateinit var peopleBox: LinearLayout
+    private lateinit var modelsBox: LinearLayout
+    private lateinit var answer: TextView
     private lateinit var modelLine: TextView
     private lateinit var modelChip: TextView
     private lateinit var recordLine: TextView
@@ -200,6 +202,36 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         peopleBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         who.addView(peopleBox)
 
+        // Ask: an answer from the transcript, on the phone (Liquid's LFM2.5).
+        val askCard = card("Ask", "A question about what was said: \"what did Maria say about the trip?\", \"what did " +
+            "we decide yesterday?\". Quick: the 1.2B model, a few seconds. Deep: the biggest downloaded (8B-A1B thinks first).")
+        val question = field("Question", "", "ask about any day")
+        askCard.addView(question, lp().apply { topMargin = dp(4); bottomMargin = dp(6) })
+        answer = text("", 14.5f, Ui.TEXT).apply { setPadding(0, dp(6), 0, dp(4)); setTextIsSelectable(true) }
+        fun go(deep: Boolean) {
+            val q = question.text.toString().trim()
+            if (q.isEmpty()) return
+            if (!LlmModels.usable()) return run { answer.text = "This phone or build cannot run the models (needs vox_llm and an ARMv8.2 CPU with int8 matrix instructions)." }
+            if (LlmModels.ALL.none { it.role != "embed" && LlmModels.ready(this, it) }) return run { answer.text = "Download a model first (AI models, below)." }
+            answer.text = "Thinking…"
+            Thread {
+                val got = runCatching { Search.ask(this, q, deep) { t -> main.post { answer.text = t.ifEmpty { "Thinking…" } } } }
+                    .getOrElse { "It stopped: ${it.message}" }
+                main.post { answer.text = got ?: "Download a model first (AI models, below)." }
+            }.start()
+        }
+        askCard.addView(chipRow(chip("Ask", true) { go(false) }, chip("Ask deep", false) { go(true) }))
+        askCard.addView(answer)
+        page.addView(askCard)
+
+        // The models.
+        val ai = page.section("AI models", "listen_models", "spark", hint = "On this phone, offline: Liquid's LFM2.5 " +
+            "answers and summarizes, EmbeddingGemma finds by meaning. Wi-Fi is best for the downloads.")
+        modelsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        ai.addView(modelsBox)
+        ai.addToggle(toggle("Search by meaning", "A meaning vector for every line of four words or more, made while the " +
+            "phone is quiet (more often while charging)", settings.listenMeaning) { settings.listenMeaning = it })
+
         // What it heard.
         val heard = card()
         linesTitle = text("TODAY", 11.5f, Ui.MUTED, Ui.BOLD).apply { letterSpacing = 0.14f }
@@ -234,6 +266,46 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         showLines()
         showModel()
         showPeople()
+        showModels()
+    }
+
+    // Each model: what it is for, its size, downloaded or not (Download / Delete).
+    private fun showModels() {
+        modelsBox.removeAllViews()
+        if (!LlmModels.usable()) modelsBox.addView(text("This build or phone cannot run them (vox_llm: ${LlmNative.available}, " +
+            "CPU: ${LlmModels.cpuOk}).", 13f, Ui.WARN))
+        fun gb(b: Long) = if (b >= 1_000_000_000) "%.1f GB".format(Locale.US, b / 1e9) else "${b / 1_000_000} MB"
+        for (m in LlmModels.ALL) {
+            val ready = LlmModels.ready(this, m)
+            val busy = LlmModels.downloading == m.id
+            modelsBox.addView(text(m.name, 15f, Ui.TEXT, Ui.BOLD).apply { setPadding(0, dp(8), 0, 0) })
+            modelsBox.addView(text("${m.about} · ${gb(m.part.size)} · " + when {
+                busy && LlmModels.progress >= 0 -> "downloading ${gb(LlmModels.progress)}"
+                ready -> "ready"
+                LlmModels.problem != null && busy -> "stopped: ${LlmModels.problem}"
+                else -> "not downloaded"
+            }, 12.5f, Ui.MUTED))
+            if (!busy) modelsBox.addView(chipRow(chip(if (ready) "Delete" else "Download", !ready) {
+                if (ready) dialog().setTitle("Delete ${m.name}?").setPositiveButton("Delete") { _, _ ->
+                    LlmModels.delete(this, m)
+                    showModels()
+                }.setNegativeButton("Cancel", null).show()
+                else {
+                    if (LlmModels.downloading.isNotEmpty()) return@chip
+                    Thread {
+                        LlmModels.download(this, m)
+                        main.post { showModels() }
+                    }.start()
+                    val ticker = object : Runnable {
+                        override fun run() {
+                            showModels()
+                            if (LlmModels.downloading.isNotEmpty()) main.postDelayed(this, 1000)
+                        }
+                    }
+                    main.postDelayed(ticker, 300)
+                }
+            }))
+        }
     }
 
     override fun onPause() {
@@ -301,8 +373,10 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         Thread {
             val db = ListenDb.get(this)
             val names = db.names()
+            val hits = if (q.isEmpty()) emptyList() else runCatching { Search.find(this, q, 80) }.getOrDefault(emptyList())
+            val how = hits.associate { it.line.id to (if (it.meaning && !it.words) " · by meaning" else "") }
             val list = if (q.isEmpty()) db.between(ListenDb.dayStart(System.currentTimeMillis()), Long.MAX_VALUE).takeLast(60)
-                else db.search(q, 80)
+                else hits.map { it.line }
             main.post {
                 linesTitle.text = if (q.isEmpty()) "TODAY · ${list.size} LATEST" else "\"$q\" · ${list.size} FOUND"
                 lines.removeAllViews()
@@ -314,7 +388,7 @@ class ListenActivity : Activity(), HearingCheck.Ui {
                         orientation = LinearLayout.VERTICAL
                         setPadding(0, dp(6), 0, dp(6))
                     }
-                    row.addView(text(fmt.format(Date(l.start)) + if (l.quiet) " · quiet" else "", 11.5f, Ui.FAINT))
+                    row.addView(text(fmt.format(Date(l.start)) + (if (l.quiet) " · quiet" else "") + (how[l.id] ?: ""), 11.5f, Ui.FAINT))
                     row.addView(text(who + l.text, 14.5f, if (l.quiet) Ui.MUTED else Ui.TEXT))
                     lines.addView(row, lp())
                 }

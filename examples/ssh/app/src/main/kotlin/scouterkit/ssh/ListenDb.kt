@@ -13,7 +13,7 @@ import java.util.Locale
 // Listen mode's memory (listen.db, the app's private files): conversations (a new one after 5 min without speech),
 // their lines (text, word times, who, how), the people Vox knows by voice and the voices it has not been told about.
 // lines_fts: the lines' words for searching (FTS4, English stemming).
-class ListenDb private constructor(context: Context) : SQLiteOpenHelper(context, "listen.db", null, 2) {
+class ListenDb private constructor(context: Context) : SQLiteOpenHelper(context, "listen.db", null, 3) {
     class Line(
         val id: Long, val conv: Long, val start: Long, val end: Long, val text: String,
         val person: String, val voice: String, val quiet: Boolean, val emotion: String, val sound: String,
@@ -39,10 +39,17 @@ class ListenDb private constructor(context: Context) : SQLiteOpenHelper(context,
         db.execSQL("CREATE TABLE voices(id TEXT PRIMARY KEY, label TEXT NOT NULL, centroid BLOB NOT NULL, " +
             "count INTEGER NOT NULL, updated INTEGER NOT NULL)")
         v2(db)
+        v3(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) v2(db)
+        if (oldVersion < 3) v3(db)
+    }
+
+    // Version 3: a line's meaning vector (EmbeddingGemma, Llm.pack), for search by meaning.
+    private fun v3(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE lines ADD COLUMN vec BLOB")
     }
 
     // Version 2: which voiceprint model made each print (prints of different models do not compare).
@@ -334,6 +341,80 @@ class ListenDb private constructor(context: Context) : SQLiteOpenHelper(context,
             while (c.moveToNext()) Speakers.floats(c.getBlob(1))?.let { out.getOrPut(c.getString(0)) { ArrayList() } += it }
         }
         return out
+    }
+
+    // ------------------------------------------------ meaning vectors (Search.kt)
+
+    // Lines worth a vector (four words or more) without one yet, newest first.
+    fun needVectors(limit: Int): List<Pair<Long, String>> {
+        val out = ArrayList<Pair<Long, String>>()
+        readableDatabase.rawQuery("SELECT id, text FROM lines WHERE vec IS NULL AND length(text) - length(replace(text, ' ', '')) >= 3 " +
+            "ORDER BY start DESC LIMIT $limit", null).use { c -> while (c.moveToNext()) out += c.getLong(0) to c.getString(1) }
+        return out
+    }
+
+    @Synchronized
+    fun setVector(id: Long, packed: ByteArray) {
+        writableDatabase.update("lines", ContentValues().apply { put("vec", packed) }, "id = ?", arrayOf(id.toString()))
+    }
+
+    // Every vector with its line id, in id order from `after` on (for the search index).
+    fun vectors(after: Long, each: (Long, ByteArray) -> Unit) {
+        readableDatabase.rawQuery("SELECT id, vec FROM lines WHERE vec IS NOT NULL AND id > ? ORDER BY id", arrayOf(after.toString())).use { c ->
+            while (c.moveToNext()) each(c.getLong(0), c.getBlob(1))
+        }
+    }
+
+    fun lines(ids: List<Long>): List<Line> = if (ids.isEmpty()) emptyList() else
+        lines("WHERE id IN (${ids.joinToString(",")})", emptyArray(), "start", ids.size)
+
+    // The lines around one (the same conversation), for context.
+    fun around(id: Long, before: Int, after: Int): List<Line> {
+        val l = line(id) ?: return emptyList()
+        return lines("WHERE conv = ? AND start < ?", arrayOf(l.conv.toString(), l.start.toString()), "start DESC", before).reversed() +
+            listOf(l) + lines("WHERE conv = ? AND start > ?", arrayOf(l.conv.toString(), l.start.toString()), "start", after)
+    }
+
+    // The words search ranked: matches of all the words, the best (FTS4's own counts: more of the words, rarer
+    // words) first, then newer.
+    fun searchRanked(query: String, limit: Int): List<Long> {
+        val words = query.lowercase(Locale.US).split(Regex("[^\\p{L}\\p{N}']+")).map { it.replace("'", "") }.filter { it.length > 1 }
+        if (words.isEmpty()) return emptyList()
+        val out = ArrayList<Pair<Long, Double>>()
+        for (match in listOf(words.joinToString(" "), words.joinToString(" OR "))) {
+            runCatching {
+                readableDatabase.rawQuery("SELECT docid, matchinfo(lines_fts, 'pcnalx') FROM lines_fts WHERE lines_fts MATCH ? " +
+                    "ORDER BY docid DESC LIMIT 2000", arrayOf(match)).use { c ->
+                    while (c.moveToNext()) {
+                        val id = c.getLong(0)
+                        if (out.any { it.first == id }) continue
+                        out += id to bm25(c.getBlob(1))
+                    }
+                }
+            }
+            if (out.size >= limit) break
+        }
+        return out.sortedByDescending { it.second }.take(limit).map { it.first }
+    }
+
+    // BM25 from FTS4's matchinfo('pcnalx'): p phrases, c columns, n rows, a average length, l this length, x hits.
+    private fun bm25(info: ByteArray): Double {
+        val bb = java.nio.ByteBuffer.wrap(info).order(java.nio.ByteOrder.nativeOrder())
+        val ints = IntArray(info.size / 4) { bb.int }
+        val p = ints[0]
+        val cols = ints[1]
+        val n = ints[2].toDouble()
+        val avg = ints[3].toDouble().coerceAtLeast(1.0)
+        val len = ints[3 + cols].toDouble()
+        var score = 0.0
+        for (i in 0 until p) {
+            val at = 3 + 2 * cols + i * 3 * cols
+            val hits = ints[at].toDouble()
+            val docs = ints[at + 2].toDouble()
+            val idf = kotlin.math.ln(1 + (n - docs + 0.5) / (docs + 0.5))
+            score += idf * hits * 2.2 / (hits + 1.2 * (0.25 + 0.75 * len / avg))
+        }
+        return score
     }
 
     fun line(id: Long): Line? = lines("WHERE id = ?", arrayOf(id.toString()), "start", 1).firstOrNull()

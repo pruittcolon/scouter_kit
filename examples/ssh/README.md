@@ -510,6 +510,14 @@ with the app in the back.
   ends, its voice groups that sound alike merge (voiceprints only, no audio again). People: "Record my voice" (30 s,
   the Rainbow Passage), "Remember this voice" after the quiet-voice check (marked soft), naming a voice group on the
   phone or on the glasses (N types a name, M "that's me").
+  Search and ask (`Search.kt`, `Llm.kt`, `native/llm_jni.cpp`): llama.cpp (`native/third_party/fetch_llama.sh`,
+  pinned) in its own library `vox_llm` (glasses flavor; ARMv8.2 + dot product + int8 matrix multiply, checked on
+  the phone) runs GGUF models downloaded on the Listen page (pinned revisions, SHA-256): Liquid's LFM2.5 1.2B
+  (quick), 2.6B and 8B-A1B (deep; its thinking is hidden) and EmbeddingGemma 300M. Search is words (FTS4 with BM25
+  from matchinfo) plus meaning (a 256-dimension int8 EmbeddingGemma vector per line of four words or more, made in
+  quiet moments), fused by reciprocal rank; meaning only for two or more real words and within Vox Amelior's
+  calibration. Ask finds the lines (or a named time's: today, yesterday, last week, a weekday...) and LFM2.5
+  answers from them with times and names; on the glasses, A asks (D the deep model) in VOX//LISTEN.
 - **Alt+N** (or **E** on the hub) opens the text editor on the glasses (`Editor.kt`, `Panels.EDITOR`): the .txt and
   .md files in Vox's folder `Android/data/<app id>/files/docs` (copy files there from a computer or with `adb push`),
   newest first; the arrows pick, Enter opens, N makes a new one. A file's lines wrap at the panel's width, a ▌ is the
