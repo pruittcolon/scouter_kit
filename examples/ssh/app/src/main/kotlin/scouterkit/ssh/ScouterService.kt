@@ -59,6 +59,7 @@ object Session {
     @Volatile var home = false // the smart home panel is open (Alt+O)
     @Volatile var people = false // the calls and texts panel is open (Alt+J)
     @Volatile var peopleTyping = false // it takes typing (a text)
+    @Volatile var editor = false // the text editor is open (Alt+N): it takes the keys
     @Volatile var car = "" // Car mode: "" off, else its state (idle, listening, thinking, speaking)
     @Volatile var carName = "" // the car connected (its Bluetooth name), or ""
     @Volatile var pointer = false // the pointer is on (its keys move and click it)
@@ -460,6 +461,8 @@ class ScouterService : Service() {
         LookUp.onChange = null
         work.removeCallbacks(headerTick)
         work.removeCallbacks(tabPoll)
+        work.removeCallbacks(editorTick)
+        runCatching { editor?.save() }
         Thread { Bootstrap.dropShared() }.start()
         runCatching { dim?.release() } // pocket mode's screen lock
         dim = null
@@ -1091,6 +1094,7 @@ class ScouterService : Service() {
     // pointer is off only shows it.
     private fun trackpad(kind: Int, dx: Float, dy: Float) {
         if (Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS) return panelTrackpad(kind, dy)
+        if (Session.overlay == Panels.EDITOR) return editorTrackpad(kind, dy)
         if (onLaptop()) return laptopTrackpad(kind, dx, dy)
         if (onPhone()) return phoneTrackpad(kind, dx, dy)
         if (pressed || sliding) { // the phone's screen went from the glasses with a finger still on it
@@ -1517,6 +1521,8 @@ class ScouterService : Service() {
             what == "tvstop" -> tvTab(stop = true)
             what.startsWith("tv:") -> tvKey(what.removePrefix("tv:"))
             what == "hub" -> hubOpen()
+            what == "editor" -> editorOpen()
+            what.startsWith("edkey:") -> editorKey(what.removePrefix("edkey:"))
             what == "captions" || what == "translate" -> captions(what)
             what == "capesc" -> if (Session.captions.isNotEmpty()) captionsStop("")
             what == "home" -> homeOpen()
@@ -1578,6 +1584,7 @@ class ScouterService : Service() {
             Panels.HUB -> { hubSaid = text; return hubDraw() }
             Panels.HOME -> { homeSaid = text; return homeDraw() }
             Panels.PEOPLE -> { peopleSaid = text; return peopleDraw() }
+            Panels.EDITOR -> { editor?.said = text; return editorDraw() }
             Panels.CAPTIONS -> { capState = text; return captionsDraw() }
         }
         if (Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS) return panelDraw()
@@ -1598,6 +1605,7 @@ class ScouterService : Service() {
             Session.hub -> Panels.HUB
             Session.home -> Panels.HOME
             Session.people -> Panels.PEOPLE
+            Session.editor -> Panels.EDITOR
             Session.captions.isNotEmpty() -> Panels.CAPTIONS
             Session.tvKeys -> Panels.TV
             Session.voiceMode -> Panels.VOICE
@@ -1671,6 +1679,7 @@ class ScouterService : Service() {
             Panels.CAPTIONS -> return captionsDraw()
             Panels.HOME -> return homeDraw()
             Panels.PEOPLE -> return peopleDraw()
+            Panels.EDITOR -> return editorDraw()
             else -> null // the help: laid out for each
         }
         if (onScreen) {
@@ -1702,7 +1711,7 @@ class ScouterService : Service() {
     private fun forceApply() {
         val brief = Session.overlay == Panels.HELP || Session.overlay == Panels.SETTINGS || Session.overlay == Panels.NOTE ||
             Session.overlay == Panels.INTRO || Session.overlay == Panels.HUB || Session.overlay == Panels.CAPTIONS ||
-            Session.overlay == Panels.HOME || Session.overlay == Panels.PEOPLE
+            Session.overlay == Panels.HOME || Session.overlay == Panels.PEOPLE || Session.overlay == Panels.EDITOR
         val held = Session.overlay.isNotEmpty() || Session.keyer == "keys" || Session.keyer == KEYBOARD
         Native.force(forced || brief || (settings.phoneForce && held))
     }
@@ -1993,6 +2002,7 @@ class ScouterService : Service() {
         if (keep != Panels.HUB && Session.hub) hubClose()
         if (keep != Panels.HOME && Session.home) homeClose()
         if (keep != Panels.PEOPLE && Session.people) peopleClose()
+        if (keep != Panels.EDITOR && Session.editor) editorClose()
     }
 
     private fun panelUp(kind: String) {
@@ -2408,6 +2418,86 @@ class ScouterService : Service() {
         }
     }
 
+    // ------------------------------------------------ the text editor (Alt+N, or E on the hub; Editor.kt)
+
+    // Plain text files on the glasses: the files in Vox's docs folder, then one to read and edit from the keyboard
+    // (saved by itself 2 s after the last edit, and when it closes). The file stays open for the next Alt+N.
+    private var editor: Editor? = null
+    private var editorSwipe = 0f
+
+    private fun editorOpen() {
+        if (glassesWith == null) return
+        if (Session.overlay == Panels.EDITOR) return editorClose()
+        panelsAway(Panels.EDITOR)
+        val ed = editor ?: Editor(java.io.File(getExternalFilesDir(null) ?: filesDir, "docs")).also { editor = it }
+        ed.refresh()
+        ed.reloadIfChanged()
+        Session.editor = true
+        panelUp(Panels.EDITOR)
+        editorDraw()
+        work.removeCallbacks(editorTick)
+        work.postDelayed(editorTick, 1000)
+        Session.changed()
+    }
+
+    private fun editorClose() {
+        editor?.save()
+        Session.editor = false
+        work.removeCallbacks(editorTick)
+        if (Session.overlay == Panels.EDITOR) panelClose()
+        Session.changed()
+    }
+
+    // Edits saved 2 s after the last one.
+    private val editorTick = object : Runnable {
+        override fun run() {
+            val ed = editor ?: return
+            if (!Session.editor) return
+            if (ed.due()) {
+                ed.save()
+                editorDraw()
+            }
+            work.postDelayed(this, 1000)
+        }
+    }
+
+    // A key (Hotkeys: "code:meta:char").
+    private fun editorKey(spec: String) {
+        val ed = editor ?: return
+        if (!Session.editor) return
+        val p = spec.split(':')
+        val code = p.getOrNull(0)?.toIntOrNull() ?: return
+        if (!ed.key(code, p.getOrNull(1)?.toIntOrNull() ?: 0, p.getOrNull(2)?.toIntOrNull() ?: 0)) return editorClose()
+        editorDraw()
+    }
+
+    // The trackpad's wheel and two-finger slides scroll the file (or walk the list).
+    private fun editorTrackpad(kind: Int, dy: Float) {
+        val ed = editor ?: return
+        when (kind) {
+            VoxKeys.Trackpad.WHEEL -> if (dy != 0f) ed.scroll(if (dy > 0) -3 else 3) else return
+            VoxKeys.Trackpad.SCROLL -> {
+                editorSwipe += dy
+                var n = 0
+                while (kotlin.math.abs(editorSwipe) >= 30f) {
+                    n += if (editorSwipe > 0) -1 else 1
+                    editorSwipe -= if (editorSwipe > 0) 30f else -30f
+                }
+                if (n == 0) return
+                ed.scroll(n)
+            }
+            else -> return
+        }
+        editorDraw()
+    }
+
+    private fun editorDraw() {
+        val ed = editor ?: return
+        val foot = if (ed.file == null) "↑↓ pick · Enter opens · N new file · R reload · Esc closes"
+            else "type to edit · PgUp/PgDn page · Ctrl+S save · Ctrl+Z undo · Esc files"
+        framePanel(Panels.EDITOR, "VOX//EDITOR", "Alt+N closes", foot) { width, max -> ed.rows(width, max) }
+    }
+
     // ------------------------------------------------ the hub (Alt+G; Hub.kt)
 
     // The everyday tools on the glasses (Panels.HUB, over whatever shows): the time, the timer (Timer), the
@@ -2485,6 +2575,7 @@ class ScouterService : Service() {
         item("R", "Reminder", if (rem.isEmpty()) "none" else "${rem.size}: next ${Hub.whenText(rem[0].at, now)} ${rem[0].text}", "reminder")
         val notes = Hub.notes(this)
         item("N", "Note", if (notes.isEmpty()) "none yet" else "${notes.size} kept   (Shift+N drops the newest)", "note")
+        item("E", "Editor", "text files on the glasses (Alt+N)", null)
         if (notes.isNotEmpty()) {
             r += "" to 0
             r += "▌▌ NOTES ▐░▒▓" to 1
@@ -2549,6 +2640,7 @@ class ScouterService : Service() {
             "R" -> hubSaid = Hub.dropReminder(this)?.let { "reminder dropped: ${it.text}" } ?: "no reminder to drop"
             "n" -> hubAsk("note")
             "N" -> hubSaid = Hub.dropNote(this)?.let { "note dropped: $it" } ?: "no note to drop"
+            "e" -> return editorOpen()
         }
         dash()
         hubDraw()

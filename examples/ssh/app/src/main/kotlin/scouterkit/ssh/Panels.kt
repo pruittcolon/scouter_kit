@@ -21,6 +21,7 @@ object Panels {
     const val CAPTIONS = "captions" // live captions (Alt+E) or translation (Alt+I)
     const val HOME = "home" // smart home: the TVs, Home Assistant's lights, switches, thermostats (Alt+O)
     const val PEOPLE = "people" // calls and texts to the starred contacts (Alt+J)
+    const val EDITOR = "editor" // the text editor: .txt files in Vox's docs folder (Alt+N)
 
     // The hotkeys by group: the keys, what they do. The help on the glasses and the app's Hotkeys page.
     val GROUPS: List<Pair<String, List<Pair<String, String>>>> = listOf(
@@ -69,6 +70,7 @@ object Panels {
             "Alt+I" to "translate to English",
             "Alt+O" to "smart home",
             "Alt+J" to "calls and texts",
+            "Alt+N" to "text editor (.txt files)",
         ),
     )
     private const val LEFT_GROUPS = 3 // Screens, Display, Media in the left column
@@ -392,7 +394,7 @@ object Panels {
             lines += "┃ " + t.take(w - 4).padEnd(w - 4) + " ┃"
             marks += m
         }
-        val foot = "┗━ ▓▒░ T timer · P pause · S watch · A alarm · R remind · N note "
+        val foot = "┗━ ▓▒░ T timer · P pause · S watch · A alarm · R remind · N note · E editor "
         val end = "░▒▓ ━┛"
         lines += (foot + "━".repeat(maxOf(0, w - foot.length - end.length)) + end).take(w); marks += 2
         return Content(lines.take(maxOf(3, rows)), marks.take(maxOf(3, rows)), true)
@@ -426,7 +428,7 @@ object Panels {
         }
         c.drawLine(2f, h - 26f, 22f, h - 26f, line); c.drawLine(2f, h - 26f, 2f, h - 4f, line)
         c.drawLine(w - 2f, h - 26f, w - 22f, h - 26f, line); c.drawLine(w - 2f, h - 26f, w - 2f, h - 4f, line)
-        c.drawText("T timer · P pause · S stopwatch · A alarm · R remind · N note · Shift: undo", 30f, h - 10f, paint(12f))
+        c.drawText("T timer · P pause · S stopwatch · A alarm · R remind · N note · E editor · Shift: undo", 30f, h - 10f, paint(12f))
         return Art(pixels(b), w, h, 0, 0)
     }
 

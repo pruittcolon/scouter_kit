@@ -489,6 +489,13 @@ with the app in the back.
   next reminder or the newest note). It shows the next alarm, the reminders, the newest notes and the next two
   calendar events. A timer's end or a reminder shows on the glasses for 8 s (the display on for it), buzzes the
   phone and leaves a notification. Notes and reminders stay in Vox's private settings; Esc closes the hub.
+- **Alt+N** (or **E** on the hub) opens the text editor on the glasses (`Editor.kt`, `Panels.EDITOR`): the .txt and
+  .md files in Vox's folder `Android/data/<app id>/files/docs` (copy files there from a computer or with `adb push`),
+  newest first; the arrows pick, Enter opens, N makes a new one. A file's lines wrap at the panel's width, a ▌ is the
+  cursor: typing edits, the arrows, Home / End, Page Up / Down and the trackpad's wheel move, Ctrl+arrows by words,
+  Ctrl+Backspace a word, Ctrl+Z undo, Ctrl+S saves (it also saves 2 s after the last edit and when it closes); Esc
+  goes back to the files, Alt+N closes it with the file kept open for next time. A file changed on disk shows again
+  as it is now when nothing here is unsaved. On the phone's screen Alt+N stays Android's notifications: use the hub.
 
 - **Alt+Y** turns the keyboard into a Vizio SmartCast TV's remote (the TV is not one of the screens you switch
   between), and the glasses show the remote meanwhile (`Panels.TV`: the arrows and OK as a pad, the other keys as a

@@ -121,6 +121,14 @@ object Hotkeys {
         }
         val bare = !e.isAltPressed && !e.isCtrlPressed && !e.isMetaPressed
         fun act(what: String) = ScouterService.send(context, ScouterService.ACTION_PANEL, "do" to what)
+        // The text editor open (Alt+N): every key without Alt is its own (typing, the arrows, Page Up / Down,
+        // Ctrl+S save, Ctrl+Z undo, Esc back to the files); Alt shortcuts go on as ever.
+        if (Session.editor && !e.isAltPressed && !e.isMetaPressed) {
+            if (e.action != KeyEvent.ACTION_DOWN || KeyEvent.isModifierKey(e.keyCode)) return true
+            val ch = if (e.isCtrlPressed) 0 else e.getUnicodeChar(e.metaState)
+            act("edkey:${e.keyCode}:${e.metaState}:$ch")
+            return true
+        }
         // Smart home open (Alt+O): the arrows or 1 ... 9 pick, Enter / Space on or off, + / - up and down, M mute,
         // H home, R ask again, Esc closes.
         if (Session.home && bare) {
@@ -195,6 +203,7 @@ object Hotkeys {
                 KeyEvent.KEYCODE_A -> "a"
                 KeyEvent.KEYCODE_R -> "r"
                 KeyEvent.KEYCODE_N -> "n"
+                KeyEvent.KEYCODE_E -> "e"
                 KeyEvent.KEYCODE_ESCAPE -> return true.also { hub("hubesc") }
                 else -> return true
             }
@@ -340,6 +349,7 @@ object Hotkeys {
             KeyEvent.KEYCODE_I -> "translate"
             KeyEvent.KEYCODE_O -> "home"
             KeyEvent.KEYCODE_J -> "people"
+            KeyEvent.KEYCODE_N -> "editor"
             KeyEvent.KEYCODE_D -> "demo"
             KeyEvent.KEYCODE_COMMA -> "media:prev"
             KeyEvent.KEYCODE_PERIOD -> "media:next"
