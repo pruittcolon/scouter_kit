@@ -440,6 +440,13 @@ object Listen {
         var tone: Tone? = null
         var turns: Turns? = null
         val group = ArrayList<Turns.Piece>() // the recent lines with their audio, for speaker changes
+        val ended = ArrayList<List<Turns.Piece>>() // groups complete, waiting for a quiet moment
+        fun endGroup() {
+            if (group.isEmpty()) return
+            ended += ArrayList(group)
+            group.clear()
+            while (ended.size > 6) ended.removeAt(0) // far behind: the oldest are left as they are
+        }
         var chunkEnd = 0L
         var ident: Speakers.Identifier? = null
         var names = emptyMap<String, String>()
@@ -449,6 +456,7 @@ object Listen {
         var lastPartial = 0L
         var lastFiles = 0L
         var lastFill = 0L
+        var lastSlow = 0L
         val days = HashSet<Long>()
         try {
             while (on && run == gen) {
@@ -542,10 +550,8 @@ object Listen {
                 }
                 // A chunk of lines ends (30 s of speech, or 3 s of quiet): where the speaker changed inside a line, it
                 // is cut into one line each.
-                fun closeChunk() {
-                    if (group.isEmpty()) return
-                    val pieces = ArrayList(group)
-                    group.clear()
+                fun closeChunk(pieces: List<Turns.Piece>) {
+                    if (pieces.isEmpty()) return
                     val p = prints
                     val id = ident
                     if (!speakers || !settings.listenSplit || p == null || id == null) return
@@ -591,13 +597,17 @@ object Listen {
                 val t0 = SystemClock.elapsedRealtime()
                 while (on && run == gen) {
                     val chunk = ListenQueue.take(c) ?: break
+                    val l0 = SystemClock.elapsedRealtime()
+                    var lAsr = 0L
+                    var lWho = 0L
                     try {
                         val (text, words) = engine.timed(chunk.samples)
+                        lAsr = SystemClock.elapsedRealtime() - l0
                         if (usable(text, chunk.quiet)) {
                             val end = chunk.start + chunk.samples.size * 1000L / 16000
                             val w = JSONArray()
                             for ((word, at) in words) w.put(JSONArray().put(word).put((at * 1000).toInt()))
-                            if (chunkEnd > 0 && (chunk.start - chunkEnd >= 3000 || chunk.start < chunkEnd - 60_000)) closeChunk()
+                            if (chunkEnd > 0 && (chunk.start - chunkEnd >= 3000 || chunk.start < chunkEnd - 60_000)) endGroup()
                             val line = db.add(chunk.start, end, text, w.toString(), chunk.quiet)
                             val h = Heard(line.id, line.start, line.end, line.text, line.quiet)
                             val p = prints
@@ -619,6 +629,7 @@ object Listen {
                                     personId = m.person ?: ""
                                 }
                             }.onFailure { Log.w(ScouterService.TAG, "listen: voiceprint: ${it.message}") }
+                            lWho = SystemClock.elapsedRealtime() - l0 - lAsr
                             // How it was said: loudness, speed, and (SenseVoice) emotion and sounds.
                             runCatching {
                                 val secs = chunk.samples.size / 16000f
@@ -648,7 +659,7 @@ object Listen {
                             group += Turns.Piece(line.id, line.start, chunk.samples, text,
                                 words.map { (word, at) -> word to (at * 1000).toInt() }, chunk.quiet)
                             chunkEnd = end
-                            if (group.sumOf { it.samples.size } >= 16000 * 30) closeChunk()
+                            if (group.sumOf { it.samples.size } >= 16000 * 30) endGroup()
                             if (ListenDb.dayStart(line.start) == ListenDb.dayStart(System.currentTimeMillis())) today++
                             else today = db.count(ListenDb.dayStart(System.currentTimeMillis()))
                             days += ListenDb.dayStart(line.start)
@@ -657,6 +668,12 @@ object Listen {
                             changed()
                         }
                         ListenQueue.done(chunk)
+                        val took = SystemClock.elapsedRealtime() - l0
+                        if (took > 4000 && SystemClock.elapsedRealtime() - lastSlow > 60_000) {
+                            lastSlow = SystemClock.elapsedRealtime()
+                            Log.w(ScouterService.TAG, "listen: a ${chunk.samples.size / 16000}s line took $took ms (speech $lAsr, voice $lWho, " +
+                                "the rest ${took - lAsr - lWho}); ${ListenQueue.count(c)} waiting")
+                        }
                     } catch (e: Exception) {
                         Log.w(ScouterService.TAG, "listen: a phrase failed: ${e.message}")
                         ListenQueue.aside(chunk)
@@ -665,7 +682,11 @@ object Listen {
                 }
                 waiting = ListenQueue.seconds(c)
                 // Nothing more waiting and 3 s quiet since: the chunk is complete.
-                if (ListenQueue.count(c) == 0 && System.currentTimeMillis() - chunkEnd >= 3000) closeChunk()
+                // Speaker changes only when nothing waits: the lines as they are said come first.
+                if (ListenQueue.count(c) == 0) {
+                    if (System.currentTimeMillis() - chunkEnd >= 3000) endGroup()
+                    while (ended.isNotEmpty() && ListenQueue.count(c) == 0) closeChunk(ended.removeAt(0))
+                }
                 // Conversations that ended (5 min of quiet): their voice groups that sound alike become one.
                 if (speakers && ident != null) runCatching {
                     val ended = db.conversations(0, System.currentTimeMillis() - ListenDb.GAP_MS)

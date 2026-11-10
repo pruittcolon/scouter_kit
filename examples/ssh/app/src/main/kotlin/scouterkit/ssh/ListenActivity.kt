@@ -9,22 +9,22 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
-import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import scouterkit.ssh.ListenLook.caps
-import scouterkit.ssh.ListenLook.tile
-import scouterkit.ssh.ListenLook.tileLabel
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-// Listen mode's console on the phone. Always on top: the orb (tap: on / off, long press: pause), the trace of the
-// last seconds of sound, four tiles (lines today, voices, waiting, speed). Below, six tabs: Live (the transcript as
-// it is written, the words being said, search), People (you, the voices to name, the people, how voices are told
-// apart), Ask (the phone's LFM about anything said), Meetings (now, today's talk, past notes), Rules (the
-// automations), Setup (hearing, the quiet-voice check, the models).
+// Listen mode on the phone, in four places (the bar at the bottom): Live (what is said, as a conversation that
+// grows at the bottom while it is said, the sound and the words being said pinned under it), People (the voices to
+// name first, you, the people), Ask (questions and searches about anything said), More (meetings, automations,
+// hearing and the quiet-voice check, the AI models, how voices are told apart). The top bar: the orb (tap on / off,
+// hold to pause) and what Listen is doing.
 class ListenActivity : Activity(), HearingCheck.Ui {
     companion object {
         const val EXTRA_RESUME = "resume"
@@ -33,66 +33,58 @@ class ListenActivity : Activity(), HearingCheck.Ui {
             "rainbow is a division of white light into many beautiful colors. These take the shape of a long round arch, " +
             "with its path high above, and its two ends apparently beyond the horizon. There is, according to legend, a " +
             "boiling pot of gold at one end. People look, but no one ever finds it."
-        val TABS = listOf("live" to "Live", "people" to "People", "ask" to "Ask", "meet" to "Meet", "rules" to "Rules", "setup" to "Setup")
+        private val TABS = listOf(Triple("live", "Live", "mic"), Triple("people", "People", "eye"),
+            Triple("ask", "Ask", "spark"), Triple("more", "More", "list"))
     }
 
     private val main = Handler(Looper.getMainLooper())
     private lateinit var settings: Settings
-    private val tabs = LinkedHashMap<String, LinearLayout>()
+    private lateinit var content: FrameLayout
+    private val tabViews = HashMap<String, View>()
+    private val navItems = HashMap<String, Pair<IconView, TextView>>()
     private var tab = "live"
 
-    // The hero.
+    // Top bar.
     private lateinit var orb: ListenOrb
-    private lateinit var trace: ListenTrace
     private lateinit var state: TextView
-    private lateinit var sub: TextView
-    private lateinit var tLines: TextView
-    private lateinit var tVoices: TextView
-    private lateinit var tWait: TextView
-    private lateinit var tSpeed: TextView
+    private lateinit var speedPill: TextView
 
     // Live.
-    private lateinit var lines: LinearLayout
-    private lateinit var linesTitle: TextView
-    private lateinit var search: EditText
-    private lateinit var nowRow: LinearLayout
+    private lateinit var trace: ListenTrace
+    private lateinit var liveScroll: ScrollView
+    private lateinit var liveList: LinearLayout
+    private lateinit var liveInfo: TextView
+    private lateinit var newPill: TextView
+    private lateinit var nowBar: LinearLayout
+    private lateinit var nowPulse: Pulse
     private lateinit var nowText: TextView
-    private var searching = ""
-    private var lastLines = 0L
+    private val shown = ArrayList<Long>() // the line ids drawn, in order
+    private var shownNames = 0 // a hash of the names when drawn
+    private var lastWho = ""
+    private var lastAt = 0L
+    private var loading = false
+    private var again = false
 
     // People.
-    private lateinit var meBox: LinearLayout
-    private lateinit var toName: LinearLayout
-    private lateinit var peopleBox: LinearLayout
-    private lateinit var recordLine: TextView
-    private lateinit var modelLine: TextView
-    private lateinit var modelChip: TextView
-    private lateinit var modelBar: Progress
+    private lateinit var peopleBody: LinearLayout
     private var recorder: VoiceRecorder? = null
+    private var recordText = ""
 
     // Ask.
-    private lateinit var answer: TextView
-    private lateinit var asked: LinearLayout
+    private lateinit var askOut: LinearLayout
+    private var deep = false
     private val history = ArrayList<Pair<String, String>>()
 
-    // Meetings.
-    private lateinit var meetingLine: TextView
-    private lateinit var meetingShare: ShareBars
-    private lateinit var meetingsBox: LinearLayout
-    private lateinit var todayShare: ShareBars
-    private lateinit var insights: TextView
-    private lateinit var catchUp: TextView
+    // More and its pages.
+    private lateinit var moreBody: LinearLayout
+    private var subpage = ""
 
-    // Rules.
-    private lateinit var autoBox: LinearLayout
-
-    // Setup.
-    private lateinit var sentence: TextView
-    private lateinit var checkState: TextView
-    private lateinit var checkList: LinearLayout
-    private lateinit var checkUse: TextView
-    private lateinit var saveVoice: TextView
-    private lateinit var modelsBox: LinearLayout
+    // The check (Hearing page).
+    private var sentence: TextView? = null
+    private var checkState: TextView? = null
+    private var checkList: LinearLayout? = null
+    private var checkUse: TextView? = null
+    private var saveVoice: TextView? = null
     private var lastClips: List<FloatArray> = emptyList()
     private var check: HearingCheck? = null
     private var far = false
@@ -102,61 +94,64 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         override fun run() {
             val on = Listen.on && !Listen.paused
             val heard = Listen.level + Listen.gainDb
-            orb.set(((heard + 70f) / 60f), when {
+            orb.set((heard + 70f) / 60f, when {
                 !Listen.on -> 0
                 Listen.paused -> 3
                 Listen.speaking -> 2
                 else -> 1
             })
-            trace.push(if (on) heard else -100f, on && Listen.speaking, Listen.floor + Listen.gainDb)
+            if (tab == "live") trace.push(if (on) heard else -100f, on && Listen.speaking, Listen.floor + Listen.gainDb)
             main.postDelayed(this, 120)
         }
     }
-    private var counted = 0L
     private val slow = object : Runnable {
         override fun run() {
-            showHero()
-            showNow()
+            showTop()
+            if (tab == "live") showNow()
             Listen.looking(30_000)
-            val now = System.currentTimeMillis()
-            if (now - counted > 5000) {
-                counted = now
-                countVoices()
-            }
             main.postDelayed(this, 1000)
+        }
+    }
+    private val periodic = object : Runnable {
+        override fun run() {
+            if (tab == "live") loadLive()
+            main.postDelayed(this, 8000)
         }
     }
     private val watcher: () -> Unit = {
         main.post {
-            showNow()
-            val now = System.currentTimeMillis()
-            if (searching.isEmpty() && tab == "live" && now - lastLines > 1200) {
-                lastLines = now
-                showLines()
+            if (tab == "live") {
+                showNow()
+                loadLive()
             }
         }
     }
 
+    // ------------------------------------------------ the frame
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settings = Settings(this)
-        val page = page()
-        page.addView(header("Listen", "Who said what, as it is said · on this phone", "Done") { finish() })
-        page.addView(hero())
-        tab = getSharedPreferences("ui", Context.MODE_PRIVATE).getString("listen_tab", "live") ?: "live"
-        if (TABS.none { it.first == tab }) tab = "live"
-        page.addView(segmented(TABS, tab) { showTab(it) })
-        tabs["live"] = buildLive()
-        tabs["people"] = buildPeople()
-        tabs["ask"] = buildAsk()
-        tabs["meet"] = buildMeetings()
-        tabs["rules"] = buildRules()
-        tabs["setup"] = buildSetup()
-        for ((k, v) in tabs) {
-            v.visibility = if (k == tab) View.VISIBLE else View.GONE
-            page.addView(v)
+        window.statusBarColor = Ui.BG
+        window.navigationBarColor = Ui.SURFACE
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Ui.BG)
         }
+        root.addView(topBar())
+        content = FrameLayout(this)
+        root.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(bottomBar())
+        setContentView(root)
+        tabViews["live"] = buildLive()
+        tabViews["people"] = scrolled { peopleBody = it }
+        tabViews["ask"] = buildAsk()
+        tabViews["more"] = scrolled { moreBody = it }
+        for (v in tabViews.values) content.addView(v, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        tab = getSharedPreferences("ui", Context.MODE_PRIVATE).getString("listen_tab2", "live") ?: "live"
+        if (TABS.none { it.first == tab }) tab = "live"
         if (intent?.getBooleanExtra(EXTRA_RESUME, false) == true) settings.listenOn = true
+        showTab(tab)
     }
 
     override fun onResume() {
@@ -168,7 +163,8 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         Listen.looking(30_000)
         main.post(fast)
         main.post(slow)
-        refresh(tab)
+        main.post(periodic)
+        showTab(tab)
     }
 
     override fun onPause() {
@@ -176,6 +172,7 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         Listen.unwatch(watcher)
         main.removeCallbacks(fast)
         main.removeCallbacks(slow)
+        main.removeCallbacks(periodic)
     }
 
     override fun onDestroy() {
@@ -184,111 +181,117 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         super.onDestroy()
     }
 
-    private fun showTab(k: String) {
-        tab = k
-        getSharedPreferences("ui", Context.MODE_PRIVATE).edit().putString("listen_tab", k).apply()
-        for ((key, v) in tabs) v.visibility = if (key == k) View.VISIBLE else View.GONE
-        refresh(k)
-    }
-
-    private fun refresh(k: String) {
-        showHero()
-        countVoices()
-        when (k) {
-            "live" -> { showLines(); showNow() }
-            "people" -> { showMe(); showPeople(); showModel() }
-            "meet" -> { showMeetings(); showInsights() }
-            "rules" -> showRules()
-            "setup" -> showModels()
-        }
+    @Deprecated("Back closes a More page first")
+    override fun onBackPressed() {
+        if (tab == "more" && subpage.isNotEmpty()) return showMore("")
+        if (tab != "live") return showTab("live")
+        @Suppress("DEPRECATION") super.onBackPressed()
     }
 
     private fun column() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-    // ------------------------------------------------ the hero
+    private fun scrolled(take: (LinearLayout) -> Unit): ScrollView {
+        val col = column().apply { setPadding(dp(16), dp(12), dp(16), dp(24)) }
+        take(col)
+        return ScrollView(this).apply {
+            isFillViewport = true
+            addView(col)
+        }
+    }
 
-    private fun hero(): View {
-        val c = card()
-        val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+    private fun topBar(): View {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(10), dp(14), dp(8))
+        }
         orb = ListenOrb(this).apply {
             isClickable = true
             setOnClickListener { toggle() }
             setOnLongClickListener {
                 if (Listen.paused) Listen.resume() else if (Listen.on) Listen.pause(15 * 60_000L)
-                showHero()
+                showTop()
                 true
             }
         }
-        top.addView(orb, LinearLayout.LayoutParams(dp(112), dp(112)))
-        val right = column()
-        state = text("", 19f, Ui.TEXT, Ui.BLACK)
-        right.addView(state)
-        sub = text("", 12.5f, Ui.MUTED).apply { setPadding(0, dp(4), 0, 0) }
-        right.addView(sub)
-        right.addView(caps("tap the orb: on / off · hold: pause 15 min", Ui.FAINT, 9.5f).apply { setPadding(0, dp(8), 0, 0) })
-        top.addView(right, lp(0, weight = 1f).apply { leftMargin = dp(12) })
-        c.addView(top)
-        trace = ListenTrace(this)
-        c.addView(trace, lp(h = dp(54)).apply { topMargin = dp(12) })
-        val (b1, v1) = tile(); tileLabel(b1, "lines today"); tLines = v1
-        val (b2, v2) = tile(); tileLabel(b2, "voices"); tVoices = v2
-        val (b3, v3) = tile(); tileLabel(b3, "waiting"); tWait = v3
-        val (b4, v4) = tile(); tileLabel(b4, "speed"); tSpeed = v4
-        c.addView(rowOf(b1, b2, b3, b4), lp().apply { topMargin = dp(12) })
-        return c
+        bar.addView(orb, LinearLayout.LayoutParams(dp(58), dp(58)))
+        val t = column()
+        t.addView(text("Listen", 21f, Ui.TEXT, Ui.BLACK))
+        state = text("", 12.5f, Ui.MUTED)
+        t.addView(state)
+        bar.addView(t, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(6) })
+        speedPill = text("", 11f, Ui.TEXT, Ui.BOLD).apply {
+            letterSpacing = 0.12f
+            setPadding(dp(10), dp(5), dp(10), dp(5))
+        }
+        bar.addView(speedPill)
+        bar.addView(IconView(this, "close", 22, Ui.MUTED).apply {
+            setPadding(dp(14), dp(6), dp(2), dp(6))
+            setOnClickListener { finish() }
+        })
+        return bar
     }
 
-    private fun showHero() {
+    private fun bottomBar(): View {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Ui.SURFACE)
+            setPadding(0, dp(6), 0, dp(8))
+        }
+        for ((key, label, icon) in TABS) {
+            val item = column().apply {
+                gravity = Gravity.CENTER
+                isClickable = true
+                setOnClickListener { showTab(key) }
+            }
+            val ic = IconView(this, icon, 22, Ui.MUTED)
+            item.addView(ic)
+            val tx = text(label, 11.5f, Ui.MUTED, Ui.BOLD).apply { gravity = Gravity.CENTER }
+            item.addView(tx)
+            navItems[key] = ic to tx
+            bar.addView(item, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        return bar
+    }
+
+    private fun showTab(k: String) {
+        tab = k
+        getSharedPreferences("ui", Context.MODE_PRIVATE).edit().putString("listen_tab2", k).apply()
+        for ((key, v) in tabViews) v.visibility = if (key == k) View.VISIBLE else View.GONE
+        for ((key, p) in navItems) {
+            val on = key == k
+            p.second.setTextColor(if (on) Ui.ACCENT else Ui.MUTED)
+            p.first.color = if (on) Ui.ACCENT else Ui.MUTED
+        }
+        showTop()
+        when (k) {
+            "live" -> { loadLive(); showNow() }
+            "people" -> showPeople()
+            "more" -> showMore(subpage)
+        }
+    }
+
+    private fun showTop() {
         val on = Listen.on
         state.text = when {
-            !VoiceModel.ready(this) -> "Speech model needed"
-            on && Listen.paused -> "Paused"
-            on && Listen.speaking -> "Hearing speech"
-            on -> Listen.state.replaceFirstChar { it.uppercase() }
+            !VoiceModel.ready(this) -> "Download the speech model (Voice tab)"
+            !micAllowed() -> "Tap the orb and allow the microphone"
+            on && Listen.paused -> "Paused until " + SimpleDateFormat("h:mm a", Locale.US).format(Date(Listen.pausedUntil)) + " · hold the orb"
+            MicHub.silenced && on -> "Another app has the microphone"
+            on -> "${Listen.today} lines today · " + Listen.state + (Meetings.current?.let { " · meeting" } ?: "")
             settings.listenOn -> "Starting…"
-            else -> "Off"
+            else -> "Off · tap the orb to start"
         }
         state.setTextColor(when {
             on && Listen.paused -> Ui.WARN
             on && Listen.speaking -> Ui.ACCENT
-            on -> Ui.ACCENT2
-            else -> Ui.TEXT
+            on -> Ui.MUTED
+            else -> Ui.FAINT
         })
-        val ready = listOfNotNull(
-            if (settings.listenSpeakers && VoiceprintModel.ready(this)) "voices" else null,
-            if (settings.listenTone && ToneModel.ready(this)) "tone" else null,
-            if (LlmModels.usable() && LlmModels.ALL.any { it.role != "embed" && LlmModels.ready(this, it) }) "LFM" else null,
-            if (settings.listenMeaning && LlmModels.ready(this, LlmModels.EMBED)) "meaning" else null,
-            Automations.rules(this).count { it.on }.takeIf { it > 0 }?.let { "$it rules" },
-        )
-        sub.text = when {
-            !VoiceModel.ready(this) -> "Download it on the Voice tab first."
-            !micAllowed() -> "The microphone is not allowed yet: tap the orb."
-            MicHub.silenced -> "Another app has the microphone; back when it lets go."
-            on && Listen.paused -> "Back at " + SimpleDateFormat("h:mm a", Locale.US).format(Date(Listen.pausedUntil)) + ". Hold the orb to listen now."
-            Meetings.current != null -> "In a meeting: ${Meetings.current?.title}"
-            else -> (if (ready.isEmpty()) "Models: Setup tab" else ready.joinToString(" · ")) + (MicHub.problem?.let { " · $it" } ?: "")
-        }
-        tLines.text = Listen.today.toString()
-        tWait.text = if (Listen.waiting >= 1) "${Listen.waiting.toInt()}s" else "0"
-        tSpeed.text = when (settings.listenSpeed) {
-            "live" -> "Live"
-            "eco" -> "Eco"
-            else -> if (Listen.speed == "live") "Live" else if (Listen.on) "Eco" else "Auto"
-        }
-        tSpeed.setTextColor(if (tSpeed.text == "Live") Ui.ACCENT else Ui.TEXT)
-    }
-
-    private fun countVoices() {
-        Thread {
-            val db = ListenDb.get(this)
-            val people = db.personList().size
-            val unnamed = db.voiceList().size
-            main.post {
-                tVoices.text = if (unnamed > 0) "$people+$unnamed" else "$people"
-                tVoices.setTextColor(if (unnamed > 0) Ui.WARN else Ui.TEXT)
-            }
-        }.start()
+        val live = settings.listenSpeed == "live" || (settings.listenSpeed == "auto" && Listen.speed == "live")
+        speedPill.text = if (!on) "OFF" else if (live) "● LIVE" else "ECO"
+        speedPill.setTextColor(if (on && live) Ui.ON_ACCENT else Ui.TEXT)
+        speedPill.background = if (on && live) accentGradient(dp(12).toFloat()) else rounded(Ui.RAISED, dp(12).toFloat(), dp(1), Ui.STROKE)
     }
 
     private fun micAllowed() = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -298,7 +301,7 @@ class ListenActivity : Activity(), HearingCheck.Ui {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (micAllowed() && settings.listenOn) ListenService.start(this)
-        showHero()
+        showTop()
     }
 
     private fun toggle() {
@@ -307,196 +310,187 @@ class ListenActivity : Activity(), HearingCheck.Ui {
             settings.listenOn = true
             if (!micAllowed()) askMic() else ListenService.start(this)
         }
-        main.postDelayed({ showHero() }, 300)
+        main.postDelayed({ showTop(); showNow() }, 300)
     }
 
-    // ------------------------------------------------ Live
+    // ------------------------------------------------ Live: the conversation as it happens
 
-    private fun buildLive(): LinearLayout {
+    private fun buildLive(): View {
         val box = column()
-        val c = card()
-        linesTitle = caps("live transcript")
-        c.addView(linesTitle)
-        search = field("Search", "", "search every day, by words or meaning").apply {
-            imeOptions = EditorInfo.IME_ACTION_SEARCH
-            setOnEditorActionListener { _, _, _ -> runSearch(); true }
+        val head = column().apply { setPadding(dp(16), dp(2), dp(16), dp(6)) }
+        trace = ListenTrace(this)
+        head.addView(trace, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)))
+        liveInfo = caps("", Ui.FAINT, 9.5f).apply { setPadding(dp(2), dp(6), 0, 0) }
+        head.addView(liveInfo)
+        box.addView(head)
+        val frame = FrameLayout(this)
+        liveList = column().apply { setPadding(dp(16), dp(4), dp(16), dp(16)) }
+        liveScroll = ScrollView(this).apply {
+            addView(liveList)
+            setOnScrollChangeListener { _, _, _, _, _ -> if (atBottom()) newPill.visibility = View.GONE }
         }
-        c.addView(search, lp().apply { topMargin = dp(8) })
-        c.addView(chipRow(chip("Search", true) { runSearch() }, chip("Live", false) {
-            searching = ""
-            search.setText("")
-            showLines()
-        }))
-        nowRow = LinearLayout(this).apply {
+        frame.addView(liveScroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        newPill = chip("↓ New lines", true) { toBottom() }.apply { visibility = View.GONE }
+        frame.addView(newPill, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(10) })
+        box.addView(frame, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        nowBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), dp(10), dp(10), dp(10))
-            background = rounded(Ui.RAISED, dp(14).toFloat(), dp(1), Ui.ACCENT)
-            visibility = View.GONE
+            setPadding(dp(14), dp(12), dp(14), dp(12))
         }
-        nowRow.addView(Pulse(this))
-        nowText = text("", 15f, Ui.ACCENT, Ui.BOLD)
-        nowRow.addView(nowText, lp(0, weight = 1f).apply { leftMargin = dp(10) })
-        c.addView(nowRow, lp().apply { topMargin = dp(10) })
-        lines = column()
-        c.addView(lines)
-        c.addView(text("Newest on top. Every day is also a file, \"Transcript <date>.md\", in Vox's docs folder (Alt+N " +
-            "on the glasses). The glasses' live view: hub L or Alt+E.", 12f, Ui.FAINT).apply { setPadding(0, dp(12), 0, 0) })
-        box.addView(c)
+        nowPulse = Pulse(this)
+        nowBar.addView(nowPulse)
+        nowText = text("", 15f, Ui.TEXT, Ui.BOLD)
+        nowBar.addView(nowText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(10) })
+        box.addView(nowBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            leftMargin = dp(12); rightMargin = dp(12); bottomMargin = dp(8)
+        })
         return box
     }
 
-    private fun showNow() {
-        if (!::nowRow.isInitialized) return
-        val talking = Listen.on && !Listen.paused && (Listen.speaking || Listen.partial.isNotEmpty())
-        nowRow.visibility = if (talking && searching.isEmpty()) View.VISIBLE else View.GONE
-        nowText.text = Listen.partial.ifEmpty { "hearing…" }
+    private fun atBottom() = liveScroll.scrollY + liveScroll.height >= liveList.height - dp(60)
+
+    private fun toBottom() {
+        newPill.visibility = View.GONE
+        liveScroll.post { liveScroll.fullScroll(View.FOCUS_DOWN) }
     }
 
-    // The transcript, newest first: a header (who, when, mood, the rules it fired) where the speaker changes.
-    private fun showLines() {
-        val q = searching
+    // The words being said now, pinned under the conversation.
+    private fun showNow() {
+        val on = Listen.on && !Listen.paused
+        val talking = on && (Listen.speaking || Listen.partial.isNotEmpty())
+        nowPulse.visibility = if (talking) View.VISIBLE else View.GONE
+        nowText.text = when {
+            !Listen.on && !settings.listenOn -> "Off: tap the orb to start listening"
+            !Listen.on -> "Starting…"
+            Listen.paused -> "Paused: hold the orb to listen again"
+            talking -> Listen.partial.ifEmpty { "hearing…" }
+            Listen.waiting >= 2 -> "Writing down ${Listen.waiting.toInt()} s of speech…"
+            else -> "Listening"
+        }
+        nowText.setTextColor(if (talking) Ui.ACCENT else Ui.MUTED)
+        nowBar.background = rounded(Ui.SURFACE, dp(18).toFloat(), dp(1), if (talking) Ui.ACCENT else Ui.STROKE)
+    }
+
+    // Today's lines: new ones are added at the bottom (the view follows them while it is at the bottom); names that
+    // changed or lines cut by speaker draw it again.
+    private fun loadLive() {
+        if (loading) return run { again = true }
+        loading = true
         Thread {
             val db = ListenDb.get(this)
             val names = db.names()
-            val hits = if (q.isEmpty()) emptyList() else runCatching { Search.find(this, q, 80) }.getOrDefault(emptyList())
-            val how = hits.associate { it.line.id to (if (it.meaning && !it.words) "by meaning" else "") }
-            val list = if (q.isEmpty()) db.between(ListenDb.dayStart(System.currentTimeMillis()), Long.MAX_VALUE).takeLast(80).reversed()
-                else hits.map { it.line }
+            val list = db.between(ListenDb.dayStart(System.currentTimeMillis()), Long.MAX_VALUE).takeLast(200)
             val fired = Listen.recent(60).associate { it.id to it.fired }
+            val unnamed = list.map { it.voice }.filter { it.isNotEmpty() }.distinct().size
             main.post {
-                linesTitle.text = if (q.isEmpty()) "LIVE TRANSCRIPT · TODAY · ${list.size} NEWEST" else "\"${q.uppercase()}\" · ${list.size} FOUND"
-                lines.removeAllViews()
-                if (list.isEmpty()) lines.addView(text(if (q.isEmpty()) "Nothing heard yet today." else "Nothing found.", 13f, Ui.FAINT)
-                    .apply { setPadding(0, dp(10), 0, 0) })
-                val fmt = SimpleDateFormat(if (q.isEmpty()) "h:mm:ss a" else "MMM d, h:mm a", Locale.US)
-                var last = "\u0000"
-                for (l in list) {
-                    val who = names[l.person.ifEmpty { l.voice }] ?: ""
-                    val col = ListenLook.color(who)
-                    val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                    row.addView(View(this).apply { background = rounded(col, dp(2).toFloat()) }, LinearLayout.LayoutParams(dp(3),
-                        LinearLayout.LayoutParams.MATCH_PARENT).apply { rightMargin = dp(10) })
-                    val col2 = column()
-                    if (who != last || q.isNotEmpty()) {
-                        val tags = listOfNotNull(fmt.format(Date(l.start)), l.emotion.ifEmpty { null }, l.sound.ifEmpty { null },
-                            if (l.quiet) "quiet" else null, how[l.id]?.ifEmpty { null }, fired[l.id]?.ifEmpty { null }?.let { "■ $it" })
-                        col2.addView(caps((who.ifEmpty { "someone" }) + " · " + tags.joinToString(" · "), col, 10f)
-                            .apply { setPadding(0, dp(10), 0, dp(2)) })
-                    } else if (fired[l.id]?.isNotEmpty() == true || l.emotion.isNotEmpty()) {
-                        col2.addView(caps(listOfNotNull(l.emotion.ifEmpty { null }, fired[l.id]?.ifEmpty { null }?.let { "■ $it" })
-                            .joinToString(" · "), col, 9.5f).apply { setPadding(0, dp(4), 0, 0) })
-                    }
-                    col2.addView(text(l.text, 15f, if (l.quiet) Ui.MUTED else Ui.TEXT).apply { setPadding(0, dp(2), 0, dp(4)) })
-                    row.addView(col2, lp(0, weight = 1f))
-                    lines.addView(row, lp())
-                    last = who
+                loading = false
+                drawLive(list, names, fired, unnamed)
+                if (again) {
+                    again = false
+                    loadLive()
                 }
             }
         }.start()
     }
 
-    private fun runSearch() {
-        searching = search.text.toString().trim()
-        showLines()
-        showNow()
+    private fun drawLive(list: List<ListenDb.Line>, names: Map<String, String>, fired: Map<Long, String>, unnamed: Int) {
+        liveInfo.text = "TODAY · ${list.size} LINES" + (if (unnamed > 0) " · $unnamed VOICES TO NAME (PEOPLE)" else "") +
+            " · NEWEST AT THE BOTTOM"
+        val ids = list.map { it.id }
+        val sig = names.hashCode()
+        val follow = shown.isEmpty() || atBottom()
+        val fresh = sig != shownNames || ids.size < shown.size || ids.subList(0, minOf(shown.size, ids.size)) != shown
+        if (fresh) {
+            liveList.removeAllViews()
+            shown.clear()
+            lastWho = "\u0000"
+            lastAt = 0L
+            shownNames = sig
+            if (list.isEmpty()) liveList.addView(text(if (Listen.on) "Nothing said yet today. Talk near the phone: lines appear " +
+                "here as they are said." else "Listen mode is off. Tap the orb at the top.", 14f, Ui.FAINT).apply {
+                setPadding(0, dp(24), 0, 0)
+                gravity = Gravity.CENTER
+            })
+        }
+        val added = list.drop(shown.size)
+        if (added.isNotEmpty() && shown.isEmpty()) liveList.removeAllViews()
+        for (l in added) {
+            addLine(l, names[l.person.ifEmpty { l.voice }] ?: "", fired[l.id] ?: "")
+            shown += l.id
+        }
+        if (added.isNotEmpty()) {
+            if (follow || fresh) toBottom() else newPill.visibility = View.VISIBLE
+        }
+    }
+
+    private fun addLine(l: ListenDb.Line, who: String, fired: String) {
+        val col = ListenLook.color(who)
+        // A header when the speaker changes (or after two minutes): avatar, name, time.
+        if (who != lastWho || l.start - lastAt > 120_000) {
+            val h = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(14), 0, dp(4))
+            }
+            h.addView(Avatar(this, who.ifEmpty { "?" }, 26))
+            h.addView(text(who.ifEmpty { "Someone" }, 13.5f, col, Ui.BOLD).apply { setPadding(dp(8), 0, dp(8), 0) })
+            h.addView(text(SimpleDateFormat("h:mm a", Locale.US).format(Date(l.start)), 11.5f, Ui.FAINT))
+            liveList.addView(h)
+            lastWho = who
+        }
+        lastAt = l.start
+        val bubble = column().apply {
+            background = rounded(Ui.SURFACE, dp(16).toFloat(), dp(1), Ui.STROKE)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+        }
+        bubble.addView(text(l.text, 15.5f, if (l.quiet) Ui.MUTED else Ui.TEXT))
+        val tags = listOfNotNull(l.emotion.ifEmpty { null }, l.sound.ifEmpty { null }, if (l.quiet) "quiet" else null,
+            fired.ifEmpty { null }?.let { "■ $it" })
+        if (tags.isNotEmpty()) bubble.addView(caps(tags.joinToString(" · "), if (fired.isNotEmpty()) Ui.ACCENT else col, 9.5f)
+            .apply { setPadding(0, dp(4), 0, 0) })
+        liveList.addView(bubble, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            .apply { leftMargin = dp(34); topMargin = dp(4) })
     }
 
     // ------------------------------------------------ People
 
-    private fun buildPeople(): LinearLayout {
-        val box = column()
-        meBox = card()
-        box.addView(meBox)
-        val tn = card()
-        tn.addView(caps("voices to name"))
-        tn.addView(text("Each is a voice Vox heard but was not told about, with its newest lines. Name it, or say it is you; " +
-            "two voices of one person: give both the same name.", 12.5f, Ui.FAINT).apply { setPadding(0, dp(4), 0, dp(4)) })
-        toName = column()
-        tn.addView(toName)
-        box.addView(tn)
-        val pc = card()
-        pc.addView(caps("people"))
-        peopleBox = column()
-        pc.addView(peopleBox)
-        box.addView(pc)
-        val rc = card()
-        rc.addView(caps("telling voices apart"))
-        rc.addToggle(toggle("Know who speaks", "A voiceprint for each line, matched to the people", settings.listenSpeakers) {
-            settings.listenSpeakers = it
-            Listen.peopleChanged()
-        })
-        rc.addToggle(toggle("Split where the speaker changes", "A phrase with two people becomes a line each (pyannote, 6 MB)",
-            settings.listenSplit) { settings.listenSplit = it })
-        rc.addView(caps("voiceprint model", Ui.FAINT).apply { setPadding(0, dp(8), 0, 0) })
-        rc.addView(segmented(VoiceprintModel.CHOICES.map { it.id to it.name }, settings.listenVoiceModel) {
-            settings.listenVoiceModel = it
-            showModel()
-            Listen.peopleChanged()
-        })
-        modelLine = text("", 12.5f, Ui.MUTED)
-        modelChip = chip("Download", true) { modelAction() }
-        val mrow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        mrow.addView(modelLine, lp(0, weight = 1f))
-        mrow.addView(modelChip)
-        rc.addView(mrow)
-        modelBar = Progress(this).apply { visibility = View.GONE }
-        rc.addView(modelBar, lp().apply { topMargin = dp(6) })
-        rc.addView(text("Each model knows people by its own voiceprints: after switching, record the voices again.", 12f, Ui.FAINT)
-            .apply { setPadding(0, dp(6), 0, 0) })
-        box.addView(rc)
-        return box
-    }
-
-    private fun showMe() {
-        Thread {
-            val db = ListenDb.get(this)
-            val me = db.personList().firstOrNull { it.first == Speakers.ME }
-            val n = if (me != null) db.sampleCount(Speakers.ME) else 0
-            main.post {
-                meBox.removeAllViews()
-                val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-                top.addView(Avatar(this, "You", 52))
-                val t = column()
-                t.addView(text("You", 17f, Ui.TEXT, Ui.BLACK))
-                t.addView(text(if (me != null) "Known by $n voiceprints · your lines say You" else "Not recorded yet: 30 s makes " +
-                    "your lines say You", 12.5f, if (me != null) Ui.GOOD else Ui.WARN))
-                top.addView(t, lp(0, weight = 1f).apply { leftMargin = dp(12) })
-                meBox.addView(top)
-                recordLine = text("Read this aloud at your usual volume (about 30 s):\n\n“$PASSAGE”", 13f, Ui.MUTED)
-                    .apply { setPadding(0, dp(10), 0, dp(4)) }
-                meBox.addView(recordLine)
-                meBox.addView(chipRow(chip(if (me != null) "Record again (adds to it)" else "Record my voice (30 s)", true) { recordMe() }))
-            }
-        }.start()
-    }
-
-    private fun personRow(name: String, lineText: String, lineColor: Int): LinearLayout {
+    private fun personRow(name: String, sub: String, subColor: Int, size: Int = 42): LinearLayout {
         val r = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(12), 0, dp(2))
+            setPadding(0, dp(10), 0, dp(2))
         }
-        r.addView(Avatar(this, name, 42))
+        r.addView(Avatar(this, name, size))
         val t = column()
         t.addView(text(name, 15.5f, Ui.TEXT, Ui.BOLD))
-        t.addView(text(lineText, 12.5f, lineColor))
-        r.addView(t, lp(0, weight = 1f).apply { leftMargin = dp(12) })
+        t.addView(text(sub, 12.5f, subColor))
+        r.addView(t, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(12) })
         return r
     }
 
     private fun showPeople() {
         Thread {
             val db = ListenDb.get(this)
-            val people = db.personList().filter { it.first != Speakers.ME }.map { (id, name, soft) -> Triple(id, name, soft) to db.sampleCount(id) }
+            val all = db.personList()
+            val me = all.firstOrNull { it.first == Speakers.ME }
+            val meN = if (me != null) db.sampleCount(Speakers.ME) else 0
+            val people = all.filter { it.first != Speakers.ME }.map { it to db.sampleCount(it.first) }
             val voices = db.voiceList()
             main.post {
-                toName.removeAllViews()
-                if (voices.isEmpty()) toName.addView(text("None waiting: every voice heard has a name.", 13f, Ui.GOOD).apply { setPadding(0, dp(8), 0, 0) })
+                val b = peopleBody
+                b.removeAllViews()
+                // Voices to name: what needs you first.
+                val vc = card()
+                vc.addView(caps(if (voices.isEmpty()) "voices to name" else "voices to name · ${voices.size}", if (voices.isEmpty()) Ui.MUTED else Ui.WARN))
+                if (voices.isEmpty()) vc.addView(text("None waiting: every voice heard has a name.", 13.5f, Ui.GOOD).apply { setPadding(0, dp(8), 0, 0) })
+                else vc.addView(text("Voices Vox heard but was not told about, with what they said. One person heard as two " +
+                    "voices: give both the same name.", 12.5f, Ui.FAINT).apply { setPadding(0, dp(4), 0, 0) })
                 for ((v, n, quotes) in voices) {
-                    toName.addView(personRow(v.label, "$n lines · heard ${SimpleDateFormat("MMM d h:mm a", Locale.US).format(Date(v.updated))}", Ui.MUTED))
-                    for (q in quotes) toName.addView(text("“$q”", 13f, Ui.MUTED).apply { setPadding(dp(54), dp(2), 0, 0) })
-                    toName.addView(chipRow(
+                    vc.addView(personRow(v.label, "$n lines · last ${SimpleDateFormat("h:mm a", Locale.US).format(Date(v.updated))}", Ui.MUTED))
+                    for (q in quotes) vc.addView(text("“$q”", 13.5f, Ui.TEXT).apply { setPadding(dp(54), dp(3), 0, 0) })
+                    vc.addView(chipRow(
                         chip("Name…", true) {
                             ask("Who is ${v.label}?", "") { name ->
                                 val pid = if (name.equals("me", true) || name.equals("you", true)) Speakers.ME.also {
@@ -504,7 +498,7 @@ class ListenActivity : Activity(), HearingCheck.Ui {
                                 } else db.personNamed(name) ?: db.addPerson(name, false)
                                 db.nameVoice(v.id, pid)
                                 Listen.peopleChanged()
-                                main.post { refresh("people") }
+                                main.post { showPeople() }
                             }
                         },
                         chip("That's me", false) {
@@ -512,18 +506,29 @@ class ListenActivity : Activity(), HearingCheck.Ui {
                                 if (db.personList().none { it.first == Speakers.ME }) db.addPerson("You", false, Speakers.ME)
                                 db.nameVoice(v.id, Speakers.ME)
                                 Listen.peopleChanged()
-                                main.post { refresh("people") }
+                                main.post { showPeople() }
                             }.start()
                         },
-                    ).apply { setPadding(dp(54), 0, 0, 0) })
+                    ).apply { setPadding(dp(54), dp(4), 0, dp(6)) })
                 }
-                peopleBox.removeAllViews()
-                if (people.isEmpty()) peopleBox.addView(text("Nobody yet: name a voice above, or remember one from the " +
-                    "quiet-voice check (Setup).", 13f, Ui.FAINT).apply { setPadding(0, dp(8), 0, 0) })
+                b.addView(vc)
+                // You.
+                val yc = card()
+                yc.addView(personRow("You", if (me != null) "Known by $meN voiceprints: your lines say You" else
+                    "Not recorded: 30 s makes your lines say You", if (me != null) Ui.GOOD else Ui.WARN, 48))
+                if (recordText.isNotEmpty() || me == null) yc.addView(text(recordText.ifEmpty {
+                    "Read this aloud at your usual volume (about 30 s):\n\n“$PASSAGE”" }, 13f, Ui.MUTED).apply { setPadding(0, dp(10), 0, dp(4)) })
+                yc.addView(chipRow(chip(if (me != null) "Record again (adds to it)" else "Record my voice (30 s)", true) { recordMe() }))
+                b.addView(yc)
+                // People.
+                val pc = card()
+                pc.addView(caps("people · ${people.size}"))
+                if (people.isEmpty()) pc.addView(text("Nobody yet: name a voice above, or remember one after the quiet-voice " +
+                    "check (More, Hearing).", 13f, Ui.FAINT).apply { setPadding(0, dp(8), 0, 0) })
                 for ((p, n) in people) {
                     val (id, name, soft) = p
-                    peopleBox.addView(personRow(name, "$n voiceprints" + if (soft) " · soft voice" else "", if (soft) Ui.ACCENT else Ui.MUTED))
-                    peopleBox.addView(chipRow(
+                    pc.addView(personRow(name, "$n voiceprints" + if (soft) " · soft voice" else "", if (soft) Ui.ACCENT else Ui.MUTED))
+                    pc.addView(chipRow(
                         chip(if (soft) "Soft voice: on" else "Soft voice: off", soft) {
                             Thread { db.setSoft(id, !soft); Listen.peopleChanged(); main.post { showPeople() } }.start()
                         },
@@ -534,8 +539,13 @@ class ListenActivity : Activity(), HearingCheck.Ui {
                                     Thread { db.deletePerson(id); Listen.peopleChanged(); main.post { showPeople() } }.start()
                                 }.setNegativeButton("Cancel", null).show()
                         },
-                    ).apply { setPadding(dp(54), 0, 0, 0) })
+                    ).apply { setPadding(dp(54), dp(4), 0, dp(6)) })
                 }
+                b.addView(pc)
+                if (!VoiceprintModel.ready(this)) b.addView(banner("info", "Names need the voiceprint model (30 MB).", "Get it") {
+                    showTab("more")
+                    showMore("voices")
+                })
             }
         }.start()
     }
@@ -557,180 +567,175 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         if (recorder != null) return
         if (!micAllowed()) return askMic()
         if (!VoiceprintModel.ready(this)) {
-            recordLine.text = "Download the voiceprint model first (below)."
-            return
+            recordText = "Get the voiceprint model first: More, Voice recognition."
+            return showPeople()
         }
         recorder = VoiceRecorder(this, 30, tick = { left, lv ->
-            main.post { recordLine.text = "● Recording… $left s left (${lv.toInt()} dB)\n\n“$PASSAGE”" }
+            main.post {
+                recordText = "● Recording… $left s left (${lv.toInt()} dB)\n\n“$PASSAGE”"
+                if (tab == "people") showPeople()
+            }
         }, done = { clips, why ->
-            main.post { recordLine.text = if (why != null) "Not recorded: $why" else "Remembering your voice…" }
+            main.post { recordText = if (why != null) "Not recorded: $why" else "Remembering your voice…"; showPeople() }
             if (why == null) {
                 val err = Speakers.enroll(this, "You", false, clips, Speakers.ME)
                 main.post {
-                    recordLine.text = err?.let { "Not saved: $it" } ?: "Saved: your lines say You."
-                    showMe()
+                    recordText = err?.let { "Not saved: $it" } ?: ""
+                    showPeople()
                 }
             }
             recorder = null
         }).also { it.start() }
     }
 
-    private fun showModel() {
-        val ch = VoiceprintModel.chosen(this)
-        val ready = VoiceprintModel.ready(this, ch)
-        fun mb(b: Long) = "${b / 1_000_000} MB"
-        val busy = VoiceprintModel.progress >= 0
-        modelLine.text = when {
-            busy -> "Downloading ${ch.name}… ${mb(VoiceprintModel.progress)} of ${mb(ch.part.size)}"
-            ready -> "${ch.name} ready · ${ch.about} · ${mb(ch.part.size)}"
-            VoiceprintModel.problem != null -> "Not downloaded: ${VoiceprintModel.problem}"
-            else -> "${ch.name}: ${ch.about} · ${mb(ch.part.size)}"
+    // ------------------------------------------------ Ask (and find)
+
+    private fun buildAsk(): View = scrolled { b ->
+        val c = card()
+        c.addView(caps("ask or find"))
+        c.addView(text("Ask: an answer from what was said (LFM2.5 on this phone). Find: the lines themselves, by words or " +
+            "meaning. \"What did Maria say about the trip?\" · \"What did we decide yesterday?\"", 12.5f, Ui.FAINT)
+            .apply { setPadding(0, dp(4), 0, dp(8)) })
+        val q = field("Question or words", "", "about any day").apply { imeOptions = EditorInfo.IME_ACTION_SEARCH }
+        c.addView(q)
+        val deepChip = chip("Deep: off", false)
+        deepChip.setOnClickListener {
+            deep = !deep
+            deepChip.text = if (deep) "Deep: on" else "Deep: off"
+            deepChip.setTextColor(if (deep) Ui.ACCENT else Ui.TEXT)
         }
-        modelLine.setTextColor(if (ready) Ui.GOOD else Ui.MUTED)
-        modelChip.visibility = if (busy) View.GONE else View.VISIBLE
-        modelChip.text = if (ready) "Delete" else "Download"
-        modelBar.visibility = if (busy) View.VISIBLE else View.GONE
-        if (busy) modelBar.fraction = VoiceprintModel.progress.toFloat() / ch.part.size
+        c.addView(chipRow(chip("Ask", true) { askNow(q.text.toString().trim()) }, chip("Find", false) { findNow(q.text.toString().trim()) },
+            deepChip), lp().apply { topMargin = dp(8) })
+        q.setOnEditorActionListener { _, _, _ -> askNow(q.text.toString().trim()); true }
+        b.addView(c)
+        askOut = column()
+        b.addView(askOut)
+        showHistory()
     }
 
-    private fun modelAction() {
-        val ch = VoiceprintModel.chosen(this)
-        if (VoiceprintModel.ready(this, ch)) {
-            dialog().setTitle("Delete the ${ch.name} model?").setMessage("Names stop until it is downloaded again.")
-                .setPositiveButton("Delete") { _, _ ->
-                    VoiceprintModel.delete(this, ch)
-                    Listen.peopleChanged()
-                    showModel()
-                }.setNegativeButton("Cancel", null).show()
-            return
+    private fun askNow(q: String) {
+        if (q.isEmpty()) return
+        askOut.removeAllViews()
+        val c = card()
+        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        head.addView(Avatar(this, "Vox", 28))
+        head.addView(caps("vox · ${if (deep) "deep" else "quick"} · on this phone", Ui.ACCENT).apply { setPadding(dp(8), 0, 0, 0) })
+        c.addView(head)
+        c.addView(text(q, 14f, Ui.MUTED, Ui.BOLD).apply { setPadding(0, dp(8), 0, 0) })
+        val a = text("Thinking…", 15.5f, Ui.TEXT).apply { setPadding(0, dp(6), 0, 0); setTextIsSelectable(true) }
+        c.addView(a)
+        askOut.addView(c)
+        if (!LlmModels.usable()) return run { a.text = "This phone or build cannot run the models." }
+        if (LlmModels.ALL.none { it.role != "embed" && LlmModels.ready(this, it) }) return run {
+            a.text = "Download LFM2.5 1.2B first: More, AI models."
         }
         Thread {
-            VoiceprintModel.download(this, ch)
-            main.post { showModel(); Listen.peopleChanged() }
-        }.start()
-        ticker { showModel(); VoiceprintModel.progress >= 0 }
-    }
-
-    // Runs show() every half second while it says to go on.
-    private fun ticker(show: () -> Boolean) {
-        val r = object : Runnable {
-            override fun run() {
-                if (show()) main.postDelayed(this, 500)
+            val got = runCatching { Search.ask(this, q, deep) { t -> main.post { a.text = t.ifEmpty { "Thinking…" } } } }
+                .getOrElse { "It stopped: ${it.message}" } ?: "Download LFM2.5 1.2B first: More, AI models."
+            main.post {
+                a.text = got
+                history.add(0, q to got)
+                showHistory(keep = 1)
             }
-        }
-        main.postDelayed(r, 300)
+        }.start()
     }
 
-    // ------------------------------------------------ Ask
-
-    private fun buildAsk(): LinearLayout {
-        val box = column()
+    private fun findNow(q: String) {
+        if (q.isEmpty()) return
+        askOut.removeAllViews()
         val c = card()
-        c.addView(caps("ask about anything said"))
-        c.addView(text("\"What did Maria say about the trip?\" · \"What did we decide yesterday?\" · \"Did anyone mention the " +
-            "dentist this week?\" Answers come from the transcript, on this phone. Quick: LFM2.5 1.2B, seconds. Deep: the " +
-            "biggest downloaded (8B-A1B thinks first). On the glasses: A, or say \"hey vox, …\".", 12.5f, Ui.FAINT)
-            .apply { setPadding(0, dp(4), 0, dp(8)) })
-        val question = field("Question", "", "ask about any day")
-        c.addView(question)
-        val ans = column().apply {
-            background = rounded(Ui.RAISED, dp(16).toFloat(), dp(1), Ui.STROKE)
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            visibility = View.GONE
-        }
-        val ansHead = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        ansHead.addView(Avatar(this, "Vox", 28))
-        ansHead.addView(caps("vox · on this phone", Ui.ACCENT).apply { setPadding(dp(8), 0, 0, 0) })
-        ans.addView(ansHead)
-        answer = text("", 15f, Ui.TEXT).apply { setPadding(0, dp(8), 0, 0); setTextIsSelectable(true) }
-        ans.addView(answer)
-        fun go(deep: Boolean) {
-            val q = question.text.toString().trim()
-            if (q.isEmpty()) return
-            ans.visibility = View.VISIBLE
-            if (!LlmModels.usable()) return run { answer.text = "This phone or build cannot run the models." }
-            if (LlmModels.ALL.none { it.role != "embed" && LlmModels.ready(this, it) }) return run { answer.text = "Download LFM2.5 1.2B first (Setup tab, AI models)." }
-            answer.text = "Thinking…"
-            Thread {
-                val got = runCatching { Search.ask(this, q, deep) { t -> main.post { answer.text = t.ifEmpty { "Thinking…" } } } }
-                    .getOrElse { "It stopped: ${it.message}" } ?: "Download LFM2.5 1.2B first (Setup tab, AI models)."
-                main.post {
-                    answer.text = got
-                    history.add(0, q to got)
-                    showHistory()
+        c.addView(caps("finding…"))
+        askOut.addView(c)
+        Thread {
+            val hits = runCatching { Search.find(this, q, 60) }.getOrDefault(emptyList())
+            val names = ListenDb.get(this).names()
+            main.post {
+                c.removeAllViews()
+                c.addView(caps("\"$q\" · ${hits.size} found"))
+                if (hits.isEmpty()) c.addView(text("Nothing found.", 13.5f, Ui.FAINT).apply { setPadding(0, dp(8), 0, 0) })
+                val fmt = SimpleDateFormat("EEE MMM d, h:mm a", Locale.US)
+                for (h in hits) {
+                    val who = names[h.line.person.ifEmpty { h.line.voice }] ?: "Someone"
+                    c.addView(caps("$who · ${fmt.format(Date(h.line.start))}" + if (h.meaning && !h.words) " · by meaning" else "",
+                        ListenLook.color(who), 9.5f).apply { setPadding(0, dp(12), 0, dp(2)) })
+                    c.addView(text(h.line.text, 14.5f, Ui.TEXT))
                 }
-            }.start()
-        }
-        c.addView(chipRow(chip("Ask", true) { go(false) }, chip("Ask deep", false) { go(true) }))
-        c.addView(ans, lp().apply { topMargin = dp(10) })
-        box.addView(c)
+            }
+        }.start()
+    }
+
+    private fun showHistory(keep: Int = 0) {
+        while (askOut.childCount > keep) askOut.removeViewAt(keep)
+        if (history.size <= keep) return
         val h = card()
         h.addView(caps("asked before"))
-        asked = column()
-        h.addView(asked)
-        box.addView(h)
-        showHistory()
-        return box
+        for ((q, a) in history.drop(keep).take(10)) {
+            h.addView(text(q, 14f, Ui.ACCENT, Ui.BOLD).apply { setPadding(0, dp(10), 0, dp(2)) })
+            h.addView(text(a, 13.5f, Ui.MUTED).apply { setTextIsSelectable(true) })
+        }
+        askOut.addView(h)
     }
 
-    private fun showHistory() {
-        asked.removeAllViews()
-        if (history.isEmpty()) asked.addView(text("Your questions and their answers show here.", 13f, Ui.FAINT))
-        for ((q, a) in history.take(10)) {
-            asked.addView(text(q, 14f, Ui.ACCENT, Ui.BOLD).apply { setPadding(0, dp(10), 0, dp(2)) })
-            asked.addView(text(a, 13.5f, Ui.MUTED).apply { setTextIsSelectable(true) })
+    // ------------------------------------------------ More: a menu, each row a page
+
+    private fun showMore(page: String) {
+        subpage = page
+        val b = moreBody
+        b.removeAllViews()
+        if (page.isNotEmpty()) {
+            b.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(2), 0, dp(10))
+                isClickable = true
+                setOnClickListener { showMore("") }
+                addView(text("‹  More", 15f, Ui.ACCENT, Ui.BOLD))
+            })
+        }
+        when (page) {
+            "" -> moreMenu(b)
+            "meet" -> meetPage(b)
+            "rules" -> rulesPage(b)
+            "hearing" -> hearingPage(b)
+            "models" -> modelsPage(b)
+            "voices" -> voicesPage(b)
         }
     }
 
-    // ------------------------------------------------ Meetings
-
-    private fun buildMeetings(): LinearLayout {
-        val box = column()
+    private fun moreMenu(b: LinearLayout) {
+        val rules = Automations.rules(this).count { it.on }
+        val ready = LlmModels.ALL.count { LlmModels.ready(this, it) } + (if (ToneModel.ready(this)) 1 else 0)
+        val items = listOf(
+            listOf("meet", "Meetings", "Start one, its notes, who talked how much", "tabs"),
+            listOf("rules", "Automations", "$rules on · Hey Vox, reminders, your own rules", "bolt"),
+            listOf("hearing", "Hearing", "Soft voices, the quiet-voice check, speed", "mic"),
+            listOf("models", "AI models", "$ready of ${LlmModels.ALL.size + 1} downloaded · LFM, meaning, tone", "spark"),
+            listOf("voices", "Voice recognition", VoiceprintModel.chosen(this).name + if (VoiceprintModel.ready(this)) " ready" else " not downloaded", "eye"),
+        )
         val c = card()
-        c.addView(caps("meeting"))
-        meetingLine = text("", 18f, Ui.TEXT, Ui.BLACK).apply { setPadding(0, dp(6), 0, dp(4)) }
-        c.addView(meetingLine)
-        meetingShare = ShareBars(this)
-        c.addView(meetingShare, lp().apply { topMargin = dp(6) })
-        val title = field("Title", "", "what it is about (optional)")
-        c.addView(title, lp().apply { topMargin = dp(8) })
-        catchUp = text("", 13.5f, Ui.TEXT).apply { setPadding(0, dp(8), 0, 0); setTextIsSelectable(true) }
-        c.addView(chipRow(
-            chip("Start / end", true) {
-                if (Meetings.current != null) Meetings.stop(this) else Meetings.start(this, title.text.toString().trim())
-                main.postDelayed({ showMeetings() }, 300)
-            },
-            chip("Bookmark", false) { Thread { Meetings.bookmark(this) }.start(); catchUp.text = "Bookmarked the last 30 s." },
-            chip("Catch me up", false) {
-                catchUp.text = "Thinking…"
-                Thread {
-                    val t = runCatching { Meetings.catchUp(this) { s -> main.post { catchUp.text = s } } }.getOrNull()
-                    main.post { catchUp.text = t ?: "Download LFM2.5 1.2B first (Setup tab)." }
-                }.start()
-            },
-        ))
-        c.addView(catchUp)
-        c.addToggle(toggle("Start from the calendar", "An event with two or more people starts a meeting while Listen is on; " +
-            "it ends 5 min after the event", settings.listenMeetingsAuto) { settings.listenMeetingsAuto = it })
-        c.addView(text("When a meeting ends, the phone's LFM writes its notes: summary, decisions, action items, open " +
-            "questions, your bookmarks and notes, who talked how much, the transcript, as a file (Alt+N on the glasses). " +
-            "Glasses' live view: S start / end, B bookmark, I action item, T note, C catch me up.", 12f, Ui.FAINT)
-            .apply { setPadding(0, dp(6), 0, 0) })
-        box.addView(c)
-        val t = card()
-        t.addView(caps("today's talk"))
-        todayShare = ShareBars(this)
-        t.addView(todayShare, lp().apply { topMargin = dp(8) })
-        insights = text("", 13f, Ui.MUTED).apply { setPadding(0, dp(8), 0, 0) }
-        t.addView(insights)
-        box.addView(t)
-        val p = card()
-        p.addView(caps("past meetings"))
-        meetingsBox = column()
-        p.addView(meetingsBox)
-        box.addView(p)
-        return box
+        for ((i, item) in items.withIndex()) {
+            if (i > 0) c.rule()
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(12), 0, dp(12))
+                isClickable = true
+                setOnClickListener { showMore(item[0]) }
+            }
+            row.addView(IconView(this, item[3], 22, Ui.ACCENT))
+            val t = column()
+            t.addView(text(item[1], 16f, Ui.TEXT, Ui.BOLD))
+            t.addView(text(item[2], 12.5f, Ui.MUTED))
+            row.addView(t, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(14) })
+            row.addView(IconView(this, "chevron", 18, Ui.FAINT))
+            c.addView(row)
+        }
+        b.addView(c)
+        b.addView(text("Every day is also a file, \"Transcript <date>.md\", and every meeting its notes, in Vox's docs folder " +
+            "(Alt+N on the glasses). On the glasses, the live view: hub L or Alt+E.", 12.5f, Ui.FAINT).apply { setPadding(dp(4), dp(4), dp(4), 0) })
     }
+
+    // ---- Meetings
 
     private fun shareRows(st: Words.Stats): List<Triple<String, Float, String>> = st.people.take(6).map {
         val m = (it.seconds / 60).toInt()
@@ -738,39 +743,72 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         Triple(it.who, (it.seconds / maxOf(1.0, st.seconds)).toFloat(), "${Words.pct(it.seconds, st.seconds)}% · $m:${"%02d".format(s)}")
     }
 
-    private fun showMeetings() {
+    private fun meetPage(b: LinearLayout) {
+        val c = card()
+        c.addView(caps("meeting"))
         val cur = Meetings.current
-        meetingLine.text = when {
+        val line = text(when {
             cur != null -> "● ${cur.title} · ${(System.currentTimeMillis() - cur.started) / 60000} min"
             Meetings.writing.isNotEmpty() -> "Writing the notes of ${Meetings.writing}…"
             else -> "No meeting now"
-        }
-        meetingLine.setTextColor(if (cur != null) Ui.ACCENT else Ui.TEXT)
+        }, 18f, if (cur != null) Ui.ACCENT else Ui.TEXT, Ui.BLACK).apply { setPadding(0, dp(6), 0, dp(4)) }
+        c.addView(line)
+        val share = ShareBars(this).apply { visibility = View.GONE }
+        c.addView(share)
+        val title = field("Title", "", "what it is about (optional)")
+        if (cur == null) c.addView(title, lp().apply { topMargin = dp(6) })
+        val out = text("", 13.5f, Ui.TEXT).apply { setPadding(0, dp(8), 0, 0); setTextIsSelectable(true) }
+        c.addView(chipRow(
+            chip(if (cur != null) "End the meeting" else "Start a meeting", true) {
+                if (Meetings.current != null) Meetings.stop(this) else Meetings.start(this, title.text.toString().trim())
+                main.postDelayed({ showMore("meet") }, 300)
+            },
+            chip("Bookmark", false) { Thread { Meetings.bookmark(this) }.start(); out.text = "Bookmarked the last 30 s." },
+            chip("Catch me up", false) {
+                out.text = "Thinking…"
+                Thread {
+                    val t = runCatching { Meetings.catchUp(this) { s -> main.post { out.text = s } } }.getOrNull()
+                    main.post { out.text = t ?: "Download LFM2.5 1.2B first (AI models)." }
+                }.start()
+            },
+        ), lp().apply { topMargin = dp(6) })
+        c.addView(out)
+        c.addToggle(toggle("Start from the calendar", "An event with two or more people starts one while Listen is on",
+            settings.listenMeetingsAuto) { settings.listenMeetingsAuto = it })
+        b.addView(c)
+        val t = card()
+        t.addView(caps("today's talk"))
+        val todayShare = ShareBars(this)
+        t.addView(todayShare, lp().apply { topMargin = dp(8) })
+        val report = text("", 13f, Ui.MUTED).apply { setPadding(0, dp(8), 0, 0) }
+        t.addView(report)
+        b.addView(t)
+        val p = card()
+        p.addView(caps("past meetings"))
+        val past = column()
+        p.addView(past)
+        b.addView(p)
         Thread {
             val st = Meetings.stats(this)
-            val list = ListenDb.get(this).meetings(10)
+            val db = ListenDb.get(this)
+            val (base, n) = Words.baseline(this)
+            val today = Words.stats(db.between(ListenDb.dayStart(System.currentTimeMillis()), Long.MAX_VALUE), db.names(), base, n)
+            val list = db.meetings(10)
             main.post {
-                meetingShare.visibility = if (st != null && st.lines > 0) View.VISIBLE else View.GONE
-                if (st != null) meetingShare.set(shareRows(st))
-                meetingsBox.removeAllViews()
-                if (list.isEmpty()) meetingsBox.addView(text("None yet.", 13f, Ui.FAINT))
+                if (st != null && st.lines > 0) { share.visibility = View.VISIBLE; share.set(shareRows(st)) }
+                todayShare.set(shareRows(today))
+                report.text = if (today.lines == 0) "Nothing heard today yet." else Words.report(today)
+                if (list.isEmpty()) past.addView(text("None yet.", 13f, Ui.FAINT))
                 val fmt = SimpleDateFormat("EEE MMM d, h:mm a", Locale.US)
                 for (m in list) {
-                    meetingsBox.addView(text(m.title, 15f, Ui.TEXT, Ui.BOLD).apply { setPadding(0, dp(12), 0, 0) })
-                    meetingsBox.addView(caps(fmt.format(Date(m.started)) + (if (m.ended > 0) " · ${(m.ended - m.started) / 60000} min" else " · going on"),
-                        Ui.FAINT, 9.5f))
-                    if (m.summary.isNotEmpty()) meetingsBox.addView(text(m.summary.take(700), 13f, Ui.MUTED).apply {
-                        setPadding(0, dp(4), 0, 0)
-                        setTextIsSelectable(true)
-                    })
-                    if (m.ended > 0) meetingsBox.addView(chipRow(chip("Write the notes again", false) {
-                        meetingLine.text = "Writing the notes of ${m.title}…"
+                    past.addView(text(m.title, 15f, Ui.TEXT, Ui.BOLD).apply { setPadding(0, dp(12), 0, 0) })
+                    past.addView(caps(fmt.format(Date(m.started)) + (if (m.ended > 0) " · ${(m.ended - m.started) / 60000} min" else " · going on"), Ui.FAINT, 9.5f))
+                    if (m.summary.isNotEmpty()) past.addView(text(m.summary.take(700), 13f, Ui.MUTED).apply { setTextIsSelectable(true) })
+                    if (m.ended > 0) past.addView(chipRow(chip("Write the notes again", false) {
+                        line.text = "Writing the notes of ${m.title}…"
                         Thread {
                             val f = runCatching { Meetings.write(this, m.id) }.getOrNull()
-                            main.post {
-                                meetingLine.text = if (f != null) "Saved ${f.name}" else "The notes could not be written"
-                                showMeetings()
-                            }
+                            main.post { line.text = if (f != null) "Saved ${f.name}" else "The notes could not be written" }
                         }.start()
                     }))
                 }
@@ -778,32 +816,27 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         }.start()
     }
 
-    private fun showInsights() {
-        Thread {
-            val db = ListenDb.get(this)
-            val day = ListenDb.dayStart(System.currentTimeMillis())
-            val (base, n) = Words.baseline(this)
-            val st = Words.stats(db.between(day, Long.MAX_VALUE), db.names(), base, n)
-            main.post {
-                todayShare.set(shareRows(st))
-                insights.text = if (st.lines == 0) "Nothing heard today yet." else Words.report(st)
-            }
-        }.start()
-    }
+    // ---- Automations
 
-    // ------------------------------------------------ Rules
-
-    private fun buildRules(): LinearLayout {
-        val box = column()
-        val c = card()
-        c.addView(caps("automations"))
-        c.addView(text("Each rule runs on every line the moment it is written. Words: phrases, comma-separated (* any line). " +
-            "Who: anyone, me, not me, or a name. Listen reads at once while any rule is on.", 12.5f, Ui.FAINT)
-            .apply { setPadding(0, dp(4), 0, dp(4)) })
-        autoBox = column()
-        c.addView(autoBox)
-        c.addView(chipRow(chip("Add a rule", true) { editRule(null) }))
-        box.addView(c)
+    private fun rulesPage(b: LinearLayout) {
+        b.addView(text("Each rule runs on every line the moment it is written. Words: phrases, comma-separated (* any line). " +
+            "Who: anyone, me, not me, or a name.", 12.5f, Ui.FAINT).apply { setPadding(dp(4), 0, dp(4), dp(6)) })
+        for (r in Automations.rules(this)) {
+            val row = card()
+            row.background = rounded(Ui.SURFACE, dp(20).toFloat(), dp(1), if (r.on) Ui.ACCENT else Ui.STROKE)
+            row.addToggle(toggle(r.name, r.summary(), r.on) { on ->
+                r.on = on
+                Automations.save(this, Automations.rules(this))
+                main.post { showMore("rules") }
+            })
+            if (r.lastAt > 0) row.addView(caps("fired " + SimpleDateFormat("h:mm:ss a", Locale.US).format(Date(r.lastAt)), Ui.ACCENT, 9.5f))
+            row.addView(chipRow(chip("Edit", false) { editRule(r) }, chip("Delete", false) {
+                Automations.save(this, Automations.rules(this).filter { it.id != r.id })
+                showMore("rules")
+            }))
+            b.addView(row)
+        }
+        b.addView(chipRow(chip("Add a rule", true) { editRule(null) }))
         val t = card()
         t.addView(caps("try a line"))
         val tryLine = field("Line", "", "hey vox, what did we decide yesterday")
@@ -821,32 +854,9 @@ class ListenActivity : Activity(), HearingCheck.Ui {
             tryOut.setTextColor(if (hits.isEmpty()) Ui.MUTED else Ui.ACCENT)
         }))
         t.addView(tryOut)
-        box.addView(t)
-        return box
+        b.addView(t)
     }
 
-    private fun showRules() {
-        autoBox.removeAllViews()
-        for (r in Automations.rules(this)) {
-            val row = column().apply {
-                background = rounded(Ui.RAISED, dp(16).toFloat(), dp(1), if (r.on) Ui.ACCENT else Ui.STROKE)
-                setPadding(dp(14), dp(4), dp(14), dp(8))
-            }
-            row.addToggle(toggle(r.name, r.summary(), r.on) { on ->
-                r.on = on
-                Automations.save(this, Automations.rules(this))
-                main.post { showRules() }
-            })
-            if (r.lastAt > 0) row.addView(caps("fired " + SimpleDateFormat("h:mm:ss a", Locale.US).format(Date(r.lastAt)), Ui.ACCENT, 9.5f))
-            row.addView(chipRow(chip("Edit", false) { editRule(r) }, chip("Delete", false) {
-                Automations.save(this, Automations.rules(this).filter { it.id != r.id })
-                showRules()
-            }))
-            autoBox.addView(row, lp().apply { topMargin = dp(10) })
-        }
-    }
-
-    // A rule's fields in a dialog (new when r is null).
     private fun editRule(r: Automations.Rule?) {
         val rule = r ?: Automations.Rule(java.util.UUID.randomUUID().toString().take(8), "", true, "", "", "", mutableSetOf("glasses"), "", "", 30)
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0) }
@@ -865,7 +875,7 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         val cmd = field("Vox command", rule.command, "lights off, timer 5 minutes…").also { box.addField(it) }
         val url = field("Webhook URL", rule.url, "https://…").also { box.addField(it) }
         val rest = field("Rest after firing (s)", rule.restS.toString(), "30", numeric = true).also { box.addField(it) }
-        dialog().setTitle(if (r == null) "New rule" else "Edit ${r.name}").setView(android.widget.ScrollView(this).apply { addView(box) })
+        dialog().setTitle(if (r == null) "New rule" else "Edit ${r.name}").setView(ScrollView(this).apply { addView(box) })
             .setPositiveButton("Save") { _, _ ->
                 rule.name = name.text.toString().trim().ifEmpty { "Rule" }
                 rule.words = words.text.toString().trim()
@@ -876,32 +886,41 @@ class ListenActivity : Activity(), HearingCheck.Ui {
                 rule.url = url.text.toString().trim()
                 rule.restS = rest.text.toString().toIntOrNull()?.coerceIn(0, 86400) ?: 30
                 Automations.save(this, Automations.rules(this).filter { it.id != rule.id } + rule)
-                showRules()
+                showMore("rules")
             }.setNegativeButton("Cancel", null).show()
     }
 
-    // ------------------------------------------------ Setup
+    // ---- Hearing (and the quiet-voice check)
 
-    private fun buildSetup(): LinearLayout {
-        val box = column()
-        val sp = card()
-        sp.addView(caps("speed"))
-        sp.addView(segmented(listOf("auto" to "Auto", "live" to "Live", "eco" to "Eco"), settings.listenSpeed) { settings.listenSpeed = it })
-        sp.addView(text("Auto: at once while you look (the glasses' live view, this page), while charging or while a rule " +
-            "is on; otherwise in batches every 2 minutes so the phone rests. Nothing is lost either way.", 12f, Ui.FAINT))
-        box.addView(sp)
+    private fun hearingPage(b: LinearLayout) {
+        val ck = card()
+        ck.addView(caps("quiet-voice check"))
+        ck.addView(text("The softest voice reads 10 short sentences at their usual volume. Passes at 10/10 near (1 m), 9/10 " +
+            "far (3 m), 90% of the words right; if not, it finds settings that hear them. Then remember the voice.", 12.5f, Ui.FAINT))
+        ck.addView(segmented(listOf("near" to "Near (1 m)", "far" to "Far (3 m)"), if (far) "far" else "near") { far = it == "far" })
+        sentence = text("", 21f, Ui.TEXT, Ui.BLACK).apply { setPadding(0, dp(8), 0, dp(4)) }.also { ck.addView(it) }
+        checkState = text("", 13f, Ui.MUTED).also { ck.addView(it) }
+        checkList = column().also { ck.addView(it) }
+        ck.addView(chipRow(chip("Start the check", true) { startCheck() }, chip("Next sentence", false) { check?.skip() },
+            chip("Stop", false) { check?.cancel(); check = null }))
+        checkUse = chip("Use these settings", true) {
+            suggestion?.let {
+                settings.listenSensitivity = it.sensitivity
+                settings.listenBoost = it.boost
+                checkState?.text = "Set: sensitivity ${it.sensitivity}, boost +${it.boost} dB. Run the check again to confirm."
+            }
+        }.apply { visibility = View.GONE }.also { ck.addView(it) }
+        saveVoice = chip("Remember this voice…", true) { saveCheckedVoice() }.apply { visibility = View.GONE }.also { ck.addView(it) }
+        b.addView(ck)
 
         val how = card()
         how.addView(caps("hearing"))
-        how.addView(text("For soft voices: raise the sensitivity or the boost, keep the second chance on, then run the check " +
-            "below. The trace on top shows it: speech should rise well over the dashed line.", 12.5f, Ui.FAINT))
         how.addView(slider("Sensitivity", 1, 10, settings.listenSensitivity,
             { "$it · threshold ${"%.2f".format(Locale.US, Listen.threshold(it))}" }) { settings.listenSensitivity = it })
         how.addView(slider("Boost for the detector", 0, 24, settings.listenBoost, { "+$it dB" }) { settings.listenBoost = it })
-        how.addToggle(toggle("Automatic level", "Lifts a quiet room so soft speech still counts (up to +18 dB more)",
-            settings.listenAutoLevel) { settings.listenAutoLevel = it })
-        how.addToggle(toggle("Second chance for quiet speech", "A keener detector keeps quiet phrases the first one missed " +
-            "when they hold real words (marked quiet)", settings.listenSecondChance) { settings.listenSecondChance = it })
+        how.addToggle(toggle("Automatic level", "Lifts a quiet room so soft speech still counts", settings.listenAutoLevel) { settings.listenAutoLevel = it })
+        how.addToggle(toggle("Second chance for quiet speech", "Keeps quiet phrases with real words (marked quiet)",
+            settings.listenSecondChance) { settings.listenSecondChance = it })
         how.addView(slider("End of a phrase after", 300, 1500, settings.listenPauseMs, { "$it ms of quiet" }) { settings.listenPauseMs = it })
         how.addView(caps("microphone", Ui.FAINT).apply { setPadding(0, dp(8), 0, 0) })
         val sources = mutableListOf("voice" to "Voice", "camcorder" to "Camcorder", "mic" to "Standard")
@@ -910,69 +929,31 @@ class ListenActivity : Activity(), HearingCheck.Ui {
             settings.listenSource = it
             MicHub.reopen()
         })
-        how.addToggle(toggle("Day files", "Each day's transcript as a file in Vox's docs folder (Alt+N on the glasses)",
-            settings.listenFiles) { settings.listenFiles = it })
-        box.addView(how)
-
-        val ck = card()
-        ck.addView(caps("quiet-voice check"))
-        ck.addView(text("The softest voice reads 10 short sentences at their usual volume. Near: about 1 m. Far: across the " +
-            "room. Passes at 10/10 near, 9/10 far, 90% of the words right; if not, it tries other settings on the same " +
-            "recording. Then remember the voice: it gets the name and a lower bar (soft voice).", 12.5f, Ui.FAINT))
-        ck.addView(segmented(listOf("near" to "Near (1 m)", "far" to "Far (3 m)"), "near") { far = it == "far" })
-        sentence = text("", 21f, Ui.TEXT, Ui.BLACK).apply { setPadding(0, dp(10), 0, dp(6)) }
-        ck.addView(sentence)
-        checkState = text("", 13f, Ui.MUTED)
-        ck.addView(checkState)
-        checkList = column()
-        ck.addView(checkList)
-        ck.addView(chipRow(chip("Start the check", true) { startCheck() }, chip("Next sentence", false) { check?.skip() },
-            chip("Stop", false) { check?.cancel(); check = null }))
-        checkUse = chip("Use these settings", true) {
-            suggestion?.let {
-                settings.listenSensitivity = it.sensitivity
-                settings.listenBoost = it.boost
-                checkState.text = "Set: sensitivity ${it.sensitivity}, boost +${it.boost} dB. Run the check again to confirm."
-                recreate()
-            }
-        }.apply { visibility = View.GONE }
-        ck.addView(checkUse)
-        saveVoice = chip("Remember this voice…", true) { saveCheckedVoice() }.apply { visibility = View.GONE }
-        ck.addView(saveVoice)
-        box.addView(ck)
-
-        val ai = card()
-        ai.addView(caps("ai models · on this phone, offline"))
-        ai.addView(text("Liquid's LFM2.5 answers and writes meeting notes; EmbeddingGemma finds by meaning; SenseVoice hears " +
-            "the tone. Wi-Fi is best.", 12.5f, Ui.FAINT))
-        modelsBox = column()
-        ai.addView(modelsBox)
-        ai.addToggle(toggle("Tone of voice", "Each line's emotion and sounds (laughter, music…)", settings.listenTone) { settings.listenTone = it })
-        ai.addToggle(toggle("Search by meaning", "A meaning vector for lines of four words or more, made while the phone is " +
-            "quiet", settings.listenMeaning) { settings.listenMeaning = it })
-        box.addView(ai)
-        return box
+        how.addView(caps("speed", Ui.FAINT).apply { setPadding(0, dp(8), 0, 0) })
+        how.addView(segmented(listOf("auto" to "Auto", "live" to "Live", "eco" to "Eco"), settings.listenSpeed) { settings.listenSpeed = it })
+        how.addView(text("Auto: at once while you look, charge or have a rule on; else in batches every 2 min.", 12f, Ui.FAINT))
+        how.addToggle(toggle("Day files", "Each day's transcript as a file in the docs folder", settings.listenFiles) { settings.listenFiles = it })
+        b.addView(how)
     }
 
-    // One model as a row: name, what for, size and state, a bar while downloading, Download / Delete.
+    // ---- AI models
+
     private fun modelRow(name: String, about: String, size: Long, ready: Boolean, progress: Long, problem: String?,
                          onDownload: () -> Unit, onDelete: () -> Unit): View {
-        fun gb(b: Long) = if (b >= 1_000_000_000) "%.1f GB".format(Locale.US, b / 1e9) else "${b / 1_000_000} MB"
-        val r = column().apply {
-            background = rounded(Ui.RAISED, dp(16).toFloat(), dp(1), if (ready) Ui.ACCENT else Ui.STROKE)
-            setPadding(dp(14), dp(10), dp(14), dp(10))
-        }
+        fun gb(bytes: Long) = if (bytes >= 1_000_000_000) "%.1f GB".format(Locale.US, bytes / 1e9) else "${bytes / 1_000_000} MB"
+        val r = card()
+        r.background = rounded(Ui.SURFACE, dp(20).toFloat(), dp(1), if (ready) Ui.ACCENT else Ui.STROKE)
         val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val t = column()
-        t.addView(text(name, 15f, Ui.TEXT, Ui.BOLD))
-        t.addView(text("$about · ${gb(size)}", 12f, Ui.MUTED))
+        t.addView(text(name, 15.5f, Ui.TEXT, Ui.BOLD))
+        t.addView(text("$about · ${gb(size)}", 12.5f, Ui.MUTED))
         t.addView(caps(when {
             progress >= 0 -> "downloading ${gb(progress)}"
             ready -> "ready"
             problem != null -> "stopped: $problem"
             else -> "not downloaded"
         }, if (ready) Ui.GOOD else if (progress >= 0) Ui.ACCENT else Ui.FAINT, 9.5f))
-        top.addView(t, lp(0, weight = 1f))
+        top.addView(t, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         if (progress < 0) top.addView(chip(if (ready) "Delete" else "Download", !ready) {
             if (ready) dialog().setTitle("Delete $name?").setPositiveButton("Delete") { _, _ -> onDelete() }
                 .setNegativeButton("Cancel", null).show()
@@ -983,25 +964,71 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         return r
     }
 
-    private fun showModels() {
-        modelsBox.removeAllViews()
-        if (!LlmModels.usable()) modelsBox.addView(text("This build or phone cannot run the language models (vox_llm: " +
-            "${LlmNative.available}, CPU: ${LlmModels.cpuOk}).", 13f, Ui.WARN))
+    private fun ticker(page: String, going: () -> Boolean) {
+        val r = object : Runnable {
+            override fun run() {
+                if (tab == "more" && subpage == page) showMore(page)
+                if (going()) main.postDelayed(this, 700)
+            }
+        }
+        main.postDelayed(r, 300)
+    }
+
+    private fun modelsPage(b: LinearLayout) {
+        b.addView(text("On this phone, offline. Get LFM2.5 1.2B first (Ask, Hey Vox, catch-up); a deep model for meeting " +
+            "notes; EmbeddingGemma to find by meaning; SenseVoice for tone. Wi-Fi is best.", 12.5f, Ui.FAINT)
+            .apply { setPadding(dp(4), 0, dp(4), dp(6)) })
+        if (!LlmModels.usable()) b.addView(text("This build or phone cannot run the language models (vox_llm: ${LlmNative.available}, " +
+            "CPU: ${LlmModels.cpuOk}).", 13f, Ui.WARN))
         for (m in LlmModels.ALL) {
             val busy = LlmModels.downloading == m.id
-            modelsBox.addView(modelRow(m.name, m.about, m.part.size, LlmModels.ready(this, m), if (busy) maxOf(0L, LlmModels.progress) else -1,
+            b.addView(modelRow(m.name, m.about, m.part.size, LlmModels.ready(this, m), if (busy) maxOf(0L, LlmModels.progress) else -1,
                 if (busy) LlmModels.problem else null, onDownload = {
                     if (LlmModels.downloading.isEmpty()) {
-                        Thread { LlmModels.download(this, m); main.post { showModels() } }.start()
-                        ticker { showModels(); LlmModels.downloading.isNotEmpty() }
+                        Thread { LlmModels.download(this, m); main.post { if (subpage == "models") showMore("models") } }.start()
+                        ticker("models") { LlmModels.downloading.isNotEmpty() }
                     }
-                }, onDelete = { LlmModels.delete(this, m); showModels() }), lp().apply { topMargin = dp(10) })
+                }, onDelete = { LlmModels.delete(this, m); showMore("models") }))
         }
-        modelsBox.addView(modelRow("SenseVoice Small", "tone of voice: emotions and sounds", ToneModel.bytes, ToneModel.ready(this),
+        b.addView(modelRow("SenseVoice Small", "tone of voice: emotions and sounds", ToneModel.bytes, ToneModel.ready(this),
             ToneModel.progress, ToneModel.problem, onDownload = {
-                Thread { ToneModel.download(this); main.post { showModels() } }.start()
-                ticker { showModels(); ToneModel.progress >= 0 }
-            }, onDelete = { ToneModel.delete(this); showModels() }), lp().apply { topMargin = dp(10) })
+                Thread { ToneModel.download(this); main.post { if (subpage == "models") showMore("models") } }.start()
+                ticker("models") { ToneModel.progress >= 0 }
+            }, onDelete = { ToneModel.delete(this); showMore("models") }))
+        val c = card()
+        c.addToggle(toggle("Tone of voice", "Each line's emotion and sounds", settings.listenTone) { settings.listenTone = it })
+        c.addToggle(toggle("Find by meaning", "Meaning vectors for lines of four words or more, made while quiet", settings.listenMeaning) {
+            settings.listenMeaning = it
+        })
+        b.addView(c)
+    }
+
+    // ---- Voice recognition
+
+    private fun voicesPage(b: LinearLayout) {
+        val ch = VoiceprintModel.chosen(this)
+        val c = card()
+        c.addView(caps("voiceprint model"))
+        c.addView(segmented(VoiceprintModel.CHOICES.map { it.id to it.name }, settings.listenVoiceModel) {
+            settings.listenVoiceModel = it
+            Listen.peopleChanged()
+            showMore("voices")
+        })
+        c.addView(text("Each model knows people by its own voiceprints: after switching, record the voices again.", 12f, Ui.FAINT))
+        b.addView(c)
+        b.addView(modelRow(ch.name, ch.about, ch.part.size, VoiceprintModel.ready(this, ch), VoiceprintModel.progress, VoiceprintModel.problem,
+            onDownload = {
+                Thread { VoiceprintModel.download(this, ch); main.post { Listen.peopleChanged(); if (subpage == "voices") showMore("voices") } }.start()
+                ticker("voices") { VoiceprintModel.progress >= 0 }
+            }, onDelete = { VoiceprintModel.delete(this, ch); Listen.peopleChanged(); showMore("voices") }))
+        val t = card()
+        t.addToggle(toggle("Know who speaks", "A voiceprint for each line, matched to the people", settings.listenSpeakers) {
+            settings.listenSpeakers = it
+            Listen.peopleChanged()
+        })
+        t.addToggle(toggle("Split where the speaker changes", "A phrase with two people becomes a line each (6 MB more)",
+            settings.listenSplit) { settings.listenSplit = it })
+        b.addView(t)
     }
 
     // ------------------------------------------------ the check
@@ -1010,38 +1037,38 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         if (check != null) return
         if (!micAllowed()) return askMic()
         if (!VoiceModel.ready(this)) {
-            checkState.text = "Download the speech model first (Voice tab)."
+            checkState?.text = "Download the speech model first (Voice tab)."
             return
         }
-        checkList.removeAllViews()
-        checkUse.visibility = View.GONE
-        saveVoice.visibility = View.GONE
-        sentence.setTextColor(Ui.TEXT)
+        checkList?.removeAllViews()
+        checkUse?.visibility = View.GONE
+        saveVoice?.visibility = View.GONE
+        sentence?.setTextColor(Ui.TEXT)
         suggestion = null
         check = HearingCheck(this, this).also { it.start(far) }
     }
 
     override fun prompt(i: Int, total: Int, sentence: String) = main.post {
-        this.sentence.text = "${i + 1}/$total   “$sentence”"
+        this.sentence?.text = "${i + 1}/$total   “$sentence”"
     }.let { }
 
     override fun heard(i: Int, ok: Boolean, got: String, accuracy: Int, quiet: Boolean) = main.post {
         val mark = if (ok) "✓" else "✗"
         val line = "$mark ${i + 1}. " + (if (ok) "$accuracy% · $got" else "not heard") + if (quiet) " (second chance)" else ""
-        checkList.addView(text(line, 13f, if (ok && accuracy >= 90) Ui.GOOD else if (ok) Ui.WARN else Ui.BAD))
+        checkList?.addView(text(line, 13f, if (ok && accuracy >= 90) Ui.GOOD else if (ok) Ui.WARN else Ui.BAD))
     }.let { }
 
-    override fun status(s: String) = main.post { checkState.text = s }.let { }
+    override fun status(s: String) = main.post { checkState?.text = s }.let { }
 
     override fun done(r: HearingCheck.Result) = main.post {
         check = null
-        sentence.text = if (r.passed) "Passed" else "Not yet"
-        sentence.setTextColor(if (r.passed) Ui.GOOD else Ui.WARN)
-        checkState.text = "${if (r.far) "Far" else "Near"}: heard ${r.heard}/${r.total}, words ${r.accuracy}% right. ${r.note}"
+        sentence?.text = if (r.passed) "Passed" else "Not yet"
+        sentence?.setTextColor(if (r.passed) Ui.GOOD else Ui.WARN)
+        checkState?.text = "${if (r.far) "Far" else "Near"}: heard ${r.heard}/${r.total}, words ${r.accuracy}% right. ${r.note}"
         suggestion = r.suggestion?.takeIf { it.heard > r.heard }
-        checkUse.visibility = if (suggestion != null) View.VISIBLE else View.GONE
+        checkUse?.visibility = if (suggestion != null) View.VISIBLE else View.GONE
         lastClips = r.clips
-        saveVoice.visibility = if (r.clips.size >= 3) View.VISIBLE else View.GONE
+        saveVoice?.visibility = if (r.clips.size >= 3) View.VISIBLE else View.GONE
     }.let { }
 
     private fun saveCheckedVoice() {
@@ -1056,12 +1083,12 @@ class ListenActivity : Activity(), HearingCheck.Ui {
             .setPositiveButton("Save") { _, _ ->
                 val n = name.text.toString().trim()
                 if (n.isEmpty()) return@setPositiveButton
-                checkState.text = "Remembering $n's voice…"
+                checkState?.text = "Remembering $n's voice…"
                 Thread {
                     val err = Speakers.enroll(this, n, true, clips)
                     main.post {
-                        checkState.text = err?.let { "Not saved: $it" } ?: "Saved $n (soft voice): their lines carry the name."
-                        saveVoice.visibility = View.GONE
+                        checkState?.text = err?.let { "Not saved: $it" } ?: "Saved $n (soft voice): their lines carry the name."
+                        saveVoice?.visibility = View.GONE
                     }
                 }.start()
             }.setNegativeButton("Cancel", null).show()

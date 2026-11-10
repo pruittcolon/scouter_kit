@@ -489,9 +489,11 @@ with the app in the back.
   next reminder or the newest note). It shows the next alarm, the reminders, the newest notes and the next two
   calendar events. A timer's end or a reminder shows on the glasses for 8 s (the display on for it), buzzes the
   phone and leaves a notification. Notes and reminders stay in Vox's private settings; Esc closes the hub.
-- **Listen mode** (Voice tab, Listen mode: a console, `ListenActivity` + `ListenViews.kt`: the orb (tap on / off, hold
-  pause), the trace of the last seconds against the room's level, tiles, and tabs Live, People, Ask, Meet, Rules,
-  Setup; `Listen.kt`, `ListenService`, `MicHub.kt`, `ListenDb.kt`, `Hearing.kt`):
+- **Listen mode** (Voice tab, Listen mode: `ListenActivity` + `ListenViews.kt`, a top bar with the orb (tap on / off,
+  hold pause) and a bottom bar of four places: Live (the conversation growing at the bottom as it is said, the
+  sound's trace, the words being said pinned under it), People (voices to name first, you, the people), Ask (answers
+  and finds), More (meetings, automations, hearing and the quiet-voice check, AI models, voice recognition);
+  `Listen.kt`, `ListenService`, `MicHub.kt`, `ListenDb.kt`, `Hearing.kt`):
   the phone's microphone all day in its own microphone service, every phrase written down with its time in
   `listen.db` (conversations after 5 min of quiet, FTS4 search) and, as a file a day, `Transcript <date>.md` in the
   docs folder. One shared phone microphone (`MicHub`) feeds Listen, captions and Car mode together; one shared

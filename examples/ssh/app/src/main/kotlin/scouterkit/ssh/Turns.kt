@@ -82,7 +82,8 @@ class Turns(c: Context) {
             var parts = within(segs, from, to)
             if (parts.size < 2) continue
             // Parts whose voice cannot be named join their longer neighbour; then neighbours of one voice join.
-            parts = absorb(parts) { t -> named(slice(p.samples, t)) }
+            val seen = HashMap<Pair<Float, Float>, Boolean>()
+            parts = absorb(parts) { t -> seen.getOrPut(t.start to t.end) { named(slice(p.samples, t)) } }
             parts = joinSame(parts)
             if (parts.size < 2 || parts.any { it.dur < 1.5f }) continue
             val cut = parts.map { t ->
