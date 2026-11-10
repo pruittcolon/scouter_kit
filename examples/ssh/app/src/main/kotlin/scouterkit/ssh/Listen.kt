@@ -456,8 +456,10 @@ object Listen {
                 waiting = ListenQueue.seconds(c)
                 runCatching { Meetings.tick(c) }
                 // Someone looks: the model ready for the words as they are said.
-                if (engine == null && nowE < lookUntil.get() && !hot(c))
+                if (engine == null && nowE < lookUntil.get() && !hot(c)) {
                     engine = runCatching { Parakeet.use(c, "listen") }.getOrNull()
+                    lastWork = nowE
+                }
                 // The phrase being said, read every second while someone looks and nothing waits.
                 val r = ring
                 val from = speechFrom
@@ -486,7 +488,7 @@ object Listen {
                             .onFailure { Log.w(ScouterService.TAG, "listen: vectors: ${it.message}") }
                     }
                     // Nothing for 10 min: the model leaves memory (it loads again in a few seconds).
-                    if (engine != null && nowE - lastWork > 10 * 60_000L && ListenQueue.count(c) == 0) {
+                    if (engine != null && nowE - lastWork > 10 * 60_000L && nowE >= lookUntil.get() && ListenQueue.count(c) == 0) {
                         Parakeet.done("listen")
                         engine = null
                         prints?.release()
