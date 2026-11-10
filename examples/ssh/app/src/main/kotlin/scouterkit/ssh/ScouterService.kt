@@ -61,6 +61,7 @@ object Session {
     @Volatile var peopleTyping = false // it takes typing (a text)
     @Volatile var editor = false // the text editor is open (Alt+N): it takes the keys
     @Volatile var listenPanel = false // Listen mode's panel is open (hub L, or Alt+E while Listen is on)
+    @Volatile var listenTyping = false // it takes typing (a name for a voice)
     @Volatile var car = "" // Car mode: "" off, else its state (idle, listening, thinking, speaking)
     @Volatile var carName = "" // the car connected (its Bluetooth name), or ""
     @Volatile var pointer = false // the pointer is on (its keys move and click it)
@@ -1528,6 +1529,7 @@ class ScouterService : Service() {
             what == "editor" -> editorOpen()
             what == "listen" -> listenOpen()
             what.startsWith("lkey:") -> listenKey(what.removePrefix("lkey:"))
+            what.startsWith("lchar:") -> listenChar(what.removePrefix("lchar:").toIntOrNull() ?: 0)
             what.startsWith("edkey:") -> editorKey(what.removePrefix("edkey:"))
             what == "captions" && Listen.on -> listenOpen()
             what == "captions" || what == "translate" -> captions(what)
@@ -2559,9 +2561,63 @@ class ScouterService : Service() {
         if (wait <= 0) listenDraw() else work.postDelayed(listenLater, wait)
     }
 
+    // The newest line of a voice not named yet (among those shown): its voice group and label.
+    private fun listenVoice(): Listen.Heard? = Listen.recent(40).dropLast(listenBack).lastOrNull { it.voice.isNotEmpty() }
+
+    private var listenName: StringBuilder? = null // the name being typed (N)
+    private var listenNaming: Listen.Heard? = null
+
+    private fun listenChar(code: Int) {
+        val n = listenName ?: return
+        if (code >= 32 && n.length < 40) n.append(String(Character.toChars(code)))
+        listenDraw()
+    }
+
+    // The voice named (or said to be you): its lines get the name, it teaches the person's voiceprint.
+    private fun listenAssign(h: Listen.Heard, name: String, me: Boolean) {
+        Thread {
+            val db = ListenDb.get(this)
+            val person = if (me) Speakers.ME.also { if (db.personList().none { p -> p.first == it }) db.addPerson("You", false, it) }
+                else db.personNamed(name) ?: db.addPerson(name, false)
+            db.nameVoice(h.voice, person)
+            Listen.peopleChanged()
+            work.post {
+                listenSaid = "${h.who.ifEmpty { "that voice" }} is ${if (me) "you" else name} now"
+                listenDraw()
+            }
+        }.start()
+    }
+
     private fun listenKey(k: String) {
         if (!Session.listenPanel) return
+        listenName?.let { name ->
+            when (k) {
+                "enter" -> {
+                    val h = listenNaming
+                    val n = name.toString().trim()
+                    if (h != null && n.isNotEmpty()) listenAssign(h, n, n.equals("me", true) || n.equals("you", true))
+                    listenName = null
+                    Session.listenTyping = false
+                }
+                "del" -> if (name.isNotEmpty()) name.setLength(name.length - 1)
+                "esc" -> {
+                    listenName = null
+                    Session.listenTyping = false
+                }
+            }
+            return listenDraw()
+        }
+        Session.listenTyping = false
         when (k) {
+            "n" -> {
+                val h = listenVoice() ?: run { listenSaid = "no unnamed voice in view"; null }
+                if (h != null) {
+                    listenNaming = h
+                    listenName = StringBuilder()
+                    Session.listenTyping = true
+                }
+            }
+            "m" -> listenVoice()?.let { listenAssign(it, "You", true) } ?: run { listenSaid = "no unnamed voice in view" }
             "o" -> if (Listen.on || ListenService.running) {
                 ListenService.stop(this)
                 listenSaid = "listen mode off"
@@ -2599,9 +2655,13 @@ class ScouterService : Service() {
             Listen.paused -> "paused (P listens again)"
             else -> Listen.state
         }
-        framePanel(Panels.LISTEN, "VOX//LISTEN", "Esc closes", "O on/off · P pause 15 min · ↑↓ earlier · the phone: Voice tab, Listen") { width, max ->
+        framePanel(Panels.LISTEN, "VOX//LISTEN", "Esc closes", "O on/off · P pause · ↑↓ earlier · N name a voice · M that's me") { width, max ->
             val rows = mutableListOf<Pair<String, Int>>()
             rows += ("▌▌ LISTEN ▐░▒▓ ${Listen.today} lines today · $head" + if (listenSaid.isNotEmpty()) " · $listenSaid" else "") to 1
+            listenName?.let { n ->
+                rows += " ■ Who is ${listenNaming?.who?.ifEmpty { "this voice" }}? Type the name (or me), Enter, Esc no" to 3
+                rows += "   › $n█" to 1
+            }
             val fmt = java.text.SimpleDateFormat("h:mm", java.util.Locale.US)
             val body = mutableListOf<Pair<String, Int>>()
             for (h in Listen.recent(40)) {

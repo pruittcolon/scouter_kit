@@ -47,6 +47,7 @@ detailed manual; this is the map.
 | Calls and texts | Alt+J: starred contacts, call, text typed or said | `People.kt`, `ScouterService.people*` |
 | Hub | Alt+G: timer, stopwatch, alarm (the phone's clock), reminders, notes, the next events, on the glasses | `Hub.kt`, `Panels.hubLines`, `ScouterService.hub*` |
 | Listen mode | All-day transcript from the phone mic: shared mic, disk queue, Live/Eco, soft-voice hearing, check, day files, glasses panel | `Listen.kt`, `ListenService.kt`, `MicHub.kt`, `ListenDb.kt`, `Hearing.kt`, `ListenActivity.kt` |
+| Who speaks | Voiceprints (WeSpeaker via sherpa), identifier ported from Vox Amelior, voice groups, enrollment, naming | `Speakers.kt`, `ListenDb` (people, samples, voices) |
 | Text editor | Alt+N (E on the hub): .txt/.md files in the app's external files dir `docs/`, list + wrapped editor, autosave | `Editor.kt`, `ScouterService.editor*` |
 | TV remote | A Vizio SmartCast TV's remote: Alt+Y turns the keyboard into it and shows the remote on the glasses; the app's TV tab has the buttons. Alt+F runs the phone's `phone` mirror command in a tmux tab | `Vizio.kt`, `TvPage.kt`, `Panels.tvLines`, `Tabs.tv` |
 | Preview mode | Alt+D / Preview button: a short live tour (phone screen, phone terminal, laptop screen, laptop terminal), each after a full-screen title card | `ScouterService.demoStart`, `Intro.kt` |

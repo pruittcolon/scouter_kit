@@ -22,7 +22,7 @@ class HearingCheck(private val c: Context, private val ui: Ui) {
 
     class Suggestion(val sensitivity: Int, val boost: Int, val heard: Int)
     class Result(val far: Boolean, val heard: Int, val total: Int, val accuracy: Int, val passed: Boolean,
-                 val suggestion: Suggestion?, val note: String)
+                 val suggestion: Suggestion?, val note: String, val clips: List<FloatArray>)
 
     @Volatile private var stopped = false
     @Volatile private var skip = false
@@ -43,6 +43,7 @@ class HearingCheck(private val c: Context, private val ui: Ui) {
         val windows = ArrayList<Window>()
         var heard = 0
         var accSum = 0
+        val clips = ArrayList<FloatArray>() // the heard sentences' audio: the voice, to remember it by
         try {
             Listen.checking = true
             ui.status("Loading the speech model…")
@@ -134,7 +135,10 @@ class HearingCheck(private val c: Context, private val ui: Ui) {
                     val pcm = audio.slice(max(0, p[0] - 4000), min(audio.size.toLong(), p[1] + 1600))
                     if (pcm.size < 4800) continue
                     val got = runCatching { engine.timed(pcm).first }.getOrDefault("")
-                    if (got.isNotEmpty()) text = if (text.isEmpty()) got else "$text $got"
+                    if (got.isNotEmpty()) {
+                        text = if (text.isEmpty()) got else "$text $got"
+                        clips += pcm
+                    }
                 }
                 val ok = text.isNotEmpty() && (!quiet || Listen.usable(text, true))
                 val acc = if (ok) accuracy(sentence, text) else 0
@@ -157,7 +161,7 @@ class HearingCheck(private val c: Context, private val ui: Ui) {
                 heard < need -> "Missed ${total - heard}. Move the phone closer (on the table, face up), or raise the sensitivity."
                 else -> "Heard, but the words were ${100 - accuracy}% wrong: the phone closer, or the Raw / Camcorder microphone."
             }
-            ui.done(Result(far, heard, total, accuracy, passed, sugg, note))
+            ui.done(Result(far, heard, total, accuracy, passed, sugg, note, clips))
         } catch (e: Exception) {
             ui.status("The check stopped: ${e.message}")
         } finally {
@@ -262,5 +266,81 @@ class HearingCheck(private val c: Context, private val ui: Ui) {
             "Let's watch something funny before bed.",
             "Could you close the window in the bedroom?",
         )
+    }
+}
+
+// Recording someone's voice to remember it (the Listen page's "Record my voice"): the speech in `seconds` of the
+// phone's microphone, phrase by phrase (the hearing settings' detector), as clips. Listen writes nothing meanwhile.
+class VoiceRecorder(private val c: Context, private val seconds: Int, private val tick: (Int, Float) -> Unit,
+                    private val done: (List<FloatArray>, String?) -> Unit) {
+    @Volatile private var stopped = false
+
+    fun start() = Thread({ run() }, "voice-record").start()
+    fun stop() { stopped = true }
+
+    private fun run() {
+        val settings = Settings(c)
+        var sub: MicHub.Sub? = null
+        var vad: Vad? = null
+        val clips = ArrayList<FloatArray>()
+        var why: String? = null
+        try {
+            Listen.checking = true
+            val (s, err) = MicHub.open(c, "record")
+            if (s == null) {
+                why = err
+                return
+            }
+            sub = s
+            vad = Vad(null, Listen.vadConfig(c, Listen.threshold(settings.listenSensitivity), settings.listenPauseMs))
+            val g = 10f.pow(settings.listenBoost / 20f)
+            val block = FloatArray(1600)
+            val window = FloatArray(512)
+            val raw = FloatArray((seconds + 2) * 16000)
+            var size = 0
+            var fill = 0
+            val t0 = SystemClock.elapsedRealtime()
+            var lastTick = 0L
+            while (!stopped && SystemClock.elapsedRealtime() - t0 < seconds * 1000L) {
+                val n = s.read(block)
+                if (n <= 0) continue
+                for (i in 0 until n) {
+                    if (size < raw.size) raw[size++] = block[i]
+                    window[fill++] = Listen.boosted(block[i], g)
+                    if (fill == window.size) {
+                        vad.acceptWaveform(window.copyOf())
+                        fill = 0
+                    }
+                }
+                while (!vad.empty()) {
+                    val seg = vad.front()
+                    vad.pop()
+                    val a = max(0, seg.start - 1600)
+                    val b = min(size, seg.start + seg.samples.size + 800)
+                    if (b - a >= 16000) clips += FloatArray(b - a) { raw[a + it] }
+                }
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastTick > 200) {
+                    lastTick = now
+                    tick(seconds - ((now - t0) / 1000).toInt(), Listen.db(Listen.rms(block, 0, n)))
+                }
+            }
+            vad.flush()
+            while (!vad.empty()) {
+                val seg = vad.front()
+                vad.pop()
+                val a = max(0, seg.start - 1600)
+                val b = min(size, seg.start + seg.samples.size)
+                if (b - a >= 16000) clips += FloatArray(b - a) { raw[a + it] }
+            }
+            if (clips.isEmpty()) why = "no speech heard"
+        } catch (e: Exception) {
+            why = e.message ?: "the recording stopped"
+        } finally {
+            sub?.let { MicHub.close(it) }
+            vad?.release()
+            Listen.checking = false
+            done(clips, why)
+        }
     }
 }

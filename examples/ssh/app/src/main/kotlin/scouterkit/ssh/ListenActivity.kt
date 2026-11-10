@@ -24,6 +24,11 @@ import java.util.Locale
 class ListenActivity : Activity(), HearingCheck.Ui {
     companion object {
         const val EXTRA_RESUME = "resume"
+        // The Rainbow Passage (Fairbanks, 1960), read to give a voice: about 30 s.
+        const val PASSAGE = "When the sunlight strikes raindrops in the air, they act as a prism and form a rainbow. The " +
+            "rainbow is a division of white light into many beautiful colors. These take the shape of a long round arch, " +
+            "with its path high above, and its two ends apparently beyond the horizon. There is, according to legend, a " +
+            "boiling pot of gold at one end. People look, but no one ever finds it."
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -42,6 +47,13 @@ class ListenActivity : Activity(), HearingCheck.Ui {
     private lateinit var lines: LinearLayout
     private lateinit var linesTitle: TextView
     private lateinit var search: EditText
+    private lateinit var peopleBox: LinearLayout
+    private lateinit var modelLine: TextView
+    private lateinit var modelChip: TextView
+    private lateinit var recordLine: TextView
+    private lateinit var saveVoice: TextView
+    private var lastClips: List<FloatArray> = emptyList()
+    private var recorder: VoiceRecorder? = null
     private var check: HearingCheck? = null
     private var far = false
     private var suggestion: HearingCheck.Suggestion? = null
@@ -157,7 +169,36 @@ class ListenActivity : Activity(), HearingCheck.Ui {
             }
         }.apply { visibility = View.GONE }
         ck.addView(checkUse)
+        saveVoice = chip("Remember this voice…", false) { saveCheckedVoice() }.apply { visibility = View.GONE }
+        ck.addView(saveVoice)
         page.addView(ck)
+
+        // Who speaks.
+        val who = page.section("Who speaks", "listen_people", "eye", open = true,
+            hint = "Lines get names from voiceprints. Record your own voice once; name the others from their lines below.")
+        who.addToggle(toggle("Know who speaks", "A voiceprint for each line, matched to the people below", settings.listenSpeakers) {
+            settings.listenSpeakers = it
+            Listen.peopleChanged()
+        })
+        who.addView(text("Voiceprint model", 13f, Ui.FAINT).apply { setPadding(0, dp(6), 0, 0) })
+        who.addView(segmented(VoiceprintModel.CHOICES.map { it.id to it.name }, settings.listenVoiceModel) {
+            settings.listenVoiceModel = it
+            showModel()
+            Listen.peopleChanged()
+        })
+        val mrow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL }
+        modelLine = text("", 12.5f, Ui.MUTED)
+        mrow.addView(modelLine, lp(0, weight = 1f))
+        modelChip = chip("Download", true) { modelAction() }
+        mrow.addView(modelChip)
+        who.addView(mrow)
+        who.addView(text("Each model knows people only by its own voiceprints: after switching, record the voices again.",
+            12f, Ui.FAINT).apply { setPadding(0, dp(4), 0, dp(6)) })
+        recordLine = text("Your voice: read this aloud at your usual volume, about 30 s:\n\n“$PASSAGE”", 13f, Ui.MUTED)
+        who.addView(recordLine)
+        who.addView(chipRow(chip("Record my voice (30 s)", true) { recordMe() }))
+        peopleBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        who.addView(peopleBox)
 
         // What it heard.
         val heard = card()
@@ -191,6 +232,8 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         main.post(tick)
         main.post(slow)
         showLines()
+        showModel()
+        showPeople()
     }
 
     override fun onPause() {
@@ -202,6 +245,7 @@ class ListenActivity : Activity(), HearingCheck.Ui {
 
     override fun onDestroy() {
         check?.cancel()
+        recorder?.stop()
         super.onDestroy()
     }
 
@@ -317,7 +361,167 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         checkState.text = "${if (r.far) "Far" else "Near"}: heard ${r.heard}/${r.total}, words ${r.accuracy}% right. ${r.note}"
         suggestion = r.suggestion?.takeIf { it.heard > r.heard }
         checkUse.visibility = if (suggestion != null) View.VISIBLE else View.GONE
+        lastClips = r.clips
+        saveVoice.visibility = if (r.clips.size >= 3) View.VISIBLE else View.GONE
     }.let { }
+
+    // ------------------------------------------------ who speaks
+
+    private fun showModel() {
+        val ch = VoiceprintModel.chosen(this)
+        val ready = VoiceprintModel.ready(this, ch)
+        fun mb(b: Long) = "${b / 1_000_000} MB"
+        modelLine.text = when {
+            VoiceprintModel.progress >= 0 -> "Downloading… ${mb(VoiceprintModel.progress)} of ${mb(ch.part.size)}"
+            ready -> "${ch.name}: ${ch.about} · ${mb(ch.part.size)}"
+            VoiceprintModel.problem != null -> "Not downloaded: ${VoiceprintModel.problem}"
+            else -> "${ch.name} (${ch.about}): not downloaded · ${mb(ch.part.size)}"
+        }
+        modelChip.visibility = if (VoiceprintModel.progress >= 0) View.GONE else View.VISIBLE
+        modelChip.text = if (ready) "Delete" else "Download"
+    }
+
+    private fun modelAction() {
+        val ch = VoiceprintModel.chosen(this)
+        if (VoiceprintModel.ready(this, ch)) {
+            dialog().setTitle("Delete the ${ch.name} model?").setMessage("Names stop until it is downloaded again.")
+                .setPositiveButton("Delete") { _, _ ->
+                    VoiceprintModel.delete(this, ch)
+                    Listen.peopleChanged()
+                    showModel()
+                }.setNegativeButton("Cancel", null).show()
+            return
+        }
+        Thread {
+            VoiceprintModel.download(this, ch)
+            main.post {
+                showModel()
+                Listen.peopleChanged()
+            }
+        }.start()
+        val ticker = object : Runnable {
+            override fun run() {
+                showModel()
+                if (VoiceprintModel.progress >= 0) main.postDelayed(this, 500)
+            }
+        }
+        main.postDelayed(ticker, 300)
+    }
+
+    private fun recordMe() {
+        if (recorder != null) return
+        if (!micAllowed()) return askMic()
+        if (!VoiceprintModel.ready(this)) {
+            recordLine.text = "Download the voiceprint model first (above)."
+            return
+        }
+        recorder = VoiceRecorder(this, 30, tick = { left, lv ->
+            main.post { recordLine.text = "Recording… $left s left (${lv.toInt()} dB)\n\n“$PASSAGE”" }
+        }, done = { clips, why ->
+            main.post { recordLine.text = if (why != null) "Not recorded: $why" else "Remembering your voice…" }
+            if (why == null) {
+                val err = Speakers.enroll(this, "You", false, clips, Speakers.ME)
+                main.post {
+                    recordLine.text = err?.let { "Not saved: $it" } ?: "Saved: your lines will say \"You\"."
+                    showPeople()
+                }
+            }
+            recorder = null
+        }).also { it.start() }
+    }
+
+    private fun saveCheckedVoice() {
+        val clips = lastClips
+        val name = field("Name", "", "who read the sentences")
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(name)
+        }
+        dialog().setTitle("Remember this voice").setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                val n = name.text.toString().trim()
+                if (n.isEmpty()) return@setPositiveButton
+                checkState.text = "Remembering $n's voice…"
+                Thread {
+                    val err = Speakers.enroll(this, n, true, clips)
+                    main.post {
+                        checkState.text = err?.let { "Not saved: $it" } ?: "Saved $n (soft voice): their lines will carry the name."
+                        saveVoice.visibility = View.GONE
+                        showPeople()
+                    }
+                }.start()
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    // The people (soft voice, rename, forget) and the voices not named yet (name them, or say it was you).
+    private fun showPeople() {
+        Thread {
+            val db = ListenDb.get(this)
+            val people = db.personList().map { (id, name, soft) -> listOf(id, name, soft.toString(), db.sampleCount(id).toString()) }
+            val voices = db.voiceList()
+            main.post {
+                peopleBox.removeAllViews()
+                peopleBox.addView(subhead("People"))
+                if (people.isEmpty()) peopleBox.addView(text("Nobody yet.", 13f, Ui.FAINT))
+                for ((id, name, soft, n) in people) {
+                    peopleBox.addView(text("$name · $n samples" + if (soft == "true") " · soft voice" else "", 14.5f, Ui.TEXT, Ui.BOLD)
+                        .apply { setPadding(0, dp(8), 0, 0) })
+                    peopleBox.addView(chipRow(
+                        chip(if (soft == "true") "Soft voice: on" else "Soft voice: off", soft == "true") {
+                            db.setSoft(id, soft != "true")
+                            Listen.peopleChanged()
+                            showPeople()
+                        },
+                        chip("Rename", false) { ask("Rename $name", name) { db.rename(id, it); Listen.peopleChanged(); showPeople() } },
+                        chip("Forget", false) {
+                            dialog().setTitle("Forget $name?").setMessage("Their voiceprints go; their lines keep the words.")
+                                .setPositiveButton("Forget") { _, _ ->
+                                    db.deletePerson(id)
+                                    Listen.peopleChanged()
+                                    showPeople()
+                                }.setNegativeButton("Cancel", null).show()
+                        },
+                    ))
+                }
+                peopleBox.addView(subhead("Voices not named yet"))
+                if (voices.isEmpty()) peopleBox.addView(text("None yet: they appear as Vox hears new voices.", 13f, Ui.FAINT))
+                for ((v, n, lines) in voices) {
+                    peopleBox.addView(text("${v.label} · $n lines", 14.5f, Ui.TEXT, Ui.BOLD).apply { setPadding(0, dp(8), 0, 0) })
+                    for (l in lines) peopleBox.addView(text("“$l”", 12.5f, Ui.MUTED))
+                    peopleBox.addView(chipRow(
+                        chip("Name…", true) {
+                            ask("Who is ${v.label}?", "") { name ->
+                                val pid = db.personNamed(name) ?: db.addPerson(name, false)
+                                db.nameVoice(v.id, pid)
+                                Listen.peopleChanged()
+                                showPeople()
+                            }
+                        },
+                        chip("That's me", false) {
+                            if (db.personList().none { it.first == Speakers.ME }) db.addPerson("You", false, Speakers.ME)
+                            db.nameVoice(v.id, Speakers.ME)
+                            Listen.peopleChanged()
+                            showPeople()
+                        },
+                    ))
+                }
+            }
+        }.start()
+    }
+
+    private fun ask(title: String, value: String, done: (String) -> Unit) {
+        val f = field("Name", value, "a name")
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(f)
+        }
+        dialog().setTitle(title).setView(box).setPositiveButton("OK") { _, _ ->
+            val n = f.text.toString().trim()
+            if (n.isNotEmpty()) Thread { done(n) }.start()
+        }.setNegativeButton("Cancel", null).show()
+    }
 }
 
 // The level meter: what the detector hears (dB, -80 ... -10), the room's quiet level as a mark, lit while speech is heard.

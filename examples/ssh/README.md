@@ -503,6 +503,13 @@ with the app in the back.
   the glasses: hub **L** or **Alt+E** while it is on opens VOX//LISTEN (O on / off, P pause 15 min, arrows earlier
   lines). Android starts a microphone service only while Vox shows: after a reboot or an update a notification asks
   for one tap.
+  Who speaks (`Speakers.kt`): a voiceprint per line from a WeSpeaker model (sherpa-onnx; CAM++ by default, ResNet293
+  the most accurate), matched as Vox Amelior does (similarity bar plus a lead over the next person, "not this person"
+  vetoes, up to five voice patterns per person, soft voices a lower bar); unknown voices group into "Voice N" (at most
+  30, the oldest make room). The person bar calibrates itself from the people's own samples. When a conversation
+  ends, its voice groups that sound alike merge (voiceprints only, no audio again). People: "Record my voice" (30 s,
+  the Rainbow Passage), "Remember this voice" after the quiet-voice check (marked soft), naming a voice group on the
+  phone or on the glasses (N types a name, M "that's me").
 - **Alt+N** (or **E** on the hub) opens the text editor on the glasses (`Editor.kt`, `Panels.EDITOR`): the .txt and
   .md files in Vox's folder `Android/data/<app id>/files/docs` (copy files there from a computer or with `adb push`),
   newest first; the arrows pick, Enter opens, N makes a new one. A file's lines wrap at the panel's width, a ▌ is the

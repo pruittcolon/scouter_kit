@@ -488,6 +488,8 @@ class Settings(context: Context) {
     var listenSource: String by Text("listen_source", "voice") // voice, raw, camcorder, mic (MicHub)
     var listenSpeed: String by Text("listen_speed", "auto") // auto, live, eco
     var listenFiles: Boolean by Flag("listen_files", true) // the day's file in the docs folder
+    var listenSpeakers: Boolean by Flag("listen_speakers", true) // who speaks (voiceprints, Speakers.kt)
+    var listenVoiceModel: String by Text("listen_voice_model", "campp") // VoiceprintModel.CHOICES
 
     private inner class Flag(val key: String, val default: Boolean) {
         operator fun getValue(owner: Any, p: Any): Boolean = prefs.getBoolean(key, default)

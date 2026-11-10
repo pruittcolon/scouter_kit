@@ -1,7 +1,7 @@
 sherpa_onnx_kotlin
 
-OfflineRecognizer.kt, OfflineStream.kt, FeatureConfig.kt, HomophoneReplacerConfig.kt, QnnConfig.kt, Vad.kt and
-Tts.kt are unmodified files of sherpa-onnx 1.13.8's Kotlin API (https://github.com/k2-fsa/sherpa-onnx, tag v1.13.8,
+OfflineRecognizer.kt, OfflineStream.kt, FeatureConfig.kt, HomophoneReplacerConfig.kt, QnnConfig.kt, Vad.kt, Tts.kt,
+Speaker.kt, SpeakerEmbeddingExtractorConfig.kt and OnlineStream.kt are unmodified files of sherpa-onnx 1.13.8's Kotlin API (https://github.com/k2-fsa/sherpa-onnx, tag v1.13.8,
 commit 11afbd009a7f8c08f4bcf2fc1b265d0df4670fbf, directory sherpa-onnx/kotlin-api), and LICENSE its licence
 file. SHA-256:
   85054fa9722913bce96c94c5c7eaaa7fd99606b79fbfbeac6cfb60040eae2164  OfflineRecognizer.kt
@@ -11,10 +11,13 @@ file. SHA-256:
   86c963f27677f690eb0d6639735052eba5e60d9f81ccd4c1df0aa831fd680d6f  QnnConfig.kt
   dc3fe3b63cea2becd4780a9cc8ef2aaee552eed9533d4c0f178db1172a53662c  Vad.kt
   1a2a19e247553f774c5abdfda8319ce9e1a44e21279b16dc2c63e963a82ea9b1  Tts.kt
+  4dcc84f4cf0682e0e4da837ba00130d66ad7aec4f803af4c021de3434246e871  Speaker.kt
+  d90c0ce88dce309813e720ff46abba737401e7e562f9635ee13fd5b32ce106c6  SpeakerEmbeddingExtractorConfig.kt
+  6b9f8de317e6a0bb51f0f29d940617b781cb31b190e1c725dd438231836c06ab  OnlineStream.kt
   cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30  LICENSE
 
 Copyright Xiaomi Corporation and the sherpa-onnx authors. Apache License, Version 2.0 (LICENSE).
 
-Used by examples/ssh (voice commands; Tts.kt: Car mode's Kokoro voice) with the matching JNI library, fetched by
+Used by examples/ssh (voice commands; Tts.kt: Car mode's Kokoro voice; Speaker.kt: Listen mode's voiceprints) with the matching JNI library, fetched by
 examples/ssh/native/third_party/fetch_sherpa.sh (sherpa-onnx-v1.13.8-android-static-link-onnxruntime: ONNX Runtime
-is linked into it, MIT). The rest of the Kotlin API (other recognisers, speaker tools) is left out.
+is linked into it, MIT). The rest of the Kotlin API (other recognisers, diarization) is left out.

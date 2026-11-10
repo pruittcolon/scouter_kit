@@ -33,7 +33,8 @@ import kotlin.math.tanh
 // boost) while Parakeet gets the audio as recorded; a second, more sensitive detector keeps quiet phrases the
 // first missed, when they hold real words.
 object Listen {
-    class Heard(val id: Long, val start: Long, val end: Long, val text: String, val quiet: Boolean, var who: String = "")
+    class Heard(val id: Long, val start: Long, val end: Long, val text: String, val quiet: Boolean, var who: String = "",
+                var voice: String = "")
 
     @Volatile var on = false
         private set
@@ -122,10 +123,19 @@ object Listen {
 
     fun recent(n: Int): List<Heard> = synchronized(recentLines) { recentLines.toList().takeLast(n) }
 
+    // People or voice groups changed (named, merged, enrolled): the matcher and the names shown are read again.
+    @Volatile private var reloadPeople = true
+
+    fun peopleChanged() {
+        reloadPeople = true
+        app?.let { c -> Thread { runCatching { loadRecent(c) }; changed() }.start() }
+        synchronized(lock) { lock.notifyAll() }
+    }
+
     private fun loadRecent(c: Context) {
         val db = ListenDb.get(c)
         val names = db.names()
-        val lines = db.recent(40).map { Heard(it.id, it.start, it.end, it.text, it.quiet, names[it.person.ifEmpty { it.voice }] ?: "") }
+        val lines = db.recent(40).map { Heard(it.id, it.start, it.end, it.text, it.quiet, names[it.person.ifEmpty { it.voice }] ?: "", it.voice) }
         synchronized(recentLines) {
             recentLines.clear()
             recentLines.addAll(lines)
@@ -374,6 +384,30 @@ object Listen {
         return pm.currentThermalStatus >= PowerManager.THERMAL_STATUS_SEVERE
     }
 
+    // A conversation's voice groups whose lines sound alike (their averages at the group bar or closer) become the
+    // one heard first. True when any did. Voiceprints only: no audio is read again.
+    private fun regroup(db: ListenDb, conv: Long, ident: Speakers.Identifier, model: String): Boolean {
+        val groups = db.conversationVoices(conv).mapNotNull { (id, list) -> Speakers.mean(list)?.let { id to it } }.toMutableList()
+        var merged = false
+        var i = 0
+        while (i < groups.size) {
+            var j = i + 1
+            while (j < groups.size) {
+                if (Speakers.cos(groups[i].second, groups[j].second) >= ident.bars.group) {
+                    val (keep, drop) = groups[i].first to groups[j].first
+                    db.mergeVoice(drop, keep)
+                    ident.voices.removeAll { it.id == drop }
+                    ident.voices.firstOrNull { it.id == keep }?.let { db.saveVoice(it, model) }
+                    groups.removeAt(j)
+                    merged = true
+                    Log.i(ScouterService.TAG, "listen: two voices of a conversation were one")
+                } else j++
+            }
+            i++
+        }
+        return merged
+    }
+
     private val FILLER = setOf("um", "uh", "hmm", "mm", "mhm", "ah", "oh", "er", "erm", "huh")
 
     // Text worth a line: two characters at least; a quiet phrase needs two real words.
@@ -391,6 +425,11 @@ object Listen {
         val settings = Settings(c)
         val db = ListenDb.get(c)
         var engine: VoiceEngine? = null
+        var prints: Voiceprints? = null
+        var ident: Speakers.Identifier? = null
+        var names = emptyMap<String, String>()
+        var regrouped = c.getSharedPreferences("listen", Context.MODE_PRIVATE).getLong("regrouped", 0L)
+        val bars = Speakers.Bars()
         var lastWork = SystemClock.elapsedRealtime()
         var lastPartial = 0L
         var lastFiles = 0L
@@ -429,6 +468,8 @@ object Listen {
                     if (engine != null && nowE - lastWork > 10 * 60_000L && ListenQueue.count(c) == 0) {
                         Parakeet.done("listen")
                         engine = null
+                        prints?.release()
+                        prints = null
                         Log.i(ScouterService.TAG, "listen: the speech model unloaded (quiet for 10 min)")
                     }
                     continue
@@ -444,6 +485,31 @@ object Listen {
                         null
                     } ?: continue
                 }
+                // Who speaks: the voiceprint model (when on and downloaded) and the people, read again after changes.
+                val speakers = settings.listenSpeakers && VoiceprintModel.ready(c)
+                if (speakers && (prints == null || prints.model != VoiceprintModel.chosen(c).id)) {
+                    prints?.release()
+                    prints = runCatching { Voiceprints(c) }.getOrElse {
+                        Log.w(ScouterService.TAG, "listen: the voiceprint model did not load: ${it.message}")
+                        null
+                    }
+                    reloadPeople = true
+                }
+                if (speakers && prints != null && (reloadPeople || ident == null)) {
+                    reloadPeople = false
+                    val model = prints.model
+                    val people = db.people(model)
+                    bars.person = 0.50f
+                    bars.group = 0.55f
+                    Speakers.calibrate(people.map { it.id to db.samples(it.id, model) }, bars)
+                    val meta = c.getSharedPreferences("listen", Context.MODE_PRIVATE)
+                    ident = Speakers.Identifier(people, db.voices(model), bars) {
+                        val n = meta.getInt("voice_n", 0) + 1
+                        meta.edit().putInt("voice_n", n).apply()
+                        "Voice $n"
+                    }
+                    names = db.names()
+                }
                 var done = 0
                 val t0 = SystemClock.elapsedRealtime()
                 while (on && run == gen) {
@@ -456,6 +522,22 @@ object Listen {
                             for ((word, at) in words) w.put(JSONArray().put(word).put((at * 1000).toInt()))
                             val line = db.add(chunk.start, end, text, w.toString(), chunk.quiet)
                             val h = Heard(line.id, line.start, line.end, line.text, line.quiet)
+                            val p = prints
+                            val id = ident
+                            if (speakers && p != null && id != null) runCatching {
+                                // The first 10 s are plenty for a voiceprint.
+                                val v = p.print(if (chunk.samples.size > 160_000) chunk.samples.copyOf(160_000) else chunk.samples)
+                                if (v != null) {
+                                    val m = id.identify(v, chunk.samples.size / 16000f)
+                                    db.setSpeaker(line.id, m.person ?: "", m.voice?.id ?: "", v, p.model)
+                                    m.voice?.let { g ->
+                                        db.saveVoice(g, p.model)
+                                        if (m.created) names = names + (g.id to g.label)
+                                    }
+                                    h.who = names[m.person ?: m.voice?.id ?: ""] ?: ""
+                                    h.voice = m.voice?.id ?: ""
+                                }
+                            }.onFailure { Log.w(ScouterService.TAG, "listen: voiceprint: ${it.message}") }
                             synchronized(recentLines) {
                                 recentLines.addLast(h)
                                 while (recentLines.size > 60) recentLines.removeFirst()
@@ -475,6 +557,16 @@ object Listen {
                     if (hot(c)) break
                 }
                 waiting = ListenQueue.seconds(c)
+                // Conversations that ended (5 min of quiet): their voice groups that sound alike become one.
+                if (speakers && ident != null) runCatching {
+                    val ended = db.conversations(0, System.currentTimeMillis() - ListenDb.GAP_MS)
+                        .filter { it.id > regrouped && it.ended < System.currentTimeMillis() - ListenDb.GAP_MS }
+                    for (conv in ended) {
+                        if (regroup(db, conv.id, ident, prints?.model ?: "")) reloadPeople = true
+                        regrouped = conv.id
+                    }
+                    if (ended.isNotEmpty()) c.getSharedPreferences("listen", Context.MODE_PRIVATE).edit().putLong("regrouped", regrouped).apply()
+                }
                 lastWork = SystemClock.elapsedRealtime()
                 if (done > 0) Log.i(ScouterService.TAG, "listen: $done lines in ${lastWork - t0} ms" +
                     if (live(c, settings)) " (live)" else " (eco)")
@@ -484,6 +576,7 @@ object Listen {
             Log.w(ScouterService.TAG, "listen: work stopped: ${e.message}")
         } finally {
             if (engine != null) Parakeet.done("listen")
+            prints?.release()
             if (settings.listenFiles) for (d in days) runCatching { Transcripts.write(c, d) }
         }
     }

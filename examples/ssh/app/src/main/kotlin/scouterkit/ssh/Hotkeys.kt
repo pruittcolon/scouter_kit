@@ -132,7 +132,18 @@ object Hotkeys {
         // Listen mode's panel open: O (or Space) on / off, P pause, the arrows and Page Up / Down earlier lines, Esc.
         if (Session.listenPanel && bare) {
             if (e.action != KeyEvent.ACTION_DOWN) return true
+            if (Session.listenTyping) {
+                when (e.keyCode) {
+                    KeyEvent.KEYCODE_ESCAPE -> act("lkey:esc")
+                    KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> act("lkey:enter")
+                    KeyEvent.KEYCODE_DEL -> act("lkey:del")
+                    else -> e.getUnicodeChar(e.metaState).takeIf { it >= 32 }?.let { act("lchar:$it") }
+                }
+                return true
+            }
             val k = when (e.keyCode) {
+                KeyEvent.KEYCODE_N -> { Session.listenTyping = true; "n" }
+                KeyEvent.KEYCODE_M -> "m"
                 KeyEvent.KEYCODE_O, KeyEvent.KEYCODE_SPACE -> "o"
                 KeyEvent.KEYCODE_P -> "p"
                 KeyEvent.KEYCODE_DPAD_UP -> "up"
