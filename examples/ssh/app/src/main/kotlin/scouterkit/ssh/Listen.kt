@@ -125,6 +125,13 @@ object Listen {
 
     fun recent(n: Int): List<Heard> = synchronized(recentLines) { recentLines.toList().takeLast(n) }
 
+    // Lines were deleted: what is shown and counted is read again, the days' files written again.
+    fun linesChanged(c: Context, days: Collection<Long>) {
+        runCatching { loadRecent(c.applicationContext) }
+        if (Settings(c).listenFiles) for (d in days.toSet()) runCatching { Transcripts.write(c, d) }
+        changed()
+    }
+
     // People or voice groups changed (named, merged, enrolled): the matcher and the names shown are read again.
     @Volatile private var reloadPeople = true
 
@@ -431,7 +438,9 @@ object Listen {
     }
 
     private fun work(c: Context, run: Int) {
-        Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+        // Just under normal: at background priority Android keeps a thread (and the model threads it starts) to a few
+        // cores at low speed, and lines fell an hour behind.
+        Process.setThreadPriority(Process.THREAD_PRIORITY_LESS_FAVORABLE)
         var failed = false
         val settings = Settings(c)
         val db = ListenDb.get(c)
@@ -461,7 +470,7 @@ object Listen {
         val turnsPending = java.util.concurrent.atomic.AtomicInteger(0)
         val turnsExec = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
             Thread({
-                Process.setThreadPriority(Process.THREAD_PRIORITY_LOWEST)
+                Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
                 r.run()
             }, "listen-turns")
         }
@@ -613,6 +622,8 @@ object Listen {
                 val t0 = SystemClock.elapsedRealtime()
                 while (on && run == gen) {
                     val chunk = ListenQueue.take(c) ?: break
+                    // Old audio caught up on after the newest: words and who only (no tone, no speaker-change pass).
+                    val old = System.currentTimeMillis() - chunk.start > 3 * 60_000L
                     val l0 = SystemClock.elapsedRealtime()
                     var lAsr = 0L
                     var lWho = 0L
@@ -653,7 +664,7 @@ object Listen {
                                 val rate = if (secs > 0.5f) words.size / secs else 0f
                                 var emo = ""
                                 var snd = ""
-                                if (settings.listenTone && ToneModel.ready(c)) {
+                                if (!old && settings.listenTone && ToneModel.ready(c)) {
                                     val t = tone ?: Tone(c).also { tone = it }
                                     val (e, s) = t.hear(chunk.samples)
                                     emo = e
@@ -672,10 +683,12 @@ object Listen {
                                 recentLines.addLast(h)
                                 while (recentLines.size > 60) recentLines.removeFirst()
                             }
-                            group += Turns.Piece(line.id, line.start, chunk.samples, text,
-                                words.map { (word, at) -> word to (at * 1000).toInt() }, chunk.quiet)
-                            chunkEnd = end
-                            if (group.sumOf { it.samples.size } >= 16000 * 30) endGroup()
+                            if (!old) {
+                                group += Turns.Piece(line.id, line.start, chunk.samples, text,
+                                    words.map { (word, at) -> word to (at * 1000).toInt() }, chunk.quiet)
+                                chunkEnd = end
+                                if (group.sumOf { it.samples.size } >= 16000 * 30) endGroup()
+                            }
                             if (ListenDb.dayStart(line.start) == ListenDb.dayStart(System.currentTimeMillis())) today++
                             else today = db.count(ListenDb.dayStart(System.currentTimeMillis()))
                             days += ListenDb.dayStart(line.start)
@@ -771,9 +784,22 @@ object ListenQueue {
         }
     }
 
+    // The audio waiting is thrown away (the Live page's "Skip"): Listen goes on from now.
+    @Synchronized
+    fun clear(c: Context): Int {
+        val all = pending(c)
+        for (f in all) f.delete()
+        return all.size
+    }
+
+    // The next to read: the oldest, in order, while Listen keeps up; once the oldest is over 2 min behind, the
+    // newest first (what is said now shows now) and the old ones after, newest to oldest.
     @Synchronized
     fun take(c: Context): Chunk? {
-        val f = pending(c).firstOrNull() ?: return null
+        val all = pending(c)
+        val first = all.firstOrNull() ?: return null
+        val behind = System.currentTimeMillis() - (first.name.substringBefore('_').toLongOrNull() ?: 0L) > 2 * 60_000L
+        val f = if (behind) all.last() else first
         val w = File(f.parentFile, f.name.removeSuffix(".pcm") + ".working")
         if (!f.renameTo(w)) return null
         val bytes = runCatching { RandomAccessFile(w, "r").use { r -> ByteArray(r.length().toInt()).also { r.readFully(it) } } }

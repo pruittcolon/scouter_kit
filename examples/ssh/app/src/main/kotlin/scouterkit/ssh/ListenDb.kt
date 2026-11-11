@@ -83,14 +83,16 @@ class ListenDb private constructor(context: Context) : SQLiteOpenHelper(context,
         db.beginTransaction()
         try {
             var conv = -1L
-            db.rawQuery("SELECT id, ended FROM conversations ORDER BY ended DESC LIMIT 1", null).use { c ->
-                if (c.moveToFirst() && start - c.getLong(1) < GAP_MS && start >= c.getLong(1) - GAP_MS) conv = c.getLong(0)
+            // The conversation this moment belongs to (lines may come out of order while catching up).
+            db.rawQuery("SELECT id FROM conversations WHERE started - ? <= ? AND ended + ? >= ? ORDER BY ended DESC LIMIT 1",
+                arrayOf(GAP_MS.toString(), start.toString(), GAP_MS.toString(), start.toString())).use { c ->
+                if (c.moveToFirst()) conv = c.getLong(0)
             }
             if (conv < 0) conv = db.insert("conversations", null, ContentValues().apply {
                 put("started", start)
                 put("ended", end)
             })
-            else db.execSQL("UPDATE conversations SET ended = MAX(ended, ?) WHERE id = ?", arrayOf<Any>(end, conv))
+            else db.execSQL("UPDATE conversations SET ended = MAX(ended, ?), started = MIN(started, ?) WHERE id = ?", arrayOf<Any>(end, start, conv))
             val id = db.insert("lines", null, ContentValues().apply {
                 put("conv", conv)
                 put("start", start)
@@ -532,6 +534,42 @@ class ListenDb private constructor(context: Context) : SQLiteOpenHelper(context,
         return ids
     }
 
+    // ------------------------------------------------ deleting
+
+    // A conversation gone for good: its lines, their search entries, the conversation.
+    @Synchronized
+    fun deleteConversation(conv: Long): Int {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL("DELETE FROM lines_fts WHERE docid IN (SELECT id FROM lines WHERE conv = ?)", arrayOf<Any>(conv))
+            val n = db.delete("lines", "conv = ?", arrayOf(conv.toString()))
+            db.delete("conversations", "id = ?", arrayOf(conv.toString()))
+            db.setTransactionSuccessful()
+            return n
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    @Synchronized
+    fun deleteLine(id: Long) {
+        writableDatabase.delete("lines", "id = ?", arrayOf(id.toString()))
+        writableDatabase.delete("lines_fts", "docid = ?", arrayOf(id.toString()))
+    }
+
+    // Conversations, newest first, each with its line count and first words.
+    fun conversationList(limit: Int = 60): List<Triple<Conversation, Int, String>> {
+        val out = ArrayList<Triple<Conversation, Int, String>>()
+        readableDatabase.rawQuery("SELECT c.id, c.started, c.ended, c.title, c.meeting, (SELECT COUNT(*) FROM lines l WHERE l.conv = c.id), " +
+            "(SELECT group_concat(text, ' ') FROM (SELECT text FROM lines l WHERE l.conv = c.id ORDER BY start LIMIT 3)) " +
+            "FROM conversations c ORDER BY c.started DESC LIMIT $limit", null).use { c ->
+            while (c.moveToNext()) out += Triple(Conversation(c.getLong(0), c.getLong(1), c.getLong(2), c.getString(3), c.getInt(4) != 0),
+                c.getInt(5), c.getString(6) ?: "")
+        }
+        return out
+    }
+
     fun line(id: Long): Line? = lines("WHERE id = ?", arrayOf(id.toString()), "start", 1).firstOrNull()
 
     companion object {
@@ -568,7 +606,10 @@ object Transcripts {
         val db = ListenDb.get(c)
         val end = ListenDb.nextDay(dayStart)
         val lines = db.between(dayStart, end)
-        if (lines.isEmpty()) return
+        if (lines.isEmpty()) {
+            file(c, dayStart).delete()
+            return
+        }
         val names = db.names()
         val time = SimpleDateFormat("h:mm:ss a", Locale.US)
         val short = SimpleDateFormat("h:mm a", Locale.US)

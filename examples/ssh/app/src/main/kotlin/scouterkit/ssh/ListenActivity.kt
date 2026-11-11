@@ -338,6 +338,14 @@ class ListenActivity : Activity(), HearingCheck.Ui {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(14), dp(12), dp(14), dp(12))
+            // Far behind: a tap throws the waiting audio away and goes on from now.
+            setOnClickListener {
+                if (Listen.waiting < 90) return@setOnClickListener
+                dialog().setTitle("Skip ${(Listen.waiting / 60).toInt()} min of waiting speech?")
+                    .setMessage("It is not written down; Listen goes on from now. (Left alone, it is caught up newest first.)")
+                    .setPositiveButton("Skip it") { _, _ -> Thread { ListenQueue.clear(this@ListenActivity) }.start() }
+                    .setNegativeButton("Keep", null).show()
+            }
         }
         nowPulse = Pulse(this)
         nowBar.addView(nowPulse)
@@ -366,6 +374,7 @@ class ListenActivity : Activity(), HearingCheck.Ui {
             !Listen.on -> "Starting…"
             Listen.paused -> "Paused: hold the orb to listen again"
             talking -> Listen.partial.ifEmpty { "hearing…" }
+            Listen.waiting >= 90 -> "Catching up on ${(Listen.waiting / 60).toInt()} min of speech (newest first) · tap to skip it"
             Listen.waiting >= 2 -> "Writing down ${Listen.waiting.toInt()} s of speech…"
             else -> "Listening"
         }
@@ -450,6 +459,22 @@ class ListenActivity : Activity(), HearingCheck.Ui {
             fired.ifEmpty { null }?.let { "■ $it" })
         if (tags.isNotEmpty()) bubble.addView(caps(tags.joinToString(" · "), if (fired.isNotEmpty()) Ui.ACCENT else col, 9.5f)
             .apply { setPadding(0, dp(4), 0, 0) })
+        // Hold a line: delete it, or its whole conversation.
+        bubble.setOnLongClickListener {
+            dialog().setTitle("Delete").setItems(arrayOf("This line", "This whole conversation")) { _, which ->
+                Thread {
+                    val db = ListenDb.get(this)
+                    if (which == 0) {
+                        db.deleteLine(l.id)
+                        Listen.linesChanged(this, listOf(ListenDb.dayStart(l.start)))
+                        main.post { shownNames = 0; loadLive() }
+                    } else db.conversationList(500).firstOrNull { it.first.id == l.conv }?.let { (conv, n, _) ->
+                        main.post { deleteConv(conv, n) { shownNames = 0; loadLive() } }
+                    }
+                }.start()
+            }.setNegativeButton("Cancel", null).show()
+            true
+        }
         liveList.addView(bubble, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             .apply { leftMargin = dp(34); topMargin = dp(4) })
     }
@@ -699,6 +724,7 @@ class ListenActivity : Activity(), HearingCheck.Ui {
             "hearing" -> hearingPage(b)
             "models" -> modelsPage(b)
             "voices" -> voicesPage(b)
+            "convs" -> convsPage(b)
         }
     }
 
@@ -710,6 +736,7 @@ class ListenActivity : Activity(), HearingCheck.Ui {
             listOf("rules", "Automations", "$rules on · Hey Vox, reminders, your own rules", "bolt"),
             listOf("hearing", "Hearing", "Soft voices, the quiet-voice check, speed", "mic"),
             listOf("models", "AI models", "$ready of ${LlmModels.ALL.size + 1} downloaded · LFM, meaning, tone", "spark"),
+            listOf("convs", "Conversations", "See each one, delete the ones you don't want kept", "trash"),
             listOf("voices", "Voice recognition", VoiceprintModel.chosen(this).name + if (VoiceprintModel.ready(this)) " ready" else " not downloaded", "eye"),
         )
         val c = card()
@@ -1001,6 +1028,49 @@ class ListenActivity : Activity(), HearingCheck.Ui {
             settings.listenMeaning = it
         })
         b.addView(c)
+    }
+
+    // ---- Conversations (and deleting them)
+
+    private fun deleteConv(conv: ListenDb.Conversation, n: Int, then: () -> Unit) {
+        val fmt = SimpleDateFormat("EEE MMM d, h:mm a", Locale.US)
+        dialog().setTitle("Delete this conversation?").setMessage("${fmt.format(Date(conv.started))}, $n lines. It goes from the " +
+            "transcript, the search and the day's file. This cannot be undone.")
+            .setPositiveButton("Delete") { _, _ ->
+                Thread {
+                    ListenDb.get(this).deleteConversation(conv.id)
+                    Listen.linesChanged(this, listOf(ListenDb.dayStart(conv.started), ListenDb.dayStart(conv.ended)))
+                    main.post(then)
+                }.start()
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun convsPage(b: LinearLayout) {
+        b.addView(text("Newest first. Delete removes a conversation's lines everywhere (transcript, search, the day's file). " +
+            "On the Live tab, hold a line to delete it or its conversation.", 12.5f, Ui.FAINT).apply { setPadding(dp(4), 0, dp(4), dp(6)) })
+        val box = column()
+        b.addView(box)
+        Thread {
+            val list = ListenDb.get(this).conversationList()
+            main.post {
+                if (list.isEmpty()) box.addView(text("No conversations yet.", 13.5f, Ui.FAINT))
+                val day = SimpleDateFormat("EEE MMM d", Locale.US)
+                val time = SimpleDateFormat("h:mm a", Locale.US)
+                for ((conv, n, first) in list) {
+                    val c = card()
+                    val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                    val t = column()
+                    t.addView(text(day.format(Date(conv.started)) + " · " + time.format(Date(conv.started)) + " – " + time.format(Date(conv.ended)),
+                        15f, Ui.TEXT, Ui.BOLD))
+                    t.addView(caps("$n lines · ${maxOf(1, (conv.ended - conv.started) / 60000)} min", Ui.FAINT, 9.5f))
+                    top.addView(t, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    top.addView(chip("Delete", false) { deleteConv(conv, n) { showMore("convs") } })
+                    c.addView(top)
+                    if (first.isNotEmpty()) c.addView(text("“${first.take(160)}”", 13f, Ui.MUTED).apply { setPadding(0, dp(6), 0, 0) })
+                    box.addView(c)
+                }
+            }
+        }.start()
     }
 
     // ---- Voice recognition
