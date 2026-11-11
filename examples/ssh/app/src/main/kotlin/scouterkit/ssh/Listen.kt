@@ -457,7 +457,14 @@ object Listen {
         var lastFiles = 0L
         var lastFill = 0L
         var lastSlow = 0L
-        val days = HashSet<Long>()
+        val days: MutableSet<Long> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+        val turnsPending = java.util.concurrent.atomic.AtomicInteger(0)
+        val turnsExec = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread({
+                Process.setThreadPriority(Process.THREAD_PRIORITY_LOWEST)
+                r.run()
+            }, "listen-turns")
+        }
         try {
             while (on && run == gen) {
                 synchronized(lock) { lock.wait(1000) }
@@ -506,8 +513,10 @@ object Listen {
                         prints = null
                         tone?.release()
                         tone = null
-                        turns?.release()
-                        turns = null
+                        turnsExec.execute {
+                            turns?.release()
+                            turns = null
+                        }
                         Log.i(ScouterService.TAG, "listen: the speech model unloaded (quiet for 10 min)")
                     }
                     continue
@@ -555,9 +564,13 @@ object Listen {
                     val p = prints
                     val id = ident
                     if (!speakers || !settings.listenSplit || p == null || id == null) return
+                    // Its own thread, at the lowest priority: the lines as they are said never wait for it.
+                    if (turnsPending.get() >= 3) return
+                    turnsPending.incrementAndGet()
+                    turnsExec.execute { try {
                     if (!SegmentationModel.ready(c)) {
                         SegmentationModel.download(c)
-                        if (!SegmentationModel.ready(c)) return
+                        if (!SegmentationModel.ready(c)) return@execute
                     }
                     runCatching {
                         val t = turns?.takeIf { it.model == p.model } ?: run {
@@ -568,7 +581,7 @@ object Listen {
                         for ((lineId, parts) in cuts) {
                             val news = parts.map { part ->
                                 val v = p.print(part.samples)
-                                val m = v?.let { id.identify(it, part.samples.size / 16000f) }
+                                val m = v?.let { synchronized(id) { id.identify(it, part.samples.size / 16000f) } }
                                 m?.voice?.let { g -> db.saveVoice(g, p.model) }
                                 ListenDb.NewPart(part.start, part.end, part.text, Turns.json(part.words), m?.person ?: "",
                                     m?.voice?.id ?: "", v, p.model)
@@ -592,6 +605,9 @@ object Listen {
                         }
                         if (cuts.isNotEmpty()) changed()
                     }.onFailure { Log.w(ScouterService.TAG, "turns: ${it.message}") }
+                    } finally {
+                        turnsPending.decrementAndGet()
+                    } }
                 }
                 var done = 0
                 val t0 = SystemClock.elapsedRealtime()
@@ -618,7 +634,7 @@ object Listen {
                                 // The first 10 s are plenty for a voiceprint.
                                 val v = p.print(if (chunk.samples.size > 160_000) chunk.samples.copyOf(160_000) else chunk.samples)
                                 if (v != null) {
-                                    val m = id.identify(v, chunk.samples.size / 16000f)
+                                    val m = synchronized(id) { id.identify(v, chunk.samples.size / 16000f) }
                                     db.setSpeaker(line.id, m.person ?: "", m.voice?.id ?: "", v, p.model)
                                     m.voice?.let { g ->
                                         db.saveVoice(g, p.model)
@@ -692,7 +708,8 @@ object Listen {
                     val ended = db.conversations(0, System.currentTimeMillis() - ListenDb.GAP_MS)
                         .filter { it.id > regrouped && it.ended < System.currentTimeMillis() - ListenDb.GAP_MS }
                     for (conv in ended) {
-                        if (regroup(db, conv.id, ident, prints?.model ?: "")) reloadPeople = true
+                        val g = ident ?: break
+                        if (synchronized(g) { regroup(db, conv.id, g, prints?.model ?: "") }) reloadPeople = true
                         regrouped = conv.id
                     }
                     if (ended.isNotEmpty()) c.getSharedPreferences("listen", Context.MODE_PRIVATE).edit().putLong("regrouped", regrouped).apply()
@@ -709,7 +726,13 @@ object Listen {
             if (engine != null) Parakeet.done("listen")
             prints?.release()
             tone?.release()
-            turns?.release()
+            runCatching {
+                turnsExec.execute {
+                    turns?.release()
+                    turns = null
+                }
+                turnsExec.shutdown()
+            }
             if (settings.listenFiles) for (d in days) runCatching { Transcripts.write(c, d) }
         }
         if (failed && on && run == gen) Thread({

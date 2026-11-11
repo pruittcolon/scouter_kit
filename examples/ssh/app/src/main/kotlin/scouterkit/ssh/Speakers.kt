@@ -63,8 +63,11 @@ class Voiceprints(c: Context) {
     val dim = ex.dim()
 
     // Null when there is too little audio for one.
+    private var gone = false
+
     @Synchronized
     fun print(samples: FloatArray): FloatArray? {
+        if (gone) return null // let go meanwhile (another thread still held it)
         val s = ex.createStream()
         try {
             s.acceptWaveform(samples, 16000)
@@ -77,7 +80,11 @@ class Voiceprints(c: Context) {
     }
 
     @Synchronized
-    fun release() = ex.release()
+    fun release() {
+        if (gone) return
+        gone = true
+        ex.release()
+    }
 }
 
 object Speakers {

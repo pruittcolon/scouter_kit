@@ -49,8 +49,11 @@ class Turns(c: Context) {
 
     private val diar = OfflineSpeakerDiarization(null, OfflineSpeakerDiarizationConfig(
         segmentation = OfflineSpeakerSegmentationModelConfig(
-            pyannote = OfflineSpeakerSegmentationPyannoteModelConfig(model = SegmentationModel.file(c).path), numThreads = 2),
-        embedding = SpeakerEmbeddingExtractorConfig(model = VoiceprintModel.file(c).path, numThreads = 2),
+            pyannote = OfflineSpeakerSegmentationPyannoteModelConfig(model = SegmentationModel.file(c).path, windowShiftRatio = 0.5f),
+            numThreads = 2),
+        // Who talked when needs many voiceprints (one per window and voice): the light model when it is there.
+        embedding = SpeakerEmbeddingExtractorConfig(model = (VoiceprintModel.CHOICES[0].takeIf { VoiceprintModel.ready(c, it) }
+            ?.let { VoiceprintModel.file(c, it) } ?: VoiceprintModel.file(c)).path, numThreads = 2),
         clustering = FastClusteringConfig(numClusters = -1, threshold = 0.5f),
         minDurationOn = 0.24f, minDurationOff = 0.24f))
     val model: String = VoiceprintModel.chosen(c).id
