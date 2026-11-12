@@ -150,8 +150,15 @@ object Llm {
         }
     }
 
-    // Where a model runs: the GPU when there is one and it is allowed, else the CPU.
-    fun onGpu(c: Context, m: LlmModels.Model) = m.role != "embed" && Settings(c).llmGpu && gpu(c).isNotEmpty()
+    // Where a model runs: the GPU when there is one and it is allowed (and the model has not failed there), else
+    // the CPU.
+    fun onGpu(c: Context, m: LlmModels.Model) = m.role != "embed" && Settings(c).llmGpu && !gpuFailed(c, m) && gpu(c).isNotEmpty()
+
+    private fun gpuPrefs(c: Context) = c.getSharedPreferences("llm_gpu", Context.MODE_PRIVATE)
+    fun gpuFailed(c: Context, m: LlmModels.Model) = gpuPrefs(c).getBoolean(m.id, false)
+
+    // Using the GPU again for every model (the AI models page's switch turned on).
+    fun gpuRetry(c: Context) = gpuPrefs(c).edit().clear().apply()
 
     // ------------------------------------------------ speed, for time estimates
 
@@ -241,9 +248,24 @@ object Llm {
 
     // A chat turn (LFM2.5's ChatML): the answer, its thinking left out; onText gets the answer so far as it grows.
     // Null when the model is not there or the prompt was too long.
+    // On the GPU, an answer that came out empty or broken: the model goes to the CPU (remembered) and is asked again.
     fun chat(c: Context, m: LlmModels.Model, system: String, user: String, maxTokens: Int = 700, temp: Float = 0.3f,
-             onText: ((String) -> Unit)? = null): String? = hold { synchronized(lock(m.id)) {
-        val l = get(c, m) ?: return@hold null
+             onText: ((String) -> Unit)? = null): String? = hold {
+        val gpuNow = onGpu(c, m)
+        val (text, failed) = chatOnce(c, m, system, user, maxTokens, temp, onText)
+        if (gpuNow && failed) {
+            Log.w(ScouterService.TAG, "llm: ${m.name} failed on the GPU: the CPU from now on (AI models, Use the GPU, tries again)")
+            gpuPrefs(c).edit().putBoolean(m.id, true).apply()
+            unload(m.id)
+            return@hold chatOnce(c, m, system, user, maxTokens, temp, onText).first
+        }
+        text
+    }
+
+    // One try: the text (null: no model or the prompt was too long), and whether it failed (an error, or nothing).
+    private fun chatOnce(c: Context, m: LlmModels.Model, system: String, user: String, maxTokens: Int, temp: Float,
+                         onText: ((String) -> Unit)?): Pair<String?, Boolean> = synchronized(lock(m.id)) {
+        val l = get(c, m) ?: return null to false
         val prompt = "<|im_start|>system\n$system<|im_end|>\n<|im_start|>user\n$user<|im_end|>\n<|im_start|>assistant\n"
         val acc = java.io.ByteArrayOutputStream()
         val sink = object : LlmNative.Sink {
@@ -255,11 +277,20 @@ object Llm {
         }
         val out = LlmNative.generate(l.handle, prompt.toByteArray(), maxTokens, temp, 0.15f, sink)
         l.used = System.currentTimeMillis()
-        runCatching { learn(c, m, LlmNative.timings(l.handle)) }
+        val t = runCatching { LlmNative.timings(l.handle) }.getOrDefault(LongArray(6))
         val text = String(out, Charsets.UTF_8)
-        if (text.isEmpty() && LlmNative.count(l.handle, prompt.toByteArray()) >= m.ctx - 16) return@hold null
-        visible(text).trim()
-    } }
+        val shown = visible(text).trim()
+        // What it did, for the log: where, how much, how fast, what came out.
+        fun rate(n: Long, us: Long) = if (us > 0) (n * 1_000_000 / us) else 0
+        Log.i(ScouterService.TAG, "llm: ${m.name} (${if (onGpu(c, m)) "GPU" else "CPU"}): read ${t[0]} tokens in ${t[1] / 1000} ms " +
+            "(${rate(t[0], t[1])}/s), wrote ${t[2]} in ${t[3] / 1000} ms (${rate(t[2], t[3])}/s); answer ${shown.length} chars" +
+            if (t[4] != 0L) ", error ${t[4]} (code ${t[5]})" else "")
+        if (t[4] == 0L) runCatching { learn(c, m, t) }
+        if (t[4] == 1L) return null to false // the prompt did not fit
+        // Broken: an error, nothing written, or the same few characters over and over (bad numbers on a GPU).
+        val junk = shown.length >= 40 && shown.toSet().size <= 3
+        shown to (t[4] != 0L || (t[2] > 0 && shown.isEmpty()) || text.isEmpty() || junk)
+    }
 
     // What to show of an answer: the part after the model's thinking (<think> ... </think>), "" while it thinks.
     fun visible(s: String): String {

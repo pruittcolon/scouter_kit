@@ -1278,6 +1278,7 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         c.addToggle(toggle("Use the GPU", if (gpu.isEmpty()) "Not available in this build or phone: the models run on the CPU"
             else "$gpu: answers and meeting notes much faster (on: GPU, off: CPU)", settings.llmGpu) {
             settings.llmGpu = it
+            if (it) Llm.gpuRetry(this) // models that failed there try the GPU again
             for (m in LlmModels.ALL) Llm.unload(m.id) // loaded again where asked
         })
         val speeds = LlmModels.ALL.filter { it.role != "embed" && LlmModels.ready(this, it) }.joinToString("\n") { m ->

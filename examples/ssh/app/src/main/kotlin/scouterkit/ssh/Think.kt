@@ -201,6 +201,7 @@ object Think {
             val label = if (parts == 1) "Transcript lines (${pool.size}):" else "Notes taken from ${pool.size} transcript lines in $parts parts:"
             var answer = Llm.chat(c, writer, ANSWER, "$head$label\n$evidence\n\nQuestion: $question", maxTokens = answerTokens,
                 onText = onText) ?: "The model could not answer (the request was too long)."
+            if (answer.isBlank()) answer = "The model returned nothing. Ask again (it moves to the CPU after a GPU failure), or try Deep."
             var feedback = ""
             if ((check || deep) && !cancelled && answer.isNotBlank()) {
                 onStep(Step("Double-checking the answer", 0.95f, Llm.estimateMs(c, writer, tokens(evidence.length + answer.length) + 300,

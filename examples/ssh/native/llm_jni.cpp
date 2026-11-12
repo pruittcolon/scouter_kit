@@ -24,8 +24,10 @@ struct Llm {
   const llama_vocab *vocab = nullptr;
   bool embed = false;
   std::atomic<bool> stop{false};
-  // The last generate's work: prompt tokens and µs, generated tokens and µs (for speed and time estimates).
-  int64_t last[4] = {0, 0, 0, 0};
+  // The last generate's work: prompt tokens and µs, generated tokens and µs (for speed and time estimates), and
+  // what went wrong (0 nothing, 1 the prompt did not fit, 2 reading the prompt failed, 3 a token failed) with
+  // llama_decode's code.
+  int64_t last[6] = {0, 0, 0, 0, 0, 0};
 };
 
 int64_t now_us() {
@@ -35,7 +37,11 @@ int64_t now_us() {
 }
 
 void log_cb(ggml_log_level level, const char *text, void *) {
-  if (level >= GGML_LOG_LEVEL_WARN) __android_log_print(ANDROID_LOG_WARN, "scouter", "llm: %s", text);
+  // Warnings and errors, without the kernel compiler's progress dots and empty lines.
+  if (level < GGML_LOG_LEVEL_WARN || !text) return;
+  std::string t(text);
+  while (!t.empty() && (t.back() == '\n' || t.back() == '.')) t.pop_back();
+  if (!t.empty()) __android_log_print(ANDROID_LOG_WARN, "scouter", "llm: %s", t.c_str());
 }
 
 // llama.cpp's backends and its log, once.
@@ -135,8 +141,8 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_LlmNative_env(JNIEnv *env, jobject, j
 // The last generate's prompt tokens, prompt µs, generated tokens, generation µs.
 JNIEXPORT jlongArray JNICALL Java_scouterkit_ssh_LlmNative_timings(JNIEnv *env, jobject, jlong handle) {
   auto *h = reinterpret_cast<Llm *>(handle);
-  jlongArray out = env->NewLongArray(4);
-  if (h) env->SetLongArrayRegion(out, 0, 4, reinterpret_cast<const jlong *>(h->last));
+  jlongArray out = env->NewLongArray(6);
+  if (h) env->SetLongArrayRegion(out, 0, 6, reinterpret_cast<const jlong *>(h->last));
   return out;
 }
 
@@ -175,16 +181,27 @@ JNIEXPORT jbyteArray JNICALL Java_scouterkit_ssh_LlmNative_generate(JNIEnv *env,
   auto *h = reinterpret_cast<Llm *>(handle);
   if (!h || h->embed) return jbytes(env, "");
   h->stop = false;
+  for (auto &x : h->last) x = 0;
   llama_memory_clear(llama_get_memory(h->ctx), true);
   auto toks = tokenize(h->vocab, bytes(env, prompt), true, true);
   const int n_ctx = static_cast<int>(llama_n_ctx(h->ctx));
-  if (toks.empty() || static_cast<int>(toks.size()) >= n_ctx - 16) return jbytes(env, "");
+  h->last[0] = static_cast<int64_t>(toks.size());
+  if (toks.empty() || static_cast<int>(toks.size()) >= n_ctx - 16) {
+    h->last[4] = 1;
+    return jbytes(env, "");
+  }
   const int nb = static_cast<int>(llama_n_batch(h->ctx));
-  for (auto &x : h->last) x = 0;
   const int64_t t0 = now_us();
   for (size_t i = 0; i < toks.size(); i += static_cast<size_t>(nb)) {
     int n = std::min(nb, static_cast<int>(toks.size() - i));
-    if (llama_decode(h->ctx, llama_batch_get_one(toks.data() + i, n)) != 0) return jbytes(env, "");
+    int rc = llama_decode(h->ctx, llama_batch_get_one(toks.data() + i, n));
+    if (rc != 0) {
+      h->last[1] = now_us() - t0;
+      h->last[4] = 2;
+      h->last[5] = rc;
+      __android_log_print(ANDROID_LOG_WARN, "scouter", "llm: reading the prompt failed at token %zu: %d", i, rc);
+      return jbytes(env, "");
+    }
     if (h->stop) return jbytes(env, "");
   }
   h->last[0] = static_cast<int64_t>(toks.size());
@@ -237,7 +254,13 @@ JNIEXPORT jbyteArray JNICALL Java_scouterkit_ssh_LlmNative_generate(JNIEnv *env,
         if (!go) break;
       }
     }
-    if (llama_decode(h->ctx, llama_batch_get_one(&t, 1)) != 0) break;
+    int rc = llama_decode(h->ctx, llama_batch_get_one(&t, 1));
+    if (rc != 0) {
+      h->last[4] = 3;
+      h->last[5] = rc;
+      __android_log_print(ANDROID_LOG_WARN, "scouter", "llm: a token failed: %d", rc);
+      break;
+    }
     used++;
   }
   llama_sampler_free(smpl);
