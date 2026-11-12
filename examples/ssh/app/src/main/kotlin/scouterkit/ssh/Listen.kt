@@ -113,6 +113,12 @@ object Listen {
         synchronized(lock) { lock.notifyAll() }
     }
 
+    // Something changed elsewhere (Vox started or stopped thinking): the worker looks again, the screens redraw.
+    fun nudge() {
+        synchronized(lock) { lock.notifyAll() }
+        changed()
+    }
+
     fun watch(w: () -> Unit) { watchers += w }
     fun unwatch(w: () -> Unit) { watchers -= w }
     private fun changed() { for (w in watchers) runCatching { w() } }
@@ -344,7 +350,11 @@ object Listen {
                 while (mains.isNotEmpty() && r.total - mains.first()[1] > 16000L * 60) mains.removeFirst()
                 if (now - lastLevel > 1000) {
                     lastLevel = now
-                    setState(if (speaking) "hearing speech" else "listening")
+                    setState(when {
+                        Llm.busy.get() > 0 -> "Vox is thinking: speech waits, written down after"
+                        speaking -> "hearing speech"
+                        else -> "listening"
+                    })
                     changed()
                 }
             }
@@ -482,6 +492,8 @@ object Listen {
                 waiting = ListenQueue.seconds(c)
                 speed = if (live(c, settings)) "live" else "eco"
                 runCatching { Meetings.tick(c) }
+                // Vox is thinking (an answer, meeting notes): the model has the phone; the audio waits on disk.
+                if (Llm.busy.get() > 0) continue
                 // Someone looks: the model ready for the words as they are said.
                 if (engine == null && nowE < lookUntil.get() && !hot(c)) {
                     engine = runCatching { Parakeet.use(c, "listen") }.getOrNull()
@@ -577,6 +589,7 @@ object Listen {
                     if (turnsPending.get() >= 3) return
                     turnsPending.incrementAndGet()
                     turnsExec.execute { try {
+                    while (Llm.busy.get() > 0 && on) Thread.sleep(500) // Vox is thinking: after
                     if (!SegmentationModel.ready(c)) {
                         SegmentationModel.download(c)
                         if (!SegmentationModel.ready(c)) return@execute
@@ -621,6 +634,7 @@ object Listen {
                 var done = 0
                 val t0 = SystemClock.elapsedRealtime()
                 while (on && run == gen) {
+                    if (Llm.busy.get() > 0) break
                     val chunk = ListenQueue.take(c) ?: break
                     // Old audio caught up on after the newest: words and who only (no tone, no speaker-change pass).
                     val old = System.currentTimeMillis() - chunk.start > 3 * 60_000L

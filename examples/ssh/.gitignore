@@ -13,3 +13,4 @@
 *.jks
 *.keystore
 /native/third_party/llama/
+/native/third_party/opencl/

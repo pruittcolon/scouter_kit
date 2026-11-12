@@ -4,8 +4,12 @@
 #include <android/log.h>
 #include <jni.h>
 
+#include <stdlib.h>
+#include <time.h>
+
 #include <algorithm>
 #include <atomic>
+#include <mutex>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -20,10 +24,27 @@ struct Llm {
   const llama_vocab *vocab = nullptr;
   bool embed = false;
   std::atomic<bool> stop{false};
+  // The last generate's work: prompt tokens and µs, generated tokens and µs (for speed and time estimates).
+  int64_t last[4] = {0, 0, 0, 0};
 };
+
+int64_t now_us() {
+  timespec t{};
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return int64_t(t.tv_sec) * 1000000 + t.tv_nsec / 1000;
+}
 
 void log_cb(ggml_log_level level, const char *text, void *) {
   if (level >= GGML_LOG_LEVEL_WARN) __android_log_print(ANDROID_LOG_WARN, "scouter", "llm: %s", text);
+}
+
+// llama.cpp's backends and its log, once.
+void start() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    llama_log_set(log_cb, nullptr);
+    llama_backend_init();
+  });
 }
 
 std::string utf8(JNIEnv *env, jstring s) {
@@ -59,17 +80,14 @@ std::vector<llama_token> tokenize(const llama_vocab *v, const std::string &s, bo
 
 extern "C" {
 
-// A model from a GGUF file: n_ctx tokens of context, threads, embed (an embedding model) or not. 0 if it failed.
+// A model from a GGUF file: n_ctx tokens of context, threads (generation; prompt batches use batch_threads), embed
+// (an embedding model) or not, gpu_layers on the GPU (0: the CPU only; a build without a GPU backend ignores it).
+// 0 if it failed.
 JNIEXPORT jlong JNICALL Java_scouterkit_ssh_LlmNative_load(JNIEnv *env, jobject, jstring path, jint n_ctx, jint threads,
-                                                          jboolean embed) {
-  static bool started = false;
-  if (!started) {
-    llama_log_set(log_cb, nullptr);
-    llama_backend_init();
-    started = true;
-  }
+                                                          jint batch_threads, jboolean embed, jint gpu_layers) {
+  start();
   auto mp = llama_model_default_params();
-  mp.n_gpu_layers = 0;
+  mp.n_gpu_layers = gpu_layers;
   std::string p = utf8(env, path);
   llama_model *m = llama_model_load_from_file(p.c_str(), mp);
   if (!m) return 0;
@@ -78,7 +96,7 @@ JNIEXPORT jlong JNICALL Java_scouterkit_ssh_LlmNative_load(JNIEnv *env, jobject,
   cp.n_batch = embed ? static_cast<uint32_t>(n_ctx) : 512;
   cp.n_ubatch = embed ? static_cast<uint32_t>(n_ctx) : 512;
   cp.n_threads = threads;
-  cp.n_threads_batch = threads;
+  cp.n_threads_batch = batch_threads;
   cp.embeddings = embed;
   cp.no_perf = true;
   if (embed) cp.pooling_type = LLAMA_POOLING_TYPE_UNSPECIFIED;
@@ -101,6 +119,38 @@ JNIEXPORT void JNICALL Java_scouterkit_ssh_LlmNative_free(JNIEnv *, jobject, jlo
   llama_free(h->ctx);
   llama_model_free(h->model);
   delete h;
+}
+
+// The threads for generation and for prompt batches, from now on.
+JNIEXPORT void JNICALL Java_scouterkit_ssh_LlmNative_threads(JNIEnv *, jobject, jlong handle, jint threads, jint batch_threads) {
+  auto *h = reinterpret_cast<Llm *>(handle);
+  if (h) llama_set_n_threads(h->ctx, threads, batch_threads);
+}
+
+// An environment variable for llama.cpp, before its backends start (the OpenCL kernel cache's folder).
+JNIEXPORT void JNICALL Java_scouterkit_ssh_LlmNative_env(JNIEnv *env, jobject, jstring key, jstring value) {
+  setenv(utf8(env, key).c_str(), utf8(env, value).c_str(), 1);
+}
+
+// The last generate's prompt tokens, prompt µs, generated tokens, generation µs.
+JNIEXPORT jlongArray JNICALL Java_scouterkit_ssh_LlmNative_timings(JNIEnv *env, jobject, jlong handle) {
+  auto *h = reinterpret_cast<Llm *>(handle);
+  jlongArray out = env->NewLongArray(4);
+  if (h) env->SetLongArrayRegion(out, 0, 4, reinterpret_cast<const jlong *>(h->last));
+  return out;
+}
+
+// The GPU devices llama.cpp sees ("" none): for the app to say where models run.
+JNIEXPORT jstring JNICALL Java_scouterkit_ssh_LlmNative_devices(JNIEnv *env, jobject) {
+  start();
+  std::string out;
+  for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+    ggml_backend_dev_t d = ggml_backend_dev_get(i);
+    if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_CPU) continue;
+    if (!out.empty()) out += ", ";
+    out += ggml_backend_dev_description(d);
+  }
+  return env->NewStringUTF(out.c_str());
 }
 
 // Asks a running generation to end at its next token.
@@ -130,11 +180,16 @@ JNIEXPORT jbyteArray JNICALL Java_scouterkit_ssh_LlmNative_generate(JNIEnv *env,
   const int n_ctx = static_cast<int>(llama_n_ctx(h->ctx));
   if (toks.empty() || static_cast<int>(toks.size()) >= n_ctx - 16) return jbytes(env, "");
   const int nb = static_cast<int>(llama_n_batch(h->ctx));
+  for (auto &x : h->last) x = 0;
+  const int64_t t0 = now_us();
   for (size_t i = 0; i < toks.size(); i += static_cast<size_t>(nb)) {
     int n = std::min(nb, static_cast<int>(toks.size() - i));
     if (llama_decode(h->ctx, llama_batch_get_one(toks.data() + i, n)) != 0) return jbytes(env, "");
     if (h->stop) return jbytes(env, "");
   }
+  h->last[0] = static_cast<int64_t>(toks.size());
+  h->last[1] = now_us() - t0;
+  const int64_t t1 = now_us();
   auto sp = llama_sampler_chain_default_params();
   sp.no_perf = true;
   llama_sampler *smpl = llama_sampler_chain_init(sp);
@@ -186,6 +241,8 @@ JNIEXPORT jbyteArray JNICALL Java_scouterkit_ssh_LlmNative_generate(JNIEnv *env,
     used++;
   }
   llama_sampler_free(smpl);
+  h->last[2] = used - static_cast<int64_t>(toks.size());
+  h->last[3] = now_us() - t1;
   return jbytes(env, out);
 }
 

@@ -15,7 +15,9 @@ It includes:
   models are not in the app: it downloads NVIDIA's Parakeet TDT 0.6B v2 (CC-BY-4.0, as converted for
   sherpa-onnx) and Silero VAD (MIT) when asked, checked by SHA-256.
 - llama.cpp v0.9.0 with ggml (https://github.com/ggml-org/llama.cpp, fetched by native/third_party/fetch_llama.sh):
-  MIT (licenses/llama.cpp.txt), in libvox_llm.so (Listen mode's search and answers). The models are not in the
+  MIT (licenses/llama.cpp.txt), in libvox_llm.so (Listen mode's search and answers), with its OpenCL backend for the
+  phone's GPU built against Khronos' OpenCL-Headers v2026.05.29 (Apache-2.0, licenses/opencl-headers.txt; fetched by
+  native/third_party/fetch_opencl.sh; the phone's own OpenCL library is used at run time). The models are not in the
   app: it downloads Liquid AI's LFM2.5 GGUF files (LFM Open License v1.0) and Google's EmbeddingGemma 300M (Gemma
   Terms of Use) when asked, at pinned revisions, checked by SHA-256. The voiceprint models (WeSpeaker, Apache-2.0,
   as converted for sherpa-onnx) likewise.

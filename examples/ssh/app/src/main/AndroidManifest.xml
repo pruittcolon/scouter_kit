@@ -189,5 +189,7 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+        <!-- The GPU for the language models (libvox_llm): the phone's own OpenCL, where it has one. -->
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
     </application>
 </manifest>

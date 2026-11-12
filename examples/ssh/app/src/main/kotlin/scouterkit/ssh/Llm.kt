@@ -24,7 +24,11 @@ object LlmNative {
         fun piece(b: ByteArray): Boolean
     }
 
-    external fun load(path: String, nCtx: Int, threads: Int, embed: Boolean): Long
+    external fun load(path: String, nCtx: Int, threads: Int, batchThreads: Int, embed: Boolean, gpuLayers: Int): Long
+    external fun threads(h: Long, threads: Int, batchThreads: Int)
+    external fun timings(h: Long): LongArray // the last generate: prompt tokens, prompt µs, generated tokens, generation µs
+    external fun devices(): String // the GPUs llama.cpp can use, "" none
+    external fun env(key: String, value: String)
     external fun free(h: Long)
     external fun stop(h: Long)
     external fun count(h: Long, text: ByteArray): Int
@@ -114,17 +118,94 @@ object Llm {
 
     private fun idleMs(m: LlmModels.Model) = if (m.id == LlmModels.BIG.id || m.id == LlmModels.MID.id) 3 * 60_000L else 10 * 60_000L
 
+    // ------------------------------------------------ Vox thinking: Listen waits, the model gets the phone
+
+    // Answers being worked on. While any is, Listen writes nothing down (its audio waits on disk) and the model runs
+    // on the phone's cores (or its GPU); Listen catches up afterwards.
+    val busy = java.util.concurrent.atomic.AtomicInteger(0)
+
+    fun <T> hold(block: () -> T): T {
+        if (busy.incrementAndGet() == 1) Log.i(ScouterService.TAG, "llm: thinking: Listen waits")
+        Listen.nudge()
+        try {
+            return block()
+        } finally {
+            if (busy.decrementAndGet() == 0) Log.i(ScouterService.TAG, "llm: done thinking: Listen catches up")
+            Listen.nudge()
+        }
+    }
+
+    // The GPU llama.cpp found ("" none; this build may have no GPU backend). Its compiled kernels are kept in the
+    // app's cache, so only the first load compiles them.
+    @Volatile private var gpuName: String? = null
+
+    fun gpu(c: Context): String = gpuName ?: synchronized(this) {
+        gpuName ?: (if (LlmNative.available) runCatching {
+            val dir = java.io.File(c.cacheDir, "opencl").apply { mkdirs() }
+            LlmNative.env("GGML_OPENCL_KERNEL_CACHE_DIR", dir.path)
+            LlmNative.devices()
+        }.getOrDefault("") else "").also {
+            gpuName = it
+            Log.i(ScouterService.TAG, "llm: GPU: " + it.ifEmpty { "none (the CPU)" })
+        }
+    }
+
+    // Where a model runs: the GPU when there is one and it is allowed, else the CPU.
+    fun onGpu(c: Context, m: LlmModels.Model) = m.role != "embed" && Settings(c).llmGpu && gpu(c).isNotEmpty()
+
+    // ------------------------------------------------ speed, for time estimates
+
+    // Tokens a second, measured on this phone: prompt reading and writing, per model (and per CPU / GPU).
+    private fun speedKey(c: Context, m: LlmModels.Model) = m.id + if (onGpu(c, m)) "_gpu" else "_cpu"
+
+    fun speed(c: Context, m: LlmModels.Model): Pair<Float, Float> {
+        val p = c.getSharedPreferences("llm_speed", Context.MODE_PRIVATE)
+        val k = speedKey(c, m)
+        // First guesses for the S25's cores, until measured.
+        val (pp, tg) = when (m.id) {
+            LlmModels.QUICK.id -> 220f to 35f
+            LlmModels.MID.id -> 100f to 18f
+            LlmModels.BIG.id -> 70f to 22f
+            else -> 300f to 30f
+        }
+        return p.getFloat(k + "_pp", pp) to p.getFloat(k + "_tg", tg)
+    }
+
+    private fun learn(c: Context, m: LlmModels.Model, t: LongArray) {
+        if (t.size < 4) return
+        val p = c.getSharedPreferences("llm_speed", Context.MODE_PRIVATE)
+        val k = speedKey(c, m)
+        val (pp, tg) = speed(c, m)
+        val e = p.edit()
+        if (t[0] >= 64 && t[1] > 0) e.putFloat(k + "_pp", pp * 0.6f + 0.4f * (t[0] * 1e6f / t[1]))
+        if (t[2] >= 16 && t[3] > 0) e.putFloat(k + "_tg", tg * 0.6f + 0.4f * (t[2] * 1e6f / t[3]))
+        e.apply()
+    }
+
+    // About how long a call takes: its prompt and answer tokens at the measured speeds, plus loading it if needed.
+    fun estimateMs(c: Context, m: LlmModels.Model, promptTokens: Int, answerTokens: Int): Long {
+        val (pp, tg) = speed(c, m)
+        val load = if (synchronized(loaded) { loaded.containsKey(m.id) }) 0L else 1500L + m.part.size / 2_000_000L
+        return load + (promptTokens / pp * 1000).toLong() + (answerTokens / tg * 1000).toLong()
+    }
+
     private fun get(c: Context, m: LlmModels.Model): Loaded? {
         if (!LlmModels.usable() || !LlmModels.ready(c, m)) return null
         synchronized(loaded) { loaded[m.id]?.let { it.used = System.currentTimeMillis(); return it } }
-        val threads = if (m.role == "embed") 2 else 4
+        // Listen waits while a model works: generation on 6 of the 8 cores, prompt reading on 7 (one for the
+        // microphone and the screen). Embeddings run beside Listen: 2.
+        val embed = m.role == "embed"
+        val threads = if (embed) 2 else 6
+        val batch = if (embed) 2 else 7
+        val gpuLayers = if (onGpu(c, m)) 99 else 0
         val t0 = System.currentTimeMillis()
-        val h = LlmNative.load(LlmModels.file(c, m).path, m.ctx, threads, m.role == "embed")
+        val h = LlmNative.load(LlmModels.file(c, m).path, m.ctx, threads, batch, embed, gpuLayers)
         if (h == 0L) {
             Log.w(ScouterService.TAG, "llm: ${m.name} did not load")
             return null
         }
-        Log.i(ScouterService.TAG, "llm: ${m.name} loaded in ${System.currentTimeMillis() - t0} ms")
+        Log.i(ScouterService.TAG, "llm: ${m.name} loaded in ${System.currentTimeMillis() - t0} ms" +
+            if (gpuLayers > 0) " on the GPU (${gpu(c)})" else " on the CPU")
         val l = Loaded(m, h, System.currentTimeMillis())
         synchronized(loaded) { loaded[m.id] = l }
         sweep()
@@ -161,8 +242,8 @@ object Llm {
     // A chat turn (LFM2.5's ChatML): the answer, its thinking left out; onText gets the answer so far as it grows.
     // Null when the model is not there or the prompt was too long.
     fun chat(c: Context, m: LlmModels.Model, system: String, user: String, maxTokens: Int = 700, temp: Float = 0.3f,
-             onText: ((String) -> Unit)? = null): String? = synchronized(lock(m.id)) {
-        val l = get(c, m) ?: return null
+             onText: ((String) -> Unit)? = null): String? = hold { synchronized(lock(m.id)) {
+        val l = get(c, m) ?: return@hold null
         val prompt = "<|im_start|>system\n$system<|im_end|>\n<|im_start|>user\n$user<|im_end|>\n<|im_start|>assistant\n"
         val acc = java.io.ByteArrayOutputStream()
         val sink = object : LlmNative.Sink {
@@ -174,10 +255,11 @@ object Llm {
         }
         val out = LlmNative.generate(l.handle, prompt.toByteArray(), maxTokens, temp, 0.15f, sink)
         l.used = System.currentTimeMillis()
+        runCatching { learn(c, m, LlmNative.timings(l.handle)) }
         val text = String(out, Charsets.UTF_8)
-        if (text.isEmpty() && LlmNative.count(l.handle, prompt.toByteArray()) >= m.ctx - 16) return null
+        if (text.isEmpty() && LlmNative.count(l.handle, prompt.toByteArray()) >= m.ctx - 16) return@hold null
         visible(text).trim()
-    }
+    } }
 
     // What to show of an answer: the part after the model's thinking (<think> ... </think>), "" while it thinks.
     fun visible(s: String): String {

@@ -15,6 +15,9 @@ val sherpa: String = providers.gradleProperty("sherpaDir")
 // native/third_party/fetch_llama.sh's llama.cpp (the on-phone language models; without it the app says so).
 val llama: String = providers.gradleProperty("llamaDir")
     .getOrElse(rootProject.file("native/third_party/llama/llama.cpp").path)
+// native/third_party/fetch_opencl.sh's headers and link stub (the language models on the GPU; without it, the CPU).
+val opencl: String = providers.gradleProperty("openclDir")
+    .getOrElse(rootProject.file("native/third_party/opencl").path)
 
 // Release signing: only from keystore.properties next to settings.gradle.kts (git-ignored; storeFile,
 // storePassword, keyAlias, keyPassword; storeFile absolute or relative to that file). Without it the release
@@ -32,8 +35,8 @@ android {
         applicationId = "io.github.pruittcolon.scouter" // this fork's ID; the code stays in package scouterkit.ssh (JNI names)
         minSdk = 31
         targetSdk = 34
-        versionCode = 75
-        versionName = "0.73"
+        versionCode = 76
+        versionName = "0.74"
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild {
             // 16 KB pages: newer Android builds may use them; the library loads either way.
@@ -47,7 +50,7 @@ android {
     productFlavors {
         create("glasses") {
             dimension = "arms"
-            externalNativeBuild { cmake { arguments += listOf("-DARMS=glasses", "-DVOX_LLM=ON", "-DLLAMA_DIR=$llama") } }
+            externalNativeBuild { cmake { arguments += listOf("-DARMS=glasses", "-DVOX_LLM=ON", "-DLLAMA_DIR=$llama", "-DOPENCL_DIR=$opencl") } }
         }
         create("emulated") {
             dimension = "arms"
@@ -94,6 +97,8 @@ android {
 
 android.buildFeatures.buildConfig = true
 android.packaging.resources.excludes += "META-INF/versions/*/OSGI-INF/MANIFEST.MF"
+// The OpenCL link stub is never shipped: the phone's own libOpenCL.so is used.
+android.packaging.jniLibs.excludes += "**/libOpenCL.so"
 
 // Assets and the launcher icon from elsewhere in the tree, copied at build time (the tree has no symlinks):
 // NOTICE, licenses/ and icon.png next to settings.gradle.kts, the fonts from scouter_kit.

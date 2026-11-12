@@ -33,6 +33,9 @@ class ListenActivity : Activity(), HearingCheck.Ui {
             "rainbow is a division of white light into many beautiful colors. These take the shape of a long round arch, " +
             "with its path high above, and its two ends apparently beyond the horizon. There is, according to legend, a " +
             "boiling pot of gold at one end. People look, but no one ever finds it."
+        // The chat, kept while the app runs (leaving the page and coming back keeps it).
+        val chat = ArrayList<Msg>()
+        private var askDeep = false
         private val TABS = listOf(Triple("live", "Live", "mic"), Triple("people", "People", "eye"),
             Triple("ask", "Ask", "spark"), Triple("more", "More", "list"))
     }
@@ -71,9 +74,6 @@ class ListenActivity : Activity(), HearingCheck.Ui {
     private var recordText = ""
 
     // Ask.
-    private lateinit var askOut: LinearLayout
-    private var deep = false
-    private val history = ArrayList<Pair<String, String>>()
 
     // More and its pages.
     private lateinit var moreBody: LinearLayout
@@ -373,6 +373,7 @@ class ListenActivity : Activity(), HearingCheck.Ui {
             !Listen.on && !settings.listenOn -> "Off: tap the orb to start listening"
             !Listen.on -> "Starting…"
             Listen.paused -> "Paused: hold the orb to listen again"
+            Llm.busy.get() > 0 -> "Vox is thinking: ${Listen.waiting.toInt()} s of speech waits, written down after"
             talking -> Listen.partial.ifEmpty { "hearing…" }
             Listen.waiting >= 90 -> "Catching up on ${(Listen.waiting / 60).toInt()} min of speech (newest first) · tap to skip it"
             Listen.waiting >= 2 -> "Writing down ${Listen.waiting.toInt()} s of speech…"
@@ -446,6 +447,15 @@ class ListenActivity : Activity(), HearingCheck.Ui {
             h.addView(Avatar(this, who.ifEmpty { "?" }, 26))
             h.addView(text(who.ifEmpty { "Someone" }, 13.5f, col, Ui.BOLD).apply { setPadding(dp(8), 0, dp(8), 0) })
             h.addView(text(SimpleDateFormat("h:mm a", Locale.US).format(Date(l.start)), 11.5f, Ui.FAINT))
+            // Unnamed: a "Name" tag right there; a tap on any header names (or corrects) the voice.
+            val unnamed = l.person.isEmpty()
+            if (unnamed) h.addView(text("NAME ›", 11f, Ui.ON_ACCENT, Ui.BOLD).apply {
+                letterSpacing = 0.1f
+                background = accentGradient(dp(10).toFloat())
+                setPadding(dp(8), dp(3), dp(8), dp(3))
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
+            h.isClickable = true
+            h.setOnClickListener { nameFrom(l, who) }
             liveList.addView(h)
             lastWho = who
         }
@@ -459,12 +469,13 @@ class ListenActivity : Activity(), HearingCheck.Ui {
             fired.ifEmpty { null }?.let { "■ $it" })
         if (tags.isNotEmpty()) bubble.addView(caps(tags.joinToString(" · "), if (fired.isNotEmpty()) Ui.ACCENT else col, 9.5f)
             .apply { setPadding(0, dp(4), 0, 0) })
-        // Hold a line: delete it, or its whole conversation.
+        // Hold a line: who said it, or delete it or its whole conversation.
         bubble.setOnLongClickListener {
-            dialog().setTitle("Delete").setItems(arrayOf("This line", "This whole conversation")) { _, which ->
+            dialog().setItems(arrayOf("Who said this…", "Delete this line", "Delete this whole conversation")) { _, which ->
+                if (which == 0) return@setItems nameFrom(l, who, line = true)
                 Thread {
                     val db = ListenDb.get(this)
-                    if (which == 0) {
+                    if (which == 1) {
                         db.deleteLine(l.id)
                         Listen.linesChanged(this, listOf(ListenDb.dayStart(l.start)))
                         main.post { shownNames = 0; loadLive() }
@@ -477,6 +488,47 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         }
         liveList.addView(bubble, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             .apply { leftMargin = dp(34); topMargin = dp(4) })
+    }
+
+    // Naming where the name shows: the people already known, me, or a new name. An unnamed voice (Voice 13) is named
+    // whole (all its lines, and it teaches that person's voiceprint); a named line (or `line`) is corrected alone.
+    private fun nameFrom(l: ListenDb.Line, who: String, line: Boolean = false) {
+        Thread {
+            val db = ListenDb.get(this)
+            val people = db.personList()
+            main.post {
+                val group = !line && l.person.isEmpty() && l.voice.isNotEmpty()
+                val labels = ArrayList<String>()
+                val ids = ArrayList<String?>() // null: a new name
+                if (people.none { it.first == Speakers.ME }) { labels += "Me"; ids += Speakers.ME }
+                for ((id, name, _) in people) {
+                    labels += if (id == Speakers.ME) "Me (You)" else name
+                    ids += id
+                }
+                labels += "＋ New name…"
+                ids += null
+                val title = when {
+                    group -> "Who is ${who.ifEmpty { "this voice" }}?"
+                    who.isEmpty() -> "Who said this?"
+                    else -> "Who said this? (now: $who)"
+                }
+                fun assign(pid: String) = Thread {
+                    if (pid == Speakers.ME && db.personList().none { it.first == Speakers.ME }) db.addPerson("You", false, Speakers.ME)
+                    if (group) db.nameVoice(l.voice, pid) else db.assignLine(l.id, pid)
+                    Listen.peopleChanged()
+                    main.postDelayed({ shownNames = 0; loadLive() }, 300)
+                }.start()
+                dialog().setTitle(title).setItems(labels.toTypedArray()) { _, i ->
+                    val pid = ids[i]
+                    if (pid != null) assign(pid)
+                    else ask(if (group) "Who is ${who.ifEmpty { "this voice" }}?" else "Who said this?", "") { name ->
+                        val id = if (name.equals("me", true) || name.equals("you", true)) Speakers.ME
+                            else db.personNamed(name) ?: db.addPerson(name, false)
+                        main.post { assign(id) }
+                    }
+                }.setNegativeButton("Cancel", null).show()
+            }
+        }.start()
     }
 
     // ------------------------------------------------ People
@@ -613,92 +665,291 @@ class ListenActivity : Activity(), HearingCheck.Ui {
         }).also { it.start() }
     }
 
-    // ------------------------------------------------ Ask (and find)
+    // ------------------------------------------------ Ask: a chat with Vox about what was said
 
-    private fun buildAsk(): View = scrolled { b ->
-        val c = card()
-        c.addView(caps("ask or find"))
-        c.addView(text("Ask: an answer from what was said (LFM2.5 on this phone). Find: the lines themselves, by words or " +
-            "meaning. \"What did Maria say about the trip?\" · \"What did we decide yesterday?\"", 12.5f, Ui.FAINT)
-            .apply { setPadding(0, dp(4), 0, dp(8)) })
-        val q = field("Question or words", "", "about any day").apply { imeOptions = EditorInfo.IME_ACTION_SEARCH }
-        c.addView(q)
-        val deepChip = chip("Deep: off", false)
-        deepChip.setOnClickListener {
-            deep = !deep
-            deepChip.text = if (deep) "Deep: on" else "Deep: off"
-            deepChip.setTextColor(if (deep) Ui.ACCENT else Ui.TEXT)
-        }
-        c.addView(chipRow(chip("Ask", true) { askNow(q.text.toString().trim()) }, chip("Find", false) { findNow(q.text.toString().trim()) },
-            deepChip), lp().apply { topMargin = dp(8) })
-        q.setOnEditorActionListener { _, _, _ -> askNow(q.text.toString().trim()); true }
-        b.addView(c)
-        askOut = column()
-        b.addView(askOut)
-        showHistory()
+    // One message of the chat: yours (mine) or Vox's, with what Vox read (evidence), its notes, its check.
+    class Msg(val mine: Boolean, var text: String, val question: String = "") {
+        var meta = ""
+        var feedback = ""
+        var notes: List<String> = emptyList()
+        var evidence = ""
+        var deep = false
     }
 
-    private fun askNow(q: String) {
-        if (q.isEmpty()) return
-        askOut.removeAllViews()
-        val c = card()
-        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        head.addView(Avatar(this, "Vox", 28))
-        head.addView(caps("vox · ${if (deep) "deep" else "quick"} · on this phone", Ui.ACCENT).apply { setPadding(dp(8), 0, 0, 0) })
-        c.addView(head)
-        c.addView(text(q, 14f, Ui.MUTED, Ui.BOLD).apply { setPadding(0, dp(8), 0, 0) })
-        val a = text("Thinking…", 15.5f, Ui.TEXT).apply { setPadding(0, dp(6), 0, 0); setTextIsSelectable(true) }
-        c.addView(a)
-        askOut.addView(c)
-        if (!LlmModels.usable()) return run { a.text = "This phone or build cannot run the models." }
-        if (LlmModels.ALL.none { it.role != "embed" && LlmModels.ready(this, it) }) return run {
-            a.text = "Download LFM2.5 1.2B first: More, AI models."
+    private lateinit var chatScroll: ScrollView
+    private lateinit var chatList: LinearLayout
+    private lateinit var askInput: android.widget.EditText
+    private lateinit var progBox: LinearLayout
+    private lateinit var progBar: Progress
+    private lateinit var progText: TextView
+    private lateinit var scopeRow: LinearLayout
+    private var askScope = "auto"
+    private var asking = false
+    private var answerView: TextView? = null
+
+    private fun buildAsk(): View {
+        val box = column()
+        // The time to look in, and how hard to think.
+        scopeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(12), dp(2), dp(12), dp(6)) }
+        box.addView(android.widget.HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(scopeRow)
+        })
+        showScopes()
+        chatList = column().apply { setPadding(dp(14), dp(4), dp(14), dp(12)) }
+        chatScroll = ScrollView(this).apply { addView(chatList) }
+        box.addView(chatScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        // While Vox works: what it does, the bar, the time left, Stop.
+        progBox = column().apply {
+            setPadding(dp(14), dp(8), dp(14), dp(6))
+            visibility = View.GONE
         }
-        Thread {
-            val got = runCatching { Search.ask(this, q, deep) { t -> main.post { a.text = t.ifEmpty { "Thinking…" } } } }
-                .getOrElse { "It stopped: ${it.message}" } ?: "Download LFM2.5 1.2B first: More, AI models."
-            main.post {
-                a.text = got
-                history.add(0, q to got)
-                showHistory(keep = 1)
-            }
-        }.start()
+        val pr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        progText = text("", 12.5f, Ui.ACCENT, Ui.BOLD)
+        pr.addView(progText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        pr.addView(chip("Stop", false) { Think.cancel() })
+        progBox.addView(pr)
+        progBar = Progress(this)
+        progBox.addView(progBar, lp().apply { topMargin = dp(6) })
+        box.addView(progBox)
+        // The input bar.
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(6), dp(12), dp(10))
+        }
+        askInput = android.widget.EditText(this).apply {
+            hint = "Ask anything said… (or: find <words>)"
+            setTextColor(Ui.TEXT)
+            setHintTextColor(Ui.FAINT)
+            textSize = 15.5f
+            background = rounded(Ui.RAISED, dp(22).toFloat(), dp(1), Ui.STROKE)
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            maxLines = 4
+            imeOptions = EditorInfo.IME_ACTION_SEND
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            setOnEditorActionListener { _, _, _ -> send(); true }
+        }
+        bar.addView(askInput, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val go = FrameLayout(this).apply {
+            background = accentGradient(dp(22).toFloat())
+            isClickable = true
+            setOnClickListener { send() }
+            addView(IconView(this@ListenActivity, "next", 22, Ui.ON_ACCENT), FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+        }
+        bar.addView(go, LinearLayout.LayoutParams(dp(44), dp(44)).apply { leftMargin = dp(8) })
+        box.addView(bar)
+        drawChat()
+        return box
     }
 
-    private fun findNow(q: String) {
-        if (q.isEmpty()) return
-        askOut.removeAllViews()
-        val c = card()
-        c.addView(caps("finding…"))
-        askOut.addView(c)
-        Thread {
-            val hits = runCatching { Search.find(this, q, 60) }.getOrDefault(emptyList())
-            val names = ListenDb.get(this).names()
-            main.post {
-                c.removeAllViews()
-                c.addView(caps("\"$q\" · ${hits.size} found"))
-                if (hits.isEmpty()) c.addView(text("Nothing found.", 13.5f, Ui.FAINT).apply { setPadding(0, dp(8), 0, 0) })
-                val fmt = SimpleDateFormat("EEE MMM d, h:mm a", Locale.US)
-                for (h in hits) {
-                    val who = names[h.line.person.ifEmpty { h.line.voice }] ?: "Someone"
-                    c.addView(caps("$who · ${fmt.format(Date(h.line.start))}" + if (h.meaning && !h.words) " · by meaning" else "",
-                        ListenLook.color(who), 9.5f).apply { setPadding(0, dp(12), 0, dp(2)) })
-                    c.addView(text(h.line.text, 14.5f, Ui.TEXT))
+    private fun showScopes() {
+        scopeRow.removeAllViews()
+        for (sc in Think.SCOPES) {
+            val on = sc.key == askScope
+            scopeRow.addView(chip(sc.label, on) {
+                askScope = sc.key
+                showScopes()
+                if (chat.isEmpty()) drawChat()
+            }, lp(ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(6) })
+        }
+        scopeRow.addView(chip(if (askDeep) "Deep: on" else "Deep: off", askDeep) {
+            askDeep = !askDeep
+            showScopes()
+        })
+    }
+
+    // The chat, or (empty) what there is to ask about: today and this week in numbers, and questions to start with.
+    private fun drawChat() {
+        chatList.removeAllViews()
+        if (chat.isEmpty()) {
+            chatList.addView(text("Ask Vox", 24f, Ui.TEXT, Ui.BLACK).apply { setPadding(dp(2), dp(10), 0, dp(2)) })
+            chatList.addView(text("About anything said, on this phone. Big questions are read in parts, with a bar and the " +
+                "time left. Listen pauses while Vox thinks and catches up after.", 13f, Ui.MUTED).apply { setPadding(dp(2), 0, 0, dp(8)) })
+            val today = card()
+            today.addView(caps("today"))
+            val tInfo = text("…", 14f, Ui.TEXT).apply { setPadding(0, dp(4), 0, 0) }
+            today.addView(tInfo)
+            chatList.addView(today)
+            val week = card()
+            week.addView(caps("this week"))
+            val wInfo = text("…", 14f, Ui.TEXT).apply { setPadding(0, dp(4), 0, 0) }
+            week.addView(wInfo)
+            chatList.addView(week)
+            val sug = column()
+            chatList.addView(caps("try", Ui.FAINT).apply { setPadding(dp(2), dp(6), 0, dp(4)) })
+            chatList.addView(sug)
+            Thread {
+                val now = System.currentTimeMillis()
+                val t = Think.info(this, ListenDb.dayStart(now), now + 1)
+                val w = Think.span("week", "", now)?.let { Think.info(this, it.first, it.second) } ?: ""
+                val people = ListenDb.get(this).personList().filter { it.first != Speakers.ME }.map { it.second }
+                main.post {
+                    tInfo.text = t
+                    wInfo.text = w
+                    val ideas = mutableListOf("Summarize today", "What did I promise to do?", "Action items this week",
+                        "Any decisions made this week?", "What was talked about yesterday?")
+                    people.firstOrNull()?.let { ideas.add(2, "What did $it talk about today?") }
+                    for (q in ideas) sug.addView(text(q, 14.5f, Ui.TEXT).apply {
+                        background = rounded(Ui.SURFACE, dp(16).toFloat(), dp(1), Ui.STROKE)
+                        setPadding(dp(14), dp(10), dp(14), dp(10))
+                        isClickable = true
+                        setOnClickListener { askInput.setText(q); send() }
+                    }, lp().apply { topMargin = dp(6) })
                 }
+            }.start()
+            return
+        }
+        for (m in chat) chatList.addView(bubble(m))
+        chatList.addView(chip("New chat", false) {
+            if (asking) return@chip
+            chat.clear()
+            drawChat()
+        }.apply { setPadding(dp(14), dp(8), dp(14), dp(8)) }, lp(ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
+        chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    private fun bubble(m: Msg): View {
+        if (m.mine) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
+            row.addView(text(m.text, 15f, Ui.TEXT).apply {
+                background = rounded(Ui.RAISED, dp(18).toFloat(), dp(1), Ui.ACCENT2)
+                setPadding(dp(14), dp(10), dp(14), dp(10))
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                leftMargin = dp(48); topMargin = dp(12)
+            })
+            return row
+        }
+        val col = column().apply { setPadding(0, dp(12), dp(24), 0) }
+        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        head.addView(Avatar(this, "Vox", 26))
+        head.addView(caps("vox" + if (m.deep) " · deep" else "", Ui.ACCENT).apply { setPadding(dp(8), 0, 0, 0) })
+        col.addView(head)
+        val body = text(m.text, 15.5f, Ui.TEXT).apply {
+            setTextIsSelectable(true)
+            setPadding(dp(2), dp(6), 0, 0)
+            setLineSpacing(0f, 1.15f)
+        }
+        col.addView(body)
+        if (m === chat.lastOrNull() && asking) answerView = body
+        if (m.feedback.isNotEmpty()) col.addView(text("✓ Checked: ${m.feedback}", 12.5f, Ui.GOOD).apply { setPadding(dp(2), dp(6), 0, 0) })
+        if (m.meta.isNotEmpty()) col.addView(caps(m.meta, Ui.FAINT, 9.5f).apply { setPadding(dp(2), dp(6), 0, 0) })
+        if (m.meta.isNotEmpty()) {
+            val work = text(m.notes.joinToString("\n\n"), 12.5f, Ui.MUTED).apply {
+                visibility = View.GONE
+                setTextIsSelectable(true)
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                background = rounded(Ui.SURFACE, dp(12).toFloat(), dp(1), Ui.STROKE)
+            }
+            val chips = mutableListOf<View>(
+                chip("Double-check", false) { recheck(m) },
+                chip("Copy", false) {
+                    val cm = getSystemService(android.content.ClipboardManager::class.java)
+                    cm?.setPrimaryClip(android.content.ClipData.newPlainText("Vox", m.text))
+                },
+            )
+            if (m.notes.isNotEmpty()) chips.add(1, chip("Show work (${m.notes.size})", false) {
+                work.visibility = if (work.visibility == View.GONE) View.VISIBLE else View.GONE
+            })
+            col.addView(chipRow(*chips.toTypedArray()))
+            col.addView(work, lp().apply { topMargin = dp(6) })
+        }
+        return col
+    }
+
+    private fun progress(label: String, fraction: Float, etaMs: Long) {
+        progBox.visibility = View.VISIBLE
+        progText.text = label + if (etaMs > 1500) " · " + Think.eta(etaMs) else ""
+        progBar.fraction = fraction
+    }
+
+    private fun send() {
+        val q = askInput.text.toString().trim()
+        if (q.isEmpty() || asking) return
+        if (!LlmModels.usable()) return run { askInput.error = "This phone or build cannot run the models" }
+        if (LlmModels.ALL.none { it.role != "embed" && LlmModels.ready(this, it) }) {
+            chat += Msg(true, q)
+            chat += Msg(false, "Download LFM2.5 1.2B first: More, AI models. Then ask again.")
+            askInput.setText("")
+            return drawChat()
+        }
+        askInput.setText("")
+        // "find …": the lines themselves (words or meaning), no model.
+        if (q.startsWith("find ", ignoreCase = true)) {
+            val what = q.substring(5).trim()
+            chat += Msg(true, q)
+            val a = Msg(false, "Finding…")
+            chat += a
+            drawChat()
+            Thread {
+                val hits = runCatching { Search.find(this, what, 40) }.getOrDefault(emptyList())
+                val names = ListenDb.get(this).names()
+                val fmt = SimpleDateFormat("EEE MMM d, h:mm a", Locale.US)
+                main.post {
+                    a.text = if (hits.isEmpty()) "Nothing found for \"$what\"." else hits.joinToString("\n\n") { h ->
+                        "${fmt.format(Date(h.line.start))} · ${names[h.line.person.ifEmpty { h.line.voice }] ?: "Someone"}" +
+                            (if (h.meaning && !h.words) " (by meaning)" else "") + "\n${h.line.text}"
+                    }
+                    a.meta = "${hits.size} found"
+                    drawChat()
+                }
+            }.start()
+            return
+        }
+        val history = chat.filter { !it.mine && it.question.isNotEmpty() }.map { it.question to it.text }
+        chat += Msg(true, q)
+        val a = Msg(false, "", q).apply { deep = askDeep }
+        chat += a
+        asking = true
+        drawChat()
+        answerView?.text = "…"
+        progress("Starting…", 0f, 0)
+        val deep = askDeep
+        val scope = askScope
+        Thread {
+            val r = runCatching {
+                Think.run(this, q, history, scope, deep, check = false,
+                    onStep = { st -> main.post { progress(st.label, st.fraction, st.etaMs) } },
+                    onText = { t -> main.post { answerView?.text = t.ifEmpty { "…" } } })
+            }.getOrElse { e -> Think.Result("It stopped: ${e.message}", "", emptyList(), 0, 0, "", 0, "", true) }
+            main.post {
+                asking = false
+                progBox.visibility = View.GONE
+                if (r == null) a.text = "Download LFM2.5 1.2B first: More, AI models."
+                else {
+                    a.text = r.answer
+                    a.feedback = r.feedback
+                    a.notes = r.notes
+                    a.evidence = r.evidence
+                    val secs = r.ms / 1000
+                    a.meta = listOfNotNull(r.model, if (r.lines > 0) "${r.lines} lines" else null,
+                        if (r.parts > 1) "${r.parts} parts" else null, "${secs / 60}:${"%02d".format(secs % 60)}",
+                        if (r.stopped) "stopped" else null).joinToString(" · ")
+                }
+                answerView = null
+                drawChat()
             }
         }.start()
     }
 
-    private fun showHistory(keep: Int = 0) {
-        while (askOut.childCount > keep) askOut.removeViewAt(keep)
-        if (history.size <= keep) return
-        val h = card()
-        h.addView(caps("asked before"))
-        for ((q, a) in history.drop(keep).take(10)) {
-            h.addView(text(q, 14f, Ui.ACCENT, Ui.BOLD).apply { setPadding(0, dp(10), 0, dp(2)) })
-            h.addView(text(a, 13.5f, Ui.MUTED).apply { setTextIsSelectable(true) })
-        }
-        askOut.addView(h)
+    // The check pass on an earlier answer: what it found (feedback) and the corrected answer.
+    private fun recheck(m: Msg) {
+        if (asking || m.evidence.isEmpty()) return
+        asking = true
+        progress("Double-checking against what was said…", 0.5f, 0)
+        Thread {
+            val r = runCatching { Think.check(this, m.question, m.text, m.evidence, m.deep) { } }.getOrNull()
+            main.post {
+                asking = false
+                progBox.visibility = View.GONE
+                if (r != null) {
+                    m.feedback = r.first
+                    m.text = r.second
+                }
+                drawChat()
+            }
+        }.start()
     }
 
     // ------------------------------------------------ More: a menu, each row a page
@@ -1023,6 +1274,18 @@ class ListenActivity : Activity(), HearingCheck.Ui {
                 ticker("models") { ToneModel.progress >= 0 }
             }, onDelete = { ToneModel.delete(this); showMore("models") }))
         val c = card()
+        val gpu = Llm.gpu(this)
+        c.addToggle(toggle("Use the GPU", if (gpu.isEmpty()) "Not available in this build or phone: the models run on the CPU"
+            else "$gpu: answers and meeting notes much faster (on: GPU, off: CPU)", settings.llmGpu) {
+            settings.llmGpu = it
+            for (m in LlmModels.ALL) Llm.unload(m.id) // loaded again where asked
+        })
+        val speeds = LlmModels.ALL.filter { it.role != "embed" && LlmModels.ready(this, it) }.joinToString("\n") { m ->
+            val (pp, tg) = Llm.speed(this, m)
+            "${m.name} (${if (Llm.onGpu(this, m)) "GPU" else "CPU"}): reads ${pp.toInt()} tokens/s, writes ${tg.toInt()}/s"
+        }
+        if (speeds.isNotEmpty()) c.addView(text("Measured on this phone (used for the time left):\n$speeds", 12f, Ui.FAINT)
+            .apply { setPadding(0, dp(4), 0, dp(6)) })
         c.addToggle(toggle("Tone of voice", "Each line's emotion and sounds", settings.listenTone) { settings.listenTone = it })
         c.addToggle(toggle("Find by meaning", "Meaning vectors for lines of four words or more, made while quiet", settings.listenMeaning) {
             settings.listenMeaning = it

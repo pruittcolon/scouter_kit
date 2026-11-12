@@ -525,6 +525,15 @@ with the app in the back.
   quiet moments), fused by reciprocal rank; meaning only for two or more real words and within Vox Amelior's
   calibration. Ask finds the lines (or a named time's: today, yesterday, last week, a weekday...) and LFM2.5
   answers from them with times and names; on the glasses, A asks (D the deep model) in VOX//LISTEN.
+  Ask is a chat (`Think.kt`, the Listen page's Ask): time chips (Auto, Today, Yesterday, This week, Last week, This
+  month, All time), Deep, today's and this week's numbers and suggested questions; follow-ups carry the last three
+  exchanges; "find <words>" lists lines without a model. More than the model can read at once is read in parts:
+  the quick model takes notes per part, notes are combined in parts until they fit, the answer is written from them,
+  and a check pass (Deep, or Double-check) says what it corrected; each step shows a bar and the time left from the
+  speeds measured on the phone (`Llm.speed`), Stop ends it, Show work shows the notes. While a model works
+  (`Llm.hold`), Listen writes nothing down (its audio waits on disk), the model gets 6-7 of the 8 cores, and Listen
+  catches up after. Live: a tap on a speaker's name (or "NAME ›" on an unnamed voice) names it from the people
+  known, Me or a new name; holding a line offers "Who said this…" for that line alone.
   Meetings (`Meetings.kt`): started on the glasses (S in VOX//LISTEN, a title or Enter), on the Listen page, or by
   a calendar event with two or more people invited (ends 5 min after it). Meanwhile B bookmarks the last 30 s, I
   keeps an action item, T a note, C catches you up (the last 5 minutes in three lines), A asks about the meeting;

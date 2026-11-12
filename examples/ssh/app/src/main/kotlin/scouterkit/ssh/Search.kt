@@ -69,7 +69,7 @@ object Search {
 
     // Vectors for lines that have none yet (Listen's worker, in its quiet moments): at most n. Lines found.
     fun fill(c: Context, n: Int): Int {
-        if (!Settings(c).listenMeaning || !LlmModels.usable() || !LlmModels.ready(c, LlmModels.EMBED)) return 0
+        if (!Settings(c).listenMeaning || !LlmModels.usable() || !LlmModels.ready(c, LlmModels.EMBED) || Llm.busy.get() > 0) return 0
         val db = ListenDb.get(c)
         var done = 0
         for ((id, text) in db.needVectors(n)) {

@@ -2596,7 +2596,12 @@ class ScouterService : Service() {
                 when {
                     q == "catch up" -> Meetings.catchUp(this, grow)
                     Meetings.current != null && !deep -> Meetings.ask(this, q, grow)
-                    else -> Search.ask(this, q, deep, grow)
+                    // Any size: read in parts when it does not fit, the step and the time left on the panel.
+                    else -> Think.run(this, q, emptyList(), "auto", deep, check = false,
+                        onStep = { st -> work.post {
+                            listenAnswer = st.label + if (st.etaMs > 1500) " · " + Think.eta(st.etaMs) else ""
+                            listenSoon()
+                        } }, onText = grow)?.answer
                 }
             }.getOrElse { "it stopped: ${it.message}" }
             work.post {

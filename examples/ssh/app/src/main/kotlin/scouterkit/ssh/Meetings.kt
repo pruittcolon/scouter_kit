@@ -122,7 +122,9 @@ object Meetings {
 
     // The notes of a meeting: the model's sections (in parts first when the meeting is longer than its context),
     // then the file. The file, or null.
-    fun write(c: Context, id: Long): File? {
+    fun write(c: Context, id: Long): File? = Llm.hold { writeHeld(c, id) }
+
+    private fun writeHeld(c: Context, id: Long): File? {
         val db = ListenDb.get(c)
         val m = db.meeting(id) ?: return null
         val end = if (m.ended > 0) m.ended else System.currentTimeMillis()

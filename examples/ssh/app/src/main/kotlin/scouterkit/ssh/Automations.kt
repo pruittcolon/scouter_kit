@@ -142,7 +142,7 @@ object Automations {
             "ask" -> {
                 val q = after(text, phrase)
                 glasses(c, "Vox › $q …")
-                val answer = runCatching { Search.ask(c, q, false) }.getOrNull()
+                val answer = runCatching { Think.run(c, q, emptyList(), "auto", false, false, onStep = {}, onText = {})?.answer }.getOrNull()
                     ?: "no language model yet (Listen page, AI models)"
                 glasses(c, "Vox › $answer", 12_000)
                 if (r.actions.contains("notify")) notify(c, "Vox: $q", answer)
