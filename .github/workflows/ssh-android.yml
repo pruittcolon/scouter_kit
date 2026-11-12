@@ -64,6 +64,9 @@ jobs:
       - name: Language model engine (llama.cpp v0.9.0, checked by SHA-256)
         run: examples/ssh/native/third_party/fetch_llama.sh examples/ssh/native/third_party/llama
 
+      - name: GPU headers for it (Khronos OpenCL-Headers, checked by SHA-256) and the link stub
+        run: ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/$NDK_VERSION" examples/ssh/native/third_party/fetch_opencl.sh examples/ssh/native/third_party/opencl
+
       - name: Native host tests (screen mirror, terminal and transitions on emulated arms, keys)
         working-directory: examples/ssh
         run: |
